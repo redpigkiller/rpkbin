@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rpkbin"
+version = "0.1.0"
+description = "Personal collection of small scripts and helpers for work."
+readme = "README.md"
+authors = [
+    { name = "redpigkiller", email = "hongrunlu511@gmail.com" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = [
+    "click>=8.3.1",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+]
+
+[project.optional-dependencies]
+cfg   = ["networkx>=3.6.1"]
+excel = ["openpyxl>=3.1.5", "xlrd>=2.0.2", "rapidfuzz>=3.14.3"]
+wave  = ["textual>=8.0.2", "prompt_toolkit>=3.0.52", "rich>=14.2.0"]
+all   = [
+    "networkx>=3.6.1",
+    "openpyxl>=3.1.5",
+    "xlrd>=2.0.2",
+    "rapidfuzz>=3.14.3",
+    "textual>=8.0.2",
+    "prompt_toolkit>=3.0.52",
+    "rich>=14.2.0"
+]
+
+[project.urls]
+Homepage   = "https://github.com/redpigkiller/rpkbin"
+Repository = "https://github.com/redpigkiller/rpkbin"
+
+[project.scripts]
+rpk-wave = "rpkbin.wave.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rpkbin*"]
+
+[tool.setuptools]
+include-package-data = true
+
