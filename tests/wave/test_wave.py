@@ -132,6 +132,8 @@ class TestHookFire:
         assert len(job.events) == 1
         assert job.events[0]["tag"] == "hook_error"
         assert job.events[0]["source"] == "system"
+        assert "RuntimeError: boom" in job.events[0]["message"]
+        assert "Traceback:" in job.events[0]["message"]
 
     def test_concurrent_once_fires_exactly_once(self):
         """Two threads race to fire the same once-hook."""
@@ -191,6 +193,9 @@ class TestAddParser:
         assert len(job.events) == 1
         assert job.events[0]["tag"] == "parser_error"
         assert job.events[0]["source"] == "system"
+        assert "ValueError: bad" in job.events[0]["message"]
+        assert "Line: 'anything'" in job.events[0]["message"]
+        assert "Traceback:" in job.events[0]["message"]
 
     def test_on_log_injected_exactly_once(self):
         job = WaveFuncJob("test", lambda: None)
@@ -324,6 +329,41 @@ class TestEmit:
         job._tui_notify = lambda j: notified.__setitem__(0, j)
         job.emit("test", "hi")
         assert notified[0] is job
+
+
+class TestIncrementalLogSnapshot:
+    def test_log_snapshot_since_returns_only_new_lines(self):
+        job = WaveFuncJob("loggy", lambda: None, max_log_lines=3)
+        job._emit_line("a")
+        job._emit_line("b")
+
+        total, lines = job.log_snapshot_since(0)
+
+        assert total == 2
+        assert lines == ["a", "b"]
+
+        job._emit_line("c")
+        job._emit_line("d")
+
+        total, lines = job.log_snapshot_since(2)
+
+        assert total == 4
+        assert lines == ["c", "d"]
+
+    def test_log_snapshot_since_clamps_to_retained_buffer(self):
+        job = WaveFuncJob("loggy", lambda: None, max_log_lines=3)
+        for line in ["a", "b", "c", "d"]:
+            job._emit_line(line)
+
+        total, lines = job.log_snapshot_since(0)
+
+        assert total == 4
+        assert lines == ["b", "c", "d"]
+
+        total, lines = job.log_snapshot_since(4)
+
+        assert total == 4
+        assert lines == []
 
 
 # ---------------------------------------------------------------------------
@@ -1317,6 +1357,24 @@ class TestHeadlessCommandParsing:
         assert f"id      = {job2.id}" in out
         assert "ambiguous" not in out
 
+    def test_show_reports_exit_code_error_and_system_event_counts(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveFuncJob("bad", lambda: None)
+        with job._lock:
+            job._status = FAILED
+            job._error = "Traceback line 1\nRuntimeError: boom"
+        job.emit("parser_error", "ValueError: bad", source="system")
+        sess.add(job)
+
+        _handle_cmd(["show", "bad"], sess)
+
+        out = capsys.readouterr().out
+        assert "exit    = 1" in out
+        assert "error   = Traceback line 1 RuntimeError: boom" in out
+        assert "events  = parser_error=1" in out
+
     def test_tui_uses_job_id_row_keys_for_duplicate_names(self):
         from rpkbin.wave.tui.app import WaveApp
 
@@ -1331,6 +1389,166 @@ class TestHeadlessCommandParsing:
         assert app._job_row_key(job2) == str(job2.id)
         assert app._job_row_key(job1) != app._job_row_key(job2)
         assert app._command_identifier_for_job(job1) == str(job1.id)
+
+    def test_add_job_row_registers_row_key_lookup(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _FakeTable:
+            def __init__(self):
+                self.rows = []
+
+            def add_row(self, *cells, key=None):
+                self.rows.append((key, cells))
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        app = WaveApp(sess)
+        table = _FakeTable()
+        app.query_one = lambda *args, **kwargs: table  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
+
+        app._add_job_row_on_main(job)
+
+        key = app._job_row_key(job)
+        assert app._job_for_row_key(key) is job
+        assert table.rows[0][0] == key
+
+    def test_default_dashboard_uses_exit_code_column(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        app = WaveApp(sess)
+        job = WaveFuncJob("job", lambda: 0)
+        with job._lock:
+            job._status = DONE
+            job._result = 0
+
+        assert "Result" not in app._dashboard_column_labels()
+        assert "Exit Code" in app._dashboard_column_labels()
+        assert "[cyan]0[/cyan]" in app._build_row_cells(job)
+
+    def test_failed_func_job_without_integer_result_shows_exit_code_one(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        app = WaveApp(sess)
+        job = WaveFuncJob("job", lambda: None)
+        with job._lock:
+            job._status = FAILED
+            job._result = None
+
+        assert "[red]1[/red]" in app._build_row_cells(job)
+
+    def test_configured_dashboard_can_include_parsed_data_columns(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        sess.configure_tui(dashboard_columns=[
+            "name",
+            {"label": "Final", "data": "FINAL_RESULT"},
+            "exit_code",
+        ])
+        job = WaveFuncJob("job", lambda: None)
+        job.update_parsed_data({"FINAL_RESULT": "PASS"})
+        with job._lock:
+            job._status = FAILED
+            job._result = 17
+
+        app = WaveApp(sess)
+
+        assert app._dashboard_column_labels() == ["Name", "Final", "Exit Code"]
+        assert app._build_row_cells(job) == ("job", "PASS", "[red]17[/red]")
+
+    def test_parsed_data_dashboard_snapshot_failure_keeps_row_rendering(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        sess.configure_tui(dashboard_columns=[
+            "name",
+            {"label": "Final", "data": "FINAL_RESULT"},
+            {"label": "Seed", "data": "SEED"},
+        ])
+        job = WaveFuncJob("job", lambda: None)
+        job.peek_data = lambda: (_ for _ in ()).throw(RuntimeError("snapshot failed"))  # type: ignore[method-assign]
+        app = WaveApp(sess)
+
+        assert app._build_row_cells(job) == ("job", "[red]ERR[/red]", "[red]ERR[/red]")
+
+    def test_configure_tui_rejects_unknown_dashboard_column(self):
+        sess = Session()
+
+        with pytest.raises(ValueError, match="Unknown dashboard column"):
+            sess.configure_tui(dashboard_columns=["name", "result"])
+
+    def test_detail_header_includes_exit_code_for_failed_func_job(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Header:
+            def __init__(self):
+                self.value = ""
+
+            def update(self, value):
+                self.value = value
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        with job._lock:
+            job._status = FAILED
+        app = WaveApp(sess)
+        header = _Header()
+        app.query_one = lambda *args, **kwargs: header  # type: ignore[method-assign]
+        app._detail_job = job
+
+        app._update_detail_header(job)
+
+        assert "exit=[/dim][red]1[/red]" in header.value
+
+    def test_data_panel_shows_empty_state_until_data_arrives(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _FakeTable:
+            def __init__(self):
+                self.rows = []
+                self.cleared = 0
+
+            def add_row(self, *cells, key=None):
+                self.rows.append((key, cells))
+
+            def clear(self):
+                self.cleared += 1
+                self.rows.clear()
+
+            def update_cell(self, row_key, col_key, value, update_width=False):
+                self.rows.append(("update", (row_key, col_key, value, update_width)))
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        app = WaveApp(sess)
+        app._data_col_keys = ("key", "value")
+        table = _FakeTable()
+        app.query_one = lambda *args, **kwargs: table  # type: ignore[method-assign]
+
+        app._refresh_data_panel(job)
+        assert table.rows == [("__wave_empty_data__", ("[dim](no parsed data)[/dim]", ""))]
+
+        job.update_parsed_data({"FINAL_RESULT": "PASS"})
+        app._refresh_data_panel(job)
+
+        assert table.cleared == 1
+        assert table.rows == [("FINAL_RESULT", ("FINAL_RESULT", "PASS"))]
+
+    def test_system_error_events_render_red(self):
+        from rpkbin.wave.tui.app import _format_system_event_line
+
+        line = _format_system_event_line({
+            "time": "12:34:56",
+            "tag": "parser_error",
+            "message": "ValueError: bad",
+        })
+
+        assert "[bold red]parser_error[/bold red]" in line
+        assert "[red]ValueError: bad[/red]" in line
 
     def test_stop_uses_graceful_policy(self, capsys):
         from rpkbin.wave.runner import _handle_cmd
@@ -1424,6 +1642,103 @@ class TestFuncJobCancelWarning:
 
 
 class TestWaveTuiNavigation:
+    def test_job_updates_are_coalesced_before_touching_textual(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        job1 = WaveFuncJob("job1", lambda: None)
+        job2 = WaveFuncJob("job2", lambda: None)
+        app = WaveApp(sess)
+
+        scheduled = []
+        app.call_from_thread = lambda cb: scheduled.append(cb)  # type: ignore[method-assign]
+
+        app._on_job_updated(job1)
+        app._on_job_updated(job2)
+        app._on_job_updated(job1)
+
+        assert scheduled == [app._schedule_dirty_flush_on_main]
+        assert set(app._dirty_jobs) == {app._job_row_key(job1), app._job_row_key(job2)}
+
+    def test_dirty_flush_refreshes_rows_and_subtitle_once(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        job1 = WaveFuncJob("job1", lambda: None)
+        job2 = WaveFuncJob("job2", lambda: None)
+        app = WaveApp(sess)
+
+        refreshed = []
+        subtitles = []
+        app._refresh_job_row = lambda job, **kwargs: refreshed.append((job, kwargs))  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: subtitles.append(kwargs)  # type: ignore[method-assign]
+
+        with app._dirty_lock:
+            app._dirty_jobs = {
+                app._job_row_key(job1): job1,
+                app._job_row_key(job2): job2,
+            }
+            app._dirty_flush_pending = True
+
+        app._flush_dirty_job_rows()
+
+        assert [item[0] for item in refreshed] == [job1, job2]
+        assert all(item[1] == {"update_subtitle": False} for item in refreshed)
+        assert subtitles == [{}]
+        assert app._dirty_jobs == {}
+        assert app._dirty_flush_pending is False
+
+    def test_tick_skips_detail_panels_when_detail_tab_hidden(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Tabs:
+            active = "tab-dashboard"
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        app = WaveApp(sess)
+        refreshed = []
+
+        app._detail_job = job
+        app._refresh_job_row = lambda selected, **kwargs: None  # type: ignore[method-assign]
+        app._refresh_right_panels = lambda selected: refreshed.append(selected)  # type: ignore[method-assign]
+        app._refresh_dashboard_preview = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
+        app.query_one = lambda *args, **kwargs: _Tabs()  # type: ignore[method-assign]
+
+        app._tick()
+
+        assert refreshed == []
+
+    def test_switching_to_detail_tab_refreshes_detail_panels_once(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Tabs:
+            active = "tab-detail"
+
+        class _Focusable:
+            def focus(self):
+                pass
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        app = WaveApp(sess)
+        refreshed = []
+
+        def _query(selector, *args, **kwargs):
+            if selector == "#main-tabs":
+                return _Tabs()
+            return _Focusable()
+
+        app._detail_job = job
+        app._refresh_right_panels = lambda selected: refreshed.append(selected)  # type: ignore[method-assign]
+        app.query_one = _query  # type: ignore[method-assign]
+
+        app.on_tabbed_content_tab_activated(object())
+
+        assert refreshed == [job]
+
     def test_dangerous_quick_actions_are_not_bound(self):
         from rpkbin.wave.tui.app import WaveApp, _HELP_TEXT, _WAVE_COMMANDS
 

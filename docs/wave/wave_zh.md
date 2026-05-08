@@ -596,9 +596,9 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
 ┌─ WAVE ─ my_flow.py ──────────── 2/8 running  ✓1 done  ●3 pending  ✗0 failed ─┐
 │ [DASHBOARD] [JOB DETAIL] [SYSTEM LOG] [HELP]                                   │
 │─────────────────────────────────────────────────────────────────────────────── │
-│  Name          Status     Elapsed   Progress  Result  Tags │ build  [0f3a21b9] │
-│▶ build         RUNNING    00:02:30   42%               gpu │ INFO compile...   │
-│  lint          DONE       00:01:12            PASS          │ WARN retry...     │
+│  Name          Status     Elapsed   Progress  Exit Code  Tags │ build [0f3a21b9]│
+│▶ build         RUNNING    00:02:30   42%                  gpu │ INFO compile... │
+│  lint          DONE       00:01:12             0              │ WARN retry...   │
 │  test-unit     PENDING                                 test│                  │
 ├─ wave>  _                                                                      │
 │ [F1] Dashboard  [F2] Job Detail  [F3] System Log  [Ctrl+C] Quit               │
@@ -608,18 +608,19 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
 ### 分頁說明
 
 - **DASHBOARD** — 左側是所有 jobs 的即時表格，右側是目前 highlight job 的 log preview。
-  - 表格欄位：Name / Status / Elapsed / Progress / Result / Tags。
+  - 預設表格欄位：Name / ID / Status / Elapsed / Progress / Retries / Exit Code / Tags。
+  - 可在 wave file 透過 `session.configure_tui(...)` 自訂 Dashboard 欄位。
   - Running 中的 job 每秒更新 Elapsed。
   - 右側 log preview 會跟著 highlight row 變化，方便不用進入 JOB DETAIL 就快速掃不同 job 的 log。
   - 在任意 row 按下 Enter，可切換到 **JOB DETAIL** 查看該 job 的細節。
 - **JOB DETAIL** — 單一特定 job 的全頁分割畫面。
-  - Header：目前 job 名稱、位置、狀態、elapsed time、progress，以及 detail navigation 提示。
+  - Header：目前 job 名稱、位置、狀態、elapsed time、progress、可用時的 exit code，以及 detail navigation 提示。
   - 左邊 60%：串流 log 輸出（僅 append，不閃爍）。
   - 右邊 40%：四個子分頁：
     - **INFO** — job metadata 摘要，包含 id、status、state、skip flag 與 stop policy。
-    - **DATA** — `job.peek_data()` 的 key/value 表格，以 upsert 方式更新。
-    - **EVENTS** — 使用者發送的事件（`source="user"`），依 tag 分組顯示。
-    - **SYSTEM** — 系統發送的事件（`source="system"`），例如 `parser_error`、`hook_error`。
+    - **DATA** — `job.peek_data()` 的 key/value 表格，以 upsert 方式更新；沒有資料時會顯示 `(no parsed data)`。
+    - **EVENTS** — 使用者發送的事件（`source="user"`），依時間順序顯示。
+    - **SYSTEM** — 系統發送的事件（`source="system"`），例如 `parser_error`、`hook_error`；parser/hook 錯誤會以紅色醒目顯示，並包含 exception detail。
 - **SYSTEM LOG** — session 層級的事件，以及所有 Command Bar 指令的輸出結果。
 - **HELP** — 鍵盤快捷鍵與指令說明。
 
@@ -628,6 +629,24 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
 1. **移動 DASHBOARD highlight** — 在 F1 右側預覽該 job 的 log。
 2. **在 DASHBOARD row 按下 Enter** — 直接切換到 JOB DETAIL 並載入該 job。
 3. **Command Bar** — 輸入 `show <job>`、`logs <job>`、`data <job>` 或 `events <job>`，可依名稱、完整 id 或唯一 id prefix 切換到任意 job。
+
+### Dashboard 欄位
+
+可以在 wave file 透過 `session.configure_tui(...)` 讓 Dashboard 顯示最符合目前 flow 的欄位：
+
+```python
+session.configure_tui(dashboard_columns=[
+    "name",
+    "status",
+    {"label": "Final", "data": "FINAL_RESULT"},
+    "exit_code",
+    "tags",
+])
+```
+
+內建欄位包含 `name`、`id`、`status`、`elapsed`、`progress`、`retries`、`exit_code`、`tags`。
+Parsed-data 欄位使用 `{"label": "...", "data": "KEY"}`，會顯示 `job.peek_data()` 裡目前的值。
+未知的內建欄位或格式錯誤的欄位設定會在 wave file 載入時直接丟出清楚的例外。
 
 ### Command Bar
 
@@ -683,7 +702,7 @@ Headless REPL 是給執行中 batch 用的較佳輸入介面。
 - `status`
   - 顯示所有 jobs 的表格狀態
 - `show <job>`
-  - 顯示單一 job 的摘要
+  - 顯示單一 job 的摘要，包含 exit code、短錯誤訊息，以及 parser/hook error 計數
 - `logs <job> [n]`
   - 顯示最後 `n` 行 log，預設 `50`
 - `data <job>`
@@ -823,6 +842,7 @@ job.set_stop_policy(
 | 方法 | 說明 |
 | --- | --- |
 | `session.configure(max_workers=..., resources=..., log_dir=..., timeout=...)` | 在 session 開始前設定 Wave session。`timeout` 為整份 batch 的時限。 |
+| `session.configure_tui(dashboard_columns=...)` | 設定 TUI 顯示方式。Dashboard 欄位支援內建欄位與 parsed-data 欄位，例如 `{"label": "Final", "data": "FINAL_RESULT"}`。 |
 | `session.add(job, timeout=None)` | 註冊 job；若 session 已啟動，會立即 dispatch。此 `timeout` 僅對 Wave job 生效；若傳入 plain scheduler job，實作會發出 warning 且不生效。**注意**：若在 session finalize 後呼叫會拋出 `RuntimeError`。 |
 | `session.emit(tag, message)` / `session.peek_events()` | 新增與查看 batch-level 事件。使用者建立的事件會標記 `source="user"`；Wave 內建 lifecycle 事件會標記 `source="system"`。 |
 | `session.pause()` / `session.resume()` | 暫停或恢復 job manager 的排程循環。 |
@@ -921,7 +941,7 @@ Session event 常見用途：
 | 問題 | 原因與解法 |
 |---|---|
 | Parser 沒有觸發 | 確認 job 是 `CmdJob`、log 行確實命中、且 parser 回傳了非空 `dict`。 |
-| Hook 或 parser 的錯誤去哪看？ | Wave 會發送 `parser_error` / `hook_error` 事件。查看 `job.peek_events()` 或 TUI 的 SYSTEM sub-tab。 |
+| Hook 或 parser 的錯誤去哪看？ | Wave 會發送 `parser_error` / `hook_error` 事件，內容包含 exception type、message、輸入/action context 與短 traceback。可查看 `job.peek_events()`、`show <job>`，或 TUI 的 SYSTEM sub-tab。 |
 | `stop -g` 說 unsupported | 該 job 沒有設定 `set_stop_policy(...)`。 |
 
 ### 結果與 Exit Code

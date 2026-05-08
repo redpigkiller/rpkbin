@@ -1,4 +1,4 @@
-﻿"""
+"""
 runner.py - Load a wave file and orchestrate the Session.
 
 Execution model
@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from rpkbin.wave.session import session
+from rpkbin.wave._util import job_exit_code as _job_exit_code
 
 _WAVE_IMPORT_LOCK = threading.RLock()
 _REPL_POLL_INTERVAL = 1.0
@@ -332,6 +333,26 @@ def _job_id(job) -> str:
     return str(getattr(job, "id", ""))
 
 
+def _short_error(job, *, limit: int = 120) -> str:
+    error = getattr(job, "error", None)
+    if not error:
+        return ""
+    one_line = " ".join(str(error).split())
+    if len(one_line) <= limit:
+        return one_line
+    return one_line[: limit - 3] + "..."
+
+
+def _system_error_counts(job) -> dict[str, int]:
+    events = getattr(job, "peek_events", lambda: [])()
+    counts: dict[str, int] = {}
+    for event in events:
+        tag = event.get("tag")
+        if tag in {"parser_error", "hook_error"}:
+            counts[tag] = counts.get(tag, 0) + 1
+    return counts
+
+
 def _resolve_job(identifier: str, sess) -> tuple[object | None, str | None]:
     """Resolve a user-facing job identifier.
 
@@ -397,8 +418,17 @@ def _cmd_show(name: str, sess) -> None:
     print(f"id      = {_job_id(job)}")
     print(f"name    = {job.name}")
     print(f"status  = {job.status}")
+    exit_code = _job_exit_code(job)
+    print(f"exit    = {'' if exit_code is None else exit_code}")
     print(f"state   = {getattr(job, 'state', None) or ''}")
     print(f"skipped = {getattr(job, 'is_skipped', False)}")
+    error = _short_error(job)
+    if error:
+        print(f"error   = {error}")
+    system_errors = _system_error_counts(job)
+    if system_errors:
+        summary = ", ".join(f"{tag}={count}" for tag, count in sorted(system_errors.items()))
+        print(f"events  = {summary}")
     if hasattr(job, "peek_stop_policy"):
         policy = job.peek_stop_policy()
         print(f"stop    = input={policy.get('graceful_input')!r}, signal={policy.get('graceful_signal')!r}, timeout={policy.get('graceful_timeout')!r}")

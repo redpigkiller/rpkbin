@@ -1,9 +1,9 @@
-﻿"""app.py - WaveApp: Textual TUI for monitoring and controlling Wave sessions.
+"""app.py - WaveApp: Textual TUI for monitoring and controlling Wave sessions.
 
 Layout
 ------
 Three top-level tabs:
-  DASHBOARD   - live DataTable of all jobs (Name/Status/Elapsed/Progress/Result/Tags)
+  DASHBOARD   - live DataTable of all jobs
   JOB DETAIL  - log view (left 60%) + Data/Events/System tabs (right 40%)
   SYSTEM LOG  - session-level events
 
@@ -31,10 +31,16 @@ from __future__ import annotations
 import contextlib
 import io
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
 from rich.markup import escape as _escape_markup
+
+from rpkbin.wave._util import (
+    DASHBOARD_BUILTIN_LABELS as _DASHBOARD_BUILTIN_LABELS,
+    job_exit_code as _job_exit_code,
+)
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -230,6 +236,20 @@ _OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", 
 _WAVE_COMMANDS: list[str] = ["help", "status", "show", "logs", "data", "events", "pause", "resume", "stop", "skip", "cancel", "input", "signal", "watch", "exit"]
 _WAVE_JOB_COMMANDS: set[str] = {"show", "logs", "data", "events", "stop", "skip", "cancel", "input", "signal"}
 
+_DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
+    {"type": "builtin", "key": "name"},
+    {"type": "builtin", "key": "id"},
+    {"type": "builtin", "key": "status"},
+    {"type": "builtin", "key": "elapsed"},
+    {"type": "builtin", "key": "progress"},
+    {"type": "builtin", "key": "retries"},
+    {"type": "builtin", "key": "exit_code"},
+    {"type": "builtin", "key": "tags"},
+)
+
+_DATA_SNAPSHOT_FAILED = object()
+_DATA_EMPTY_ROW_KEY = "__wave_empty_data__"
+
 
 def _fmt_elapsed(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
@@ -247,6 +267,16 @@ def _job_elapsed_s(job) -> float | None:
     finished = getattr(job, "end_time", None)
     end = finished if finished is not None else time.monotonic()
     return max(0.0, end - started)
+
+
+def _format_system_event_line(event: dict) -> str:
+    tag_raw = str(event.get("tag", ""))
+    tag = _escape_markup(tag_raw)
+    msg = _escape_markup(str(event.get("message", "")))
+    time_str = _escape_markup(str(event.get("time", "?")))
+    if tag_raw in {"parser_error", "hook_error"}:
+        return f"[grey50]{time_str}[/grey50] [bold red]{tag}[/bold red] - [red]{msg}[/red]"
+    return f"[grey50]{time_str}[/grey50] [bold]{tag}[/bold] - {msg}"
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +383,10 @@ class WaveApp(App):
         # Stable row identities for #jobs-table. Use job ids, not names, so
         # duplicate human-readable names never collapse into one TUI row.
         self._row_keys: set[str] = set()
+        self._jobs_by_row_key: dict[str, object] = {}
         # Row cache to prevent needless DataTable cell updates
         self._row_cache: dict[str, tuple] = {}
+        self._row_status_cache: dict[str, str] = {}
         # data-table row keys and cache for the currently shown job
         self._data_row_keys: set[str] = set()
         self._data_cache: dict[str, str] = {}
@@ -362,6 +394,7 @@ class WaveApp(App):
         # Column key tuples returned by DataTable.add_columns()
         self._jobs_col_keys: tuple = ()
         self._data_col_keys: tuple = ()
+        self._dashboard_columns = self._resolve_dashboard_columns()
 
         # Incremental sync counters (avoid re-painting unchanged content).
         # All three are declared here to ensure they are always defined before
@@ -380,6 +413,16 @@ class WaveApp(App):
         # JOB DETAIL so F1 can be used for quick scan-and-read workflows.
         self._dashboard_preview_job_key: str | None = None
         self._dashboard_preview_log_count: int = 0
+
+        # Worker-thread notifications are coalesced before touching Textual.
+        # This bounds call_from_thread pressure when parsers emit frequently.
+        self._dirty_lock = threading.Lock()
+        self._dirty_jobs: dict[str, object] = {}
+        self._dirty_flush_pending: bool = False
+
+        # Worker count is static for a Wave TUI run. Cache it so the subtitle
+        # path does not call the heavier Session.stats() snapshot every second.
+        self._worker_total_label: str | None = None
 
     # ------------------------------------------------------------------
     # Layout
@@ -436,17 +479,17 @@ class WaveApp(App):
     def on_mount(self) -> None:  # noqa: D102
         # DASHBOARD table columns
         t = self.query_one("#jobs-table", DataTable)
-        self._jobs_col_keys = t.add_columns(
-            "Name", "ID", "Status", "Elapsed", "Progress", "Retries", "Result", "Tags"
-        )
+        self._jobs_col_keys = t.add_columns(*self._dashboard_column_labels())
 
         # DATA table columns (rows are added lazily per-job)
         dt = self.query_one("#data-table", DataTable)
         self._data_col_keys = dt.add_columns("Key", "Value")
 
-        # Populate rows for jobs already registered before _start()
-        for job in self._session.jobs():
-            self._add_job_row_on_main(job)
+        # Populate rows for jobs already registered before _start().
+        # Defer subtitle calculation until the initial table is complete.
+        initial_jobs = self._session.jobs()
+        for job in initial_jobs:
+            self._add_job_row_on_main(job, update_subtitle=False)
 
         # Initial hint for JOB DETAIL if they switch without selecting
         self._update_detail_header(None)
@@ -460,7 +503,7 @@ class WaveApp(App):
         # Periodic timer: elapsed refresh + detail panel sync + session-event drain
         self.set_interval(1.0, self._tick)
 
-        self._update_subtitle()
+        self._update_subtitle(jobs=initial_jobs)
         self.query_one("#jobs-table", DataTable).focus()
 
         self.query_one("#dashboard-log", RichLog).write(
@@ -476,16 +519,28 @@ class WaveApp(App):
     def _on_job_updated(self, job) -> None:
         """Called from a worker thread when a job's observable state changes.
 
-        Only updates the Dashboard row cells (status, progress, etc.).
-        Log / DATA / EVENTS panel sync is intentionally deferred to _tick
-        (once per second) to avoid flooding the main thread with full buffer
-        copies on every parser callback.
+        Worker threads only mark jobs dirty and schedule one main-thread flush
+        per burst. This avoids flooding Textual's asyncio queue when parsers or
+        hooks update parsed data at log-line frequency.
         """
+        key = self._job_row_key(job)
+        should_schedule = False
+        with self._dirty_lock:
+            self._dirty_jobs[key] = job
+            if not self._dirty_flush_pending:
+                self._dirty_flush_pending = True
+                should_schedule = True
+        if not should_schedule:
+            return
         try:
-            self.call_from_thread(self._refresh_job_row, job)
+            self.call_from_thread(self._schedule_dirty_flush_on_main)
         except RuntimeError:
+            with self._dirty_lock:
+                self._dirty_flush_pending = False
             logger.debug("Dropped TUI job update while the event loop was closing.", exc_info=True)
         except Exception:
+            with self._dirty_lock:
+                self._dirty_flush_pending = False
             logger.exception("Unexpected failure scheduling TUI job update for %r.", getattr(job, "name", job))
 
     def _on_job_added(self, job) -> None:
@@ -497,55 +552,162 @@ class WaveApp(App):
         except Exception:
             logger.exception("Unexpected failure scheduling TUI job-add update for %r.", getattr(job, "name", job))
 
+    def _schedule_dirty_flush_on_main(self) -> None:
+        """Debounce dirty job row updates on the Textual main thread."""
+        self.set_timer(0.05, self._flush_dirty_job_rows)
+
+    def _flush_dirty_job_rows(self) -> None:
+        """Refresh all coalesced dirty rows on the Textual main thread."""
+        with self._dirty_lock:
+            dirty_jobs = list(self._dirty_jobs.values())
+            self._dirty_jobs.clear()
+            self._dirty_flush_pending = False
+
+        for job in dirty_jobs:
+            self._refresh_job_row(job, update_subtitle=False)
+        if dirty_jobs:
+            self._update_subtitle()
+
+        with self._dirty_lock:
+            needs_another_flush = bool(self._dirty_jobs) and not self._dirty_flush_pending
+            if needs_another_flush:
+                self._dirty_flush_pending = True
+        if needs_another_flush:
+            self._schedule_dirty_flush_on_main()
+
     # ------------------------------------------------------------------
     # DASHBOARD helpers (main-thread only)
     # ------------------------------------------------------------------
 
     def _build_row_cells(self, job) -> tuple[str, ...]:
-        """Return one cell value per column: Name Status Elapsed Progress Retries Result Tags."""
-        name = _escape_markup(str(job.name))
-        status = getattr(job, "status", "pending")
-        color = _STATUS_COLOR.get(status, "white")
-        status_cell = f"[{color}]{status.upper()}[/{color}]"
+        """Return one cell value per configured dashboard column.
 
-        elapsed_cell = _fmt_elapsed(_job_elapsed_s(job))
+        Parsed-data columns share a single ``peek_data()`` snapshot so that
+        dashboards with many data columns do not make redundant dict copies.
+        """
+        has_data_cols = any(c["type"] == "parsed_data" for c in self._dashboard_columns)
+        data_snapshot = None
+        if has_data_cols:
+            try:
+                data_snapshot = getattr(job, "peek_data", lambda: {})()
+            except Exception:
+                logger.warning(
+                    "Failed to read parsed_data snapshot for job %r.",
+                    getattr(job, "name", job),
+                    exc_info=True,
+                )
+                data_snapshot = _DATA_SNAPSHOT_FAILED
+        return tuple(
+            self._dashboard_cell(job, column, _data=data_snapshot)
+            for column in self._dashboard_columns
+        )
 
-        prog = getattr(job, "progress", None)
-        if isinstance(prog, (int, float)):
-            filled = max(0, min(10, round(prog / 10)))
-            bar = "#" * filled + "-" * (10 - filled)
-            prog_cell = f"{bar} {prog:.0f}%"
-        else:
-            prog_cell = ""
+    def _resolve_dashboard_columns(self) -> tuple[dict[str, str], ...]:
+        try:
+            config = getattr(self._session, "tui_config", lambda: {})()
+            columns = config.get("dashboard_columns")
+        except Exception:
+            logger.warning("Failed to read Wave TUI config; using default dashboard columns.", exc_info=True)
+            return _DEFAULT_DASHBOARD_COLUMNS
 
-        retry_count = getattr(job, "retry_count", 0)
-        max_retries = getattr(job, "max_retries", 0)
-        # Hide retry counter entirely when retries are not configured (no info value).
-        retries_cell = f"{retry_count}/{max_retries}" if max_retries > 0 else ""
+        if columns is None:
+            return _DEFAULT_DASHBOARD_COLUMNS
+        if not isinstance(columns, (list, tuple)) or not columns:
+            logger.warning("Invalid dashboard column config %r; using defaults.", columns)
+            return _DEFAULT_DASHBOARD_COLUMNS
 
-        # Result column: outcome indicator + error snippet for failed jobs.
-        # is_skipped is a Wave-layer concept (cancelled with skip flag); plain
-        # scheduler jobs that are cancelled simply show nothing here.
-        if status == "done":
-            result_cell = "[cyan]PASS[/cyan]"
-        elif status == "failed":
-            error = getattr(job, "error", None)
-            if error:
-                snippet = (error[:27] + "...") if len(error) > 30 else error
-                result_cell = f"[red]FAIL[/red] [dim]{_escape_markup(snippet)}[/dim]"
+        resolved: list[dict[str, str]] = []
+        for idx, column in enumerate(columns):
+            if not isinstance(column, dict):
+                logger.warning("Invalid dashboard column at index %s: %r; using defaults.", idx, column)
+                return _DEFAULT_DASHBOARD_COLUMNS
+            kind = column.get("type")
+            if kind == "builtin" and column.get("key") in _DASHBOARD_BUILTIN_LABELS:
+                resolved.append({"type": "builtin", "key": str(column["key"])})
+            elif kind == "parsed_data" and column.get("label") and column.get("data"):
+                resolved.append({
+                    "type": "parsed_data",
+                    "label": str(column["label"]),
+                    "data": str(column["data"]),
+                })
             else:
-                result_cell = "[red]FAIL[/red]"
-        elif status == "cancelled" and getattr(job, "is_skipped", False):
-            result_cell = "[grey50]SKIP[/grey50]"
-        else:
-            result_cell = ""
+                logger.warning("Invalid dashboard column at index %s: %r; using defaults.", idx, column)
+                return _DEFAULT_DASHBOARD_COLUMNS
+        return tuple(resolved)
 
-        tags = getattr(job, "tags", None) or set()
-        tags_cell = ",".join(sorted(_escape_markup(str(t)) for t in tags))
+    def _dashboard_column_labels(self) -> list[str]:
+        labels: list[str] = []
+        for column in self._dashboard_columns:
+            if column["type"] == "builtin":
+                labels.append(_DASHBOARD_BUILTIN_LABELS[column["key"]])
+            else:
+                labels.append(_escape_markup(column["label"]))
+        return labels
 
-        id_cell = _escape_markup(str(getattr(job, "id", ""))[:8])
+    def _dashboard_cell(
+        self,
+        job,
+        column: dict[str, str],
+        *,
+        _data: dict | object | None = None,
+    ) -> str:
+        if column["type"] == "parsed_data":
+            if _data is _DATA_SNAPSHOT_FAILED:
+                return "[red]ERR[/red]"
+            try:
+                data = _data if _data is not None else getattr(job, "peek_data", lambda: {})()
+                return _escape_markup(str(data.get(column["data"], "")))
+            except Exception:
+                logger.warning(
+                    "Failed to read parsed_data column %r for job %r.",
+                    column.get("data"),
+                    getattr(job, "name", job),
+                    exc_info=True,
+                )
+                return "[red]ERR[/red]"
+        return self._builtin_dashboard_cell(job, column["key"])
 
-        return name, id_cell, status_cell, elapsed_cell, prog_cell, retries_cell, result_cell, tags_cell
+    def _builtin_dashboard_cell(self, job, key: str) -> str:
+        if key == "name":
+            return _escape_markup(str(job.name))
+
+        status = getattr(job, "status", "pending")
+        if key == "status":
+            color = _STATUS_COLOR.get(status, "white")
+            return f"[{color}]{status.upper()}[/{color}]"
+
+        if key == "elapsed":
+            return _fmt_elapsed(_job_elapsed_s(job))
+
+        if key == "progress":
+            prog = getattr(job, "progress", None)
+            if isinstance(prog, (int, float)):
+                filled = max(0, min(10, round(prog / 10)))
+                bar = "#" * filled + "-" * (10 - filled)
+                return f"{bar} {prog:.0f}%"
+            return ""
+
+        if key == "retries":
+            retry_count = getattr(job, "retry_count", 0)
+            max_retries = getattr(job, "max_retries", 0)
+            return f"{retry_count}/{max_retries}" if max_retries > 0 else ""
+
+        if key == "exit_code":
+            exit_code = _job_exit_code(job)
+            if exit_code is not None:
+                color = "cyan" if exit_code == 0 else "red"
+                return f"[{color}]{exit_code}[/{color}]"
+            return ""
+
+        if key == "tags":
+            tags = getattr(job, "tags", None) or set()
+            return ",".join(sorted(_escape_markup(str(t)) for t in tags))
+
+        if key == "id":
+            return _escape_markup(str(getattr(job, "id", ""))[:8])
+
+        logger.warning("Unknown dashboard builtin column %r; rendering blank.", key)
+        return ""
 
     def _job_row_key(self, job) -> str:
         """Return the stable DataTable row key for *job*."""
@@ -553,10 +715,7 @@ class WaveApp(App):
 
     def _job_for_row_key(self, row_key: str):
         """Resolve a DataTable row key back to its job."""
-        for job in self._session.jobs():
-            if self._job_row_key(job) == row_key:
-                return job
-        return None
+        return self._jobs_by_row_key.get(row_key)
 
     def _command_identifier_for_job(self, job) -> str:
         """Prefer name for unique jobs; use id when duplicate names exist."""
@@ -601,35 +760,43 @@ class WaveApp(App):
 
         return "\n".join(lines)
 
-    def _add_job_row_on_main(self, job, from_tick: bool = False) -> None:
+    def _add_job_row_on_main(
+        self,
+        job,
+        *,
+        update_subtitle: bool = True,
+    ) -> None:
         """Add a fresh row for *job* to the DASHBOARD table (main thread)."""
         key = self._job_row_key(job)
         if key in self._row_keys:
             return  # already present
         self._row_keys.add(key)
+        self._jobs_by_row_key[key] = job
 
         cells = self._build_row_cells(job)
         self._row_cache[key] = cells
+        self._row_status_cache[key] = getattr(job, "status", "pending")
 
         t = self.query_one("#jobs-table", DataTable)
         t.add_row(*cells, key=key)
 
-        if not from_tick:
+        if update_subtitle:
             self._update_subtitle()
 
-    def _refresh_job_row(self, job, from_tick: bool = False) -> None:
-        """Update a job's DASHBOARD row cells.
-
-        Detail panel sync (log / DATA / EVENTS) is only performed when
-        called from _tick (from_tick=True) to avoid high-frequency full
-        buffer copies triggered by parser or emit callbacks.
-        """
+    def _refresh_job_row(
+        self,
+        job,
+        *,
+        update_subtitle: bool = True,
+    ) -> None:
+        """Update a job's DASHBOARD row cells."""
         key = self._job_row_key(job)
         if key not in self._row_keys:
-            self._add_job_row_on_main(job, from_tick=from_tick)
+            self._add_job_row_on_main(job, update_subtitle=update_subtitle)
             return
 
         cells = self._build_row_cells(job)
+        self._row_status_cache[key] = getattr(job, "status", "pending")
         if self._row_cache.get(key) != cells:
             self._row_cache[key] = cells
             t = self.query_one("#jobs-table", DataTable)
@@ -650,16 +817,7 @@ class WaveApp(App):
                         exc_info=True,
                     )
 
-        # Detail panel sync only from the periodic tick, not from every
-        # event callback.  This bounds the cost to one refresh per second
-        # regardless of how frequently parsers or hooks fire.
-        if from_tick and self._detail_job is not None and self._job_row_key(self._detail_job) == key:
-            try:
-                self._refresh_right_panels(job)
-            except NoMatches:
-                logger.debug("Skipped detail refresh while TUI widgets were unavailable.", exc_info=True)
-
-        if not from_tick:
+        if update_subtitle:
             self._update_subtitle()
 
     # ------------------------------------------------------------------
@@ -669,11 +827,18 @@ class WaveApp(App):
     def _tick(self) -> None:
         """Every second: refresh elapsed + detail panels + drain session events."""
         try:
-            for job in self._session.jobs():
-                self._refresh_job_row(job, from_tick=True)
+            jobs = self._session.jobs()
+            for job in jobs:
+                key = self._job_row_key(job)
+                status = getattr(job, "status", "pending")
+                if status == "running" or self._row_status_cache.get(key) != status:
+                    self._refresh_job_row(job, update_subtitle=False)
+
+            if self._detail_job is not None and self._is_detail_tab_active():
+                self._refresh_right_panels(self._detail_job)
 
             self._refresh_dashboard_preview()
-            self._update_subtitle()
+            self._update_subtitle(jobs=jobs)
 
             # Drain new session-level events into SYSTEM LOG tab
             events = self._session.peek_events()
@@ -735,20 +900,32 @@ class WaveApp(App):
                 log_view.write(empty_message)
             return sync_count
 
-        new_lines = job.tail(total_lines - sync_count)
+        if hasattr(job, "log_snapshot_since"):
+            total_lines, new_lines = job.log_snapshot_since(sync_count)
+        else:
+            new_lines = job.tail(total_lines - sync_count)
         if new_lines:
             log_view.auto_scroll = (log_view.scroll_y >= max(0, log_view.max_scroll_y - 2))
             log_view.write("\n".join(new_lines))
         return total_lines
 
-    def _update_subtitle(self) -> None:
-        jobs = self._session.jobs()
-        n_run  = sum(1 for j in jobs if getattr(j, "status", None) == "running")
-        n_done = sum(1 for j in jobs if getattr(j, "status", None) == "done")
-        n_pend = sum(1 for j in jobs if getattr(j, "status", None) == "pending")
-        n_fail = sum(1 for j in jobs if getattr(j, "status", None) in ("failed", "cancelled"))
-        s = self._session.stats()
-        mw = s.get("workers", {}).get("total", "?") if s else "?"
+    def _update_subtitle(self, *, jobs: list | None = None) -> None:
+        if self._row_status_cache:
+            statuses = self._row_status_cache.values()
+            n_run  = sum(1 for status in statuses if status == "running")
+            n_done = sum(1 for status in statuses if status == "done")
+            n_pend = sum(1 for status in statuses if status == "pending")
+            n_fail = sum(1 for status in statuses if status in ("failed", "cancelled"))
+        else:
+            jobs = self._session.jobs() if jobs is None else jobs
+            n_run  = sum(1 for j in jobs if getattr(j, "status", None) == "running")
+            n_done = sum(1 for j in jobs if getattr(j, "status", None) == "done")
+            n_pend = sum(1 for j in jobs if getattr(j, "status", None) == "pending")
+            n_fail = sum(1 for j in jobs if getattr(j, "status", None) in ("failed", "cancelled"))
+        if self._worker_total_label is None:
+            s = self._session.stats()
+            self._worker_total_label = str(s.get("workers", {}).get("total", "?")) if s else "?"
+        mw = self._worker_total_label
         self.sub_title = (
             f"> {n_run}/{mw} running   OK {n_done} done   "
             f"WAIT {n_pend} pending   FAIL {n_fail} failed"
@@ -849,11 +1026,16 @@ class WaveApp(App):
         prog = getattr(job, "progress", None)
         progress = f"{prog:.0f}%" if isinstance(prog, (int, float)) else "--"
         name = _escape_markup(str(getattr(job, "name", job)))
+        exit_code = _job_exit_code(job)
+        exit_part = ""
+        if exit_code is not None:
+            exit_color = "cyan" if exit_code == 0 else "red"
+            exit_part = f"  [dim]exit=[/dim][{exit_color}]{exit_code}[/{exit_color}]"
 
         header.update(
             f"[dim]Jobs: [ ][/dim]  [bold]{name}[/bold]  "
             f"[dim]{position}[/dim]  [{color}]{status.upper()}[/{color}]  "
-            f"[dim]{elapsed}[/dim]  [cyan]{progress}[/cyan]  [dim]Running: {{ }}[/dim]"
+            f"[dim]{elapsed}[/dim]  [cyan]{progress}[/cyan]{exit_part}  [dim]Running: {{ }}[/dim]"
         )
 
     def _sync_dashboard_selection(self, job) -> None:
@@ -887,8 +1069,54 @@ class WaveApp(App):
         )
 
         # -- DATA tab (upsert by key) -----------------------------------
+        self._refresh_data_panel(job)
+
+        # -- EVENTS & SYSTEM tabs (incremental chronologic rendering) --
+        all_events = getattr(job, "peek_events", lambda: [])()
+        sync_count = self._events_sync_count
+
+        if len(all_events) > sync_count:
+            new_events = all_events[sync_count:]
+            ev_log = self.query_one("#events-log", RichLog)
+            sys_log = self.query_one("#system-job-log", RichLog)
+
+            ev_msgs = []
+            sys_msgs = []
+            for ev in new_events:
+                source = ev.get("source")
+                tag = _escape_markup(str(ev.get("tag", "")))
+                msg = _escape_markup(str(ev.get("message", "")))
+                time_str = _escape_markup(str(ev.get("time", "?")))
+
+                if source == "user":
+                    ev_msgs.append(f"\\[{time_str}] [bold yellow]{tag}[/bold yellow] - {msg}")
+                else:
+                    sys_msgs.append(_format_system_event_line(ev))
+
+            if ev_msgs:
+                ev_log.auto_scroll = (ev_log.scroll_y >= max(0, ev_log.max_scroll_y - 2))
+                ev_log.write("\n".join(ev_msgs))
+            if sys_msgs:
+                sys_log.auto_scroll = (sys_log.scroll_y >= max(0, sys_log.max_scroll_y - 2))
+                sys_log.write("\n".join(sys_msgs))
+
+            self._events_sync_count = len(all_events)
+
+    def _refresh_data_panel(self, job) -> None:
+        """Refresh the DATA sub-tab, including a clear empty state."""
         data = getattr(job, "peek_data", lambda: {})()
         dt = self.query_one("#data-table", DataTable)
+
+        if not data:
+            if _DATA_EMPTY_ROW_KEY not in self._data_row_keys:
+                dt.add_row("[dim](no parsed data)[/dim]", "", key=_DATA_EMPTY_ROW_KEY)
+                self._data_row_keys.add(_DATA_EMPTY_ROW_KEY)
+            return
+
+        if _DATA_EMPTY_ROW_KEY in self._data_row_keys:
+            dt.clear()
+            self._data_row_keys = set()
+            self._data_cache = {}
 
         for k, v in data.items():
             sk = _escape_markup(str(k))
@@ -916,37 +1144,6 @@ class WaveApp(App):
                 dt.add_row(sk, sv, key=sk)
                 self._data_row_keys.add(sk)
 
-        # -- EVENTS & SYSTEM tabs (incremental chronologic rendering) --
-        all_events = getattr(job, "peek_events", lambda: [])()
-        sync_count = self._events_sync_count
-
-        if len(all_events) > sync_count:
-            new_events = all_events[sync_count:]
-            ev_log = self.query_one("#events-log", RichLog)
-            sys_log = self.query_one("#system-job-log", RichLog)
-
-            ev_msgs = []
-            sys_msgs = []
-            for ev in new_events:
-                source = ev.get("source")
-                tag = _escape_markup(str(ev.get("tag", "")))
-                msg = _escape_markup(str(ev.get("message", "")))
-                time_str = _escape_markup(str(ev.get("time", "?")))
-
-                if source == "user":
-                    ev_msgs.append(f"\\[{time_str}] [bold yellow]{tag}[/bold yellow] - {msg}")
-                else:
-                    sys_msgs.append(f"[grey50]{time_str}[/grey50] [bold]{tag}[/bold] - {msg}")
-
-            if ev_msgs:
-                ev_log.auto_scroll = (ev_log.scroll_y >= max(0, ev_log.max_scroll_y - 2))
-                ev_log.write("\n".join(ev_msgs))
-            if sys_msgs:
-                sys_log.auto_scroll = (sys_log.scroll_y >= max(0, sys_log.max_scroll_y - 2))
-                sys_log.write("\n".join(sys_msgs))
-
-            self._events_sync_count = len(all_events)
-
     def _focus_active_panel(self) -> None:
         """Route keyboard focus to the primary widget of the active tab."""
         active = self.query_one("#main-tabs", TabbedContent).active
@@ -959,6 +1156,10 @@ class WaveApp(App):
         elif active == "tab-help":
             self.query_one("#help-text").focus()
 
+    def _is_detail_tab_active(self) -> bool:
+        """Return True when the top-level JOB DETAIL tab is visible."""
+        return self.query_one("#main-tabs", TabbedContent).active == "tab-detail"
+
     # ------------------------------------------------------------------
     # Textual event handlers
     # ------------------------------------------------------------------
@@ -966,6 +1167,8 @@ class WaveApp(App):
     def on_tabbed_content_tab_activated(self, event) -> None:
         """When a tab is selected (via mouse or F-keys), route focus to its main widget."""
         self._focus_active_panel()
+        if self._detail_job is not None and self._is_detail_tab_active():
+            self._refresh_right_panels(self._detail_job)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Track which Dashboard row the cursor is on for preview and commands."""

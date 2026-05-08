@@ -1,4 +1,4 @@
-﻿"""
+"""
 session.py — Session lifecycle manager and module-level singleton.
 
 Session is the central coordinator between the user's wave file, the
@@ -35,6 +35,7 @@ from typing import Callable
 from rpkbin.job_manager import JobManager
 from rpkbin.wave.hook import Hook
 from rpkbin.wave.job import WaveJobMixin
+from rpkbin.wave._util import TUI_BUILTIN_DASHBOARD_COLUMNS as _TUI_BUILTIN_DASHBOARD_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,36 @@ class Session:
         self._config["resources"] = resources or {}
         self._config["log_dir"] = log_dir
         self._config["timeout"] = timeout
+
+    def configure_tui(self, *, dashboard_columns: list | tuple | None = None) -> None:
+        """Configure TUI presentation details from a wave file.
+
+        ``dashboard_columns`` accepts built-in column names plus parsed-data
+        column specs, for example::
+
+            session.configure_tui(dashboard_columns=[
+                "name",
+                "status",
+                {"label": "Final", "data": "FINAL_RESULT"},
+                "exit_code",
+            ])
+
+        Built-ins are: name, id, status, elapsed, progress, retries, exit_code,
+        tags. Parsed-data specs must provide non-empty string ``label`` and
+        ``data`` fields.
+        """
+        if dashboard_columns is None:
+            self._tui_config["dashboard_columns"] = None
+            return
+        self._tui_config["dashboard_columns"] = self._normalize_dashboard_columns(dashboard_columns)
+
+    def tui_config(self) -> dict:
+        """Return a shallow copy of TUI configuration."""
+        config = dict(self._tui_config)
+        columns = config.get("dashboard_columns")
+        if columns is not None:
+            config["dashboard_columns"] = tuple(dict(column) for column in columns)
+        return config
 
     def add(self, job, *, timeout: float | None = None) -> None:
         """Add a job to the session.
@@ -460,9 +491,52 @@ class Session:
             "log_dir": None,
             "timeout": None,
         }
+        self._tui_config: dict = {
+            "dashboard_columns": None,
+        }
         self._session_timeout_fired: bool = False
         self._timer_thread: threading.Thread | None = None
         self._stop_timer = threading.Event()
+
+    def _normalize_dashboard_columns(self, columns: list | tuple) -> tuple:
+        if not isinstance(columns, (list, tuple)):
+            raise TypeError("dashboard_columns must be a list or tuple")
+        if not columns:
+            raise ValueError("dashboard_columns must not be empty")
+
+        normalized = []
+        for idx, column in enumerate(columns):
+            if isinstance(column, str):
+                key = column.strip().lower()
+                if key not in _TUI_BUILTIN_DASHBOARD_COLUMNS:
+                    allowed = ", ".join(sorted(_TUI_BUILTIN_DASHBOARD_COLUMNS))
+                    raise ValueError(
+                        f"Unknown dashboard column {column!r} at index {idx}. "
+                        f"Use one of: {allowed}, or {{'label': ..., 'data': ...}}."
+                    )
+                normalized.append({"type": "builtin", "key": key})
+                continue
+
+            if isinstance(column, dict):
+                label = column.get("label")
+                data_key = column.get("data")
+                if not isinstance(label, str) or not label.strip():
+                    raise ValueError(f"dashboard column at index {idx} needs a non-empty string label")
+                if not isinstance(data_key, str) or not data_key.strip():
+                    raise ValueError(f"dashboard column {label!r} needs a non-empty string data key")
+                normalized.append({
+                    "type": "parsed_data",
+                    "label": label.strip(),
+                    "data": data_key.strip(),
+                })
+                continue
+
+            raise TypeError(
+                f"dashboard column at index {idx} must be a built-in name string "
+                "or {'label': ..., 'data': ...}"
+            )
+
+        return tuple(normalized)
 
     def _inject_notify(self, job) -> None:
         """Wire the tui_notify callback into a Wave-aware job."""

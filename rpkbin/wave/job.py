@@ -39,6 +39,7 @@ import logging
 import signal
 import threading
 import time
+import traceback
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
@@ -46,9 +47,29 @@ from rpkbin.job_manager import CmdJob as _CmdJob, FuncJob as _FuncJob
 
 logger = logging.getLogger(__name__)
 SLOW_PARSER_WARNING_S = 1.0
+_EXCEPTION_TRACEBACK_LIMIT = 6
+_EVENT_LINE_SNIPPET_LIMIT = 240
 
 if TYPE_CHECKING:
     from rpkbin.wave.hook import Hook
+
+
+def _short_log_line(line: str) -> str:
+    text = line.replace("\r", "\\r").replace("\n", "\\n")
+    if len(text) <= _EVENT_LINE_SNIPPET_LIMIT:
+        return text
+    return text[: _EVENT_LINE_SNIPPET_LIMIT - 3] + "..."
+
+
+def _format_parser_exception_event(fn: Callable[[str], dict], line: str, exc: BaseException) -> str:
+    tb = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__, limit=_EXCEPTION_TRACEBACK_LIMIT)
+    ).rstrip()
+    return (
+        f"Parser {fn!r} raised {type(exc).__name__}: {exc}\n"
+        f"Line: {_short_log_line(line)!r}\n"
+        f"Traceback:\n{tb}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -441,11 +462,11 @@ class WaveJobMixin:
                     )
                 if result:
                     updates.update(result)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Parser %r raised an exception (ignored).", fn)
                 # Surface the failure as a job event for TUI visibility.
                 try:
-                    self.emit("parser_error", f"Parser {fn!r} raised an exception (see log)", source="system")
+                    self.emit("parser_error", _format_parser_exception_event(fn, line, exc), source="system")
                 except Exception:
                     pass
         if updates:

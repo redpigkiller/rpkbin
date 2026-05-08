@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 import logging
+from itertools import islice
 from abc import ABC, abstractmethod
 from collections import deque
 from typing import Any, Callable, Literal, Pattern
@@ -204,6 +205,27 @@ class Job(ABC):
             if n <= 0:
                 return []
             return list(self._output_buffer)[-n:]
+
+    def log_snapshot_since(self, last_total: int) -> tuple[int, list[str]]:
+        """Return log lines emitted after *last_total* and the current total.
+
+        ``_total_log_lines`` is cumulative, while ``_output_buffer`` is bounded.
+        If the requested cursor is older than the retained buffer, the returned
+        lines start at the oldest retained line. Callers should keep the returned
+        total as their next cursor.
+        """
+        with self._lock:
+            total = self._total_log_lines
+            if last_total >= total:
+                return total, []
+            buffered = len(self._output_buffer)
+            if buffered == 0:
+                return total, []
+
+            oldest_seq = total - buffered + 1
+            start_seq = max(last_total + 1, oldest_seq)
+            start_idx = max(0, start_seq - oldest_seq)
+            return total, list(islice(self._output_buffer, start_idx, None))
 
     def _emit_line(self, line: str) -> None:
         """Called by subclasses to append output lines and trigger matchers/cbs."""

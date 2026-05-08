@@ -27,6 +27,7 @@ import logging
 import re
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
@@ -36,6 +37,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 HookAction = Callable[["WaveJobMixin", dict], None]
 SLOW_HOOK_ACTION_WARNING_S = 1.0
+_EXCEPTION_TRACEBACK_LIMIT = 6
+
+
+def _format_hook_exception_event(hook: "Hook", exc: BaseException) -> str:
+    tb = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__, limit=_EXCEPTION_TRACEBACK_LIMIT)
+    ).rstrip()
+    return (
+        f"Hook type={hook.when.type!r}, policy={hook.policy!r}, action={hook.action!r} "
+        f"raised {type(exc).__name__}: {exc}\n"
+        f"Traceback:\n{tb}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +174,7 @@ class Hook:
                     self.when.type,
                     dt,
                 )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Hook action raised an exception (ignored). "
                 "Hook type=%s, policy=%s.",
@@ -171,7 +184,7 @@ class Hook:
             # Events panel even when the log console is not being watched.
             if hasattr(job, "emit"):
                 try:
-                    job.emit("hook_error", f"Hook type={self.when.type!r} raised an exception (see log)", source="system")
+                    job.emit("hook_error", _format_hook_exception_event(self, exc), source="system")
                 except Exception:
                     pass
 

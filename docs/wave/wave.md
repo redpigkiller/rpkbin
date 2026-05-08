@@ -597,33 +597,34 @@ It is built with [Textual](https://github.com/Textualize/textual) and requires
 ### Layout
 
 ```
-┌─ WAVE ─ my_flow.py ──────────── 2/8 running  ✓1 done  ●3 pending  ✗0 failed ─┐
-│ [DASHBOARD] [JOB DETAIL] [SYSTEM LOG] [HELP]                                   │
-│─────────────────────────────────────────────────────────────────────────────── │
-│  Name          Status     Elapsed   Progress  Result  Tags │ build  [0f3a21b9] │
-│▶ build         RUNNING    00:02:30   42%               gpu │ INFO compile...   │
-│  lint          DONE       00:01:12            PASS          │ WARN retry...     │
-│  test-unit     PENDING                                 test│                  │
-├─ wave>  _                       [Tab: autocomplete]  [Enter: submit]           │
-│ [F1] Dashboard  [F2] Job Detail  [F3] System Log  [Ctrl+C] Quit               │
+┌─ WAVE ─ my_flow.py ───── 2/8 running  OK 1 done  WAIT 3 pending  FAIL 0 failed ─┐
+│ [DASHBOARD] [JOB DETAIL] [SYSTEM LOG] [HELP]                                     │
+│─────────────────────────────────────────────────────────────────────────────────│
+│  Name          Status     Elapsed   Progress  Exit Code  Tags │ build [0f3a21b9]│
+│▶ build         RUNNING    00:02:30   42%                  gpu │ INFO compile... │
+│  lint          DONE       00:01:12             0              │ WARN retry...   │
+│  test-unit     PENDING                                      test│               │
+├─ wave>  _                        [Tab: autocomplete]  [Enter: submit]           │
+│ [F1] Dashboard  [F2] Job Detail  [F3] System Log  [Ctrl+C] Quit                 │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tabs
 
 - **DASHBOARD** — split view with a live job table on the left and a log preview for the highlighted job on the right.
-  - Table columns: Name / Status / Elapsed / Progress / Result / Tags.
+  - Default table columns: Name / ID / Status / Elapsed / Progress / Retries / Exit Code / Tags.
+  - Dashboard columns can be customized from the wave file with `session.configure_tui(...)`.
   - Elapsed is updated every second for running jobs.
   - The right-side log preview follows the highlighted row, so you can scan logs without entering JOB DETAIL.
   - Press Enter on any row to open that job in **JOB DETAIL**.
 - **JOB DETAIL** — full-page split view for one selected job.
-  - Header: current job name, position, status, elapsed time, progress, and detail navigation hints.
+  - Header: current job name, position, status, elapsed time, progress, exit code when available, and detail navigation hints.
   - Left 60%: streaming log output (append-only, no flicker).
   - Right 40%: four sub-tabs:
     - **INFO** — compact job metadata, including id, status, state, skip flag, and stop policy.
-    - **DATA** — key/value table of `job.peek_data()`, updated by upsert.
-    - **EVENTS** — user-emitted events (`source="user"`), grouped by tag.
-    - **SYSTEM** — system-emitted events (`source="system"`), e.g. `parser_error`, `hook_error`.
+    - **DATA** — key/value table of `job.peek_data()`, updated by upsert. Empty jobs show `(no parsed data)`.
+    - **EVENTS** — user-emitted events (`source="user"`) in chronological order.
+    - **SYSTEM** — system-emitted events (`source="system"`), e.g. `parser_error`, `hook_error`; parser/hook errors are highlighted in red and include exception details.
 - **SYSTEM LOG** — session-level events and the output of all command-bar commands.
 - **HELP** — inline keyboard shortcut and command reference.
 
@@ -632,6 +633,27 @@ It is built with [Textual](https://github.com/Textualize/textual) and requires
 1. **Move the DASHBOARD highlight** — preview that job's log on the right side of F1.
 2. **Enter key on DASHBOARD row** — switch directly to JOB DETAIL for that job.
 3. **Command bar** — type `show <job>`, `logs <job>`, `data <job>`, or `events <job>` to switch and load any job by name, full id, or unique id prefix.
+
+### Dashboard Columns
+
+Use `session.configure_tui(...)` in the wave file to keep the dashboard focused
+on the fields that matter for your flow:
+
+```python
+session.configure_tui(dashboard_columns=[
+    "name",
+    "status",
+    {"label": "Final", "data": "FINAL_RESULT"},
+    "exit_code",
+    "tags",
+])
+```
+
+Built-in columns are `name`, `id`, `status`, `elapsed`, `progress`, `retries`,
+`exit_code`, and `tags`. Parsed-data columns use
+`{"label": "...", "data": "KEY"}` and render the current value from
+`job.peek_data()`. Unknown built-ins or malformed column specs fail early with a
+clear exception when the wave file is loaded.
 
 ### Command Bar
 
@@ -690,7 +712,7 @@ inspect results before leaving with `exit`.
 - `status`
   - print a table of all jobs
 - `show <job>`
-  - print a compact summary for one job
+  - print a compact summary for one job, including exit code, short error text, and parser/hook error counts when present
 - `logs <job> [n]`
   - print the last `n` log lines, default `50`
 - `data <job>`
@@ -833,6 +855,7 @@ For jobs without graceful stop support:
 | Method | Description |
 | --- | --- |
 | `session.configure(max_workers=..., resources=..., log_dir=..., timeout=...)` | Configure the Wave session before it starts. `timeout` is a session-wide time limit. |
+| `session.configure_tui(dashboard_columns=...)` | Configure TUI presentation. Dashboard columns support built-ins plus parsed-data columns such as `{"label": "Final", "data": "FINAL_RESULT"}`. |
 | `session.add(job, timeout=None)` | Register a job. If already started, dispatch immediately. `timeout` is only supported for Wave jobs; plain scheduler jobs will issue a warning and ignore it. **Note**: Raises `RuntimeError` if called after session finalization. |
 | `session.emit(tag, message)` / `session.peek_events()` | Append and inspect batch-level events. User-created events are marked with `source="user"`; Wave's own lifecycle events use `source="system"`. |
 | `session.pause()` / `session.resume()` | Pause or resume the job manager's dispatch loop. |
@@ -931,7 +954,7 @@ It provides a stable snapshot with fields such as:
 | Problem | Cause & Solution |
 |---|---|
 | Parser didn't fire | Confirm the job is a `CmdJob`, the log line actually matches, and the parser returns a non-empty `dict`. |
-| Where are hook/parser errors? | Wave emits `parser_error` / `hook_error` events. Check `job.peek_events()` or the TUI SYSTEM sub-tab. |
+| Where are hook/parser errors? | Wave emits `parser_error` / `hook_error` events with exception type, message, input/action context, and a short traceback. Check `job.peek_events()`, `show <job>`, or the TUI SYSTEM sub-tab. |
 | `stop -g` says unsupported | The job has no `set_stop_policy(...)` configured. |
 
 ### Results & Exit Code
