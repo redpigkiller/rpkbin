@@ -156,7 +156,15 @@ class CommandInput(Input):
             if verb in _WAVE_JOB_COMMANDS and hasattr(self.app, "_session"):
                 prefix = parts[1]
                 job_names = [j.name for j in self.app._session.jobs()]
-                matches = [n for n in job_names if n.startswith(prefix)]
+                candidates = list(job_names)
+                # Include '.' as current-detail-job shorthand when in JOB DETAIL context
+                if (
+                    hasattr(self.app, "_detail_job")
+                    and self.app._detail_job is not None
+                    and ".".startswith(prefix)
+                ):
+                    candidates.insert(0, ".")
+                matches = [n for n in candidates if n.startswith(prefix)]
                 if len(matches) == 1:
                     name = matches[0]
                     quoted = f'"{name}"' if " " in name else name
@@ -167,6 +175,33 @@ class CommandInput(Input):
                     if cp and cp != prefix:
                         quoted = f'"{cp}"' if " " in cp else cp
                         self.value = f"{verb} {quoted}"
+                        self.cursor_position = len(self.value)
+        elif len(parts) == 3:
+            verb = parts[0].lower()
+            current = parts[2]
+            job_name = parts[1]
+            quoted_job = f'"{job_name}"' if " " in job_name else job_name
+            # key <job> <key-name> — complete terminal key names
+            if verb == "key":
+                matches = [k for k in _KEY_COMPLETIONS if k.startswith(current)]
+                if len(matches) == 1:
+                    self.value = f"{verb} {quoted_job} {matches[0]} "
+                    self.cursor_position = len(self.value)
+                elif len(matches) > 1:
+                    cp = find_common_prefix(matches)
+                    if cp and cp != current:
+                        self.value = f"{verb} {quoted_job} {cp}"
+                        self.cursor_position = len(self.value)
+            # signal <job> <signal-name> — complete signal names
+            elif verb == "signal":
+                matches = [s for s in _SIGNAL_COMPLETIONS if s.startswith(current)]
+                if len(matches) == 1:
+                    self.value = f"{verb} {quoted_job} {matches[0]} "
+                    self.cursor_position = len(self.value)
+                elif len(matches) > 1:
+                    cp = find_common_prefix(matches)
+                    if cp and cp != current:
+                        self.value = f"{verb} {quoted_job} {cp}"
                         self.cursor_position = len(self.value)
 
 
@@ -184,9 +219,16 @@ _HELP_TEXT = """\
   [cyan][ ][/cyan]              Previous / next job in Job Detail
   [cyan]{ }[/cyan]              Previous / next running job in Job Detail
   [cyan]UP / DOWN[/cyan] (in CMD) Browse command history
-  [cyan]Tab[/cyan]   (in CMD) Auto-complete commands and job names
+  [cyan]Tab[/cyan]   (in CMD) Auto-complete commands, job names, key/signal args
   [cyan]Shift + Drag[/cyan]     Select text (Right-click or Ctrl+Shift+C to copy, NEVER Ctrl+C)
   [cyan]Ctrl+C[/cyan]           Quit (Safe: warns if jobs are active. Double-tap to force quit)
+
+[bold green]Terminal Shortcuts (TERMINAL sub-tab, PTY jobs only)[/bold green]
+  [cyan]F8[/cyan]               Focus Command Bar and pre-fill [dim]input . [/dim]
+  [cyan]F9[/cyan]               Send Ctrl-C (\\x03) to the current PTY job via terminal
+  [cyan]F10[/cyan]              Send Ctrl-D (\\x04) to the current PTY job via terminal
+  [dim]Note: F9/F10 only activate when JOB DETAIL → TERMINAL tab is open.[/dim]
+  [dim]For OS signals, use: signal . SIGTERM[/dim]
 
 [bold green]Command Bar (wave>)[/bold green]
   [cyan]help[/cyan]                    Show this reference
@@ -205,13 +247,30 @@ _HELP_TEXT = """\
   [cyan]cancel --all[/cyan]            Force-cancel all active jobs
   [cyan]cancel --group <tag>[/cyan]    Force-cancel all active jobs with a tag
   [cyan]skip   <job>[/cyan]            Skip a pending job
-  [cyan]input  <job> <text>[/cyan]     Send stdin text (\\\\n \\\\r \\\\t supported)
-  [cyan]signal <job> <sig>[/cyan]      Send OS signal (e.g. SIGINT)
+  [cyan]rerun  <job>[/cyan]            Rerun a job (creates a new instance)
+  [cyan]input  <job> <text>[/cyan]     Write text to a running job's stdin (data channel)
+  [cyan]key    <job> <key>[/cyan]      Send terminal control key to a PTY job
+                              [dim]ctrl-c[/dim]  terminal interrupt byte (\\x03)
+                              [dim]ctrl-d[/dim]  EOF byte (\\x04)
+                              [dim]ctrl-z[/dim]  suspend byte (\\x1a)
+                              [dim]enter[/dim]   carriage return
+                              [dim]tab[/dim]     tab character
+                              For OS signals, use [cyan]signal[/cyan] instead.
+  [cyan]signal <job> <sig>[/cyan]      Deliver an OS signal to a running job's process
+                              This is a real OS signal (not a terminal key).
+                              For terminal control keys, use [cyan]key[/cyan] instead.
+                              [dim]SIGINT[/dim]  OS-level interrupt
+                              [dim]SIGTERM[/dim] request graceful termination
+                              [dim]SIGKILL[/dim] force kill (cannot be caught)
+                              [dim]SIGUSR1[/dim] user-defined signal 1
+                              [dim]SIGUSR2[/dim] user-defined signal 2
   [cyan]exit[/cyan]                    Leave TUI when no active jobs remain
   [cyan]exit   --stop[/cyan]           Stop active jobs gracefully, then leave
   [cyan]exit   --force[/cyan]          Force-kill active jobs, then leave
 
-[dim]Note: <job> may be a unique name or job id. Names with spaces must be quoted.[/dim]
+[dim]Note: <job> may be a unique name, job id, or the special shorthand [bold cyan].[/bold cyan] which
+refers to the job currently open in JOB DETAIL (TUI only).
+Names with spaces must be quoted, e.g. logs "my job".[/dim]
 """
 
 
@@ -231,10 +290,18 @@ _STATUS_COLOR: dict[str, str] = {
 # the current tab and sees a Toast.  All other commands (display-oriented like
 # 'logs', 'status', or unknown verbs whose error we want the user to read)
 # fall through to System Log so the output is clearly visible.
-_OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", "cancel", "input", "signal"})
+_OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", "cancel", "rerun", "input", "key", "signal"})
 
-_WAVE_COMMANDS: list[str] = ["help", "status", "show", "logs", "data", "events", "pause", "resume", "stop", "skip", "cancel", "input", "signal", "watch", "exit"]
-_WAVE_JOB_COMMANDS: set[str] = {"show", "logs", "data", "events", "stop", "skip", "cancel", "input", "signal"}
+_WAVE_COMMANDS: list[str] = ["help", "status", "show", "logs", "data", "events", "pause", "resume", "stop", "skip", "cancel", "rerun", "input", "key", "signal", "watch", "exit"]
+_WAVE_JOB_COMMANDS: set[str] = {"show", "logs", "data", "events", "stop", "skip", "cancel", "rerun", "input", "key", "signal"}
+
+# Dot-expandable commands: verbs that take a job identifier at parts[1]
+# (after optional leading flags). Used by _expand_dot_in_parts.
+_DOT_JOB_CMDS: frozenset[str] = frozenset(_WAVE_JOB_COMMANDS)
+
+# Key / signal completion lists (shared with runner._WaveCompleter via runner module)
+_KEY_COMPLETIONS: list[str] = ["ctrl-c", "ctrl-d", "ctrl-z", "ctrl-\\", "enter", "tab"]
+_SIGNAL_COMPLETIONS: list[str] = ["SIGINT", "SIGTERM", "SIGKILL", "SIGUSR1", "SIGUSR2"]
 
 _DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
     {"type": "builtin", "key": "name"},
@@ -249,6 +316,57 @@ _DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
 
 _DATA_SNAPSHOT_FAILED = object()
 _DATA_EMPTY_ROW_KEY = "__wave_empty_data__"
+
+
+def _expand_dot_in_parts(
+    parts: list[str],
+    detail_job_id: str | None,
+) -> tuple[list[str] | None, str | None]:
+    """Expand '.' to the current JOB DETAIL job id in *parts*.
+
+    Only meaningful in TUI context.  Headless REPL never calls this.
+
+    Returns
+    -------
+    (expanded_parts, None)
+        When '.' is found and successfully expanded, OR when '.' is absent
+        (parts returned unchanged).
+    (None, error_message)
+        When '.' is found but *detail_job_id* is None (no job open).
+    """
+    if not parts:
+        return parts, None
+
+    verb = parts[0].lower()
+    if verb not in _DOT_JOB_CMDS:
+        return parts, None  # verb doesn't take a job identifier
+
+    # Determine the job-identifier position for this verb.
+    # Most verbs: parts[1].
+    # 'stop' with leading flags (-g, -f, --graceful, --force): parts[2].
+    job_idx: int
+    if verb in ("stop", "cancel") and len(parts) >= 2 and parts[1].startswith("-"):
+        if parts[1] in ("--all", "--group"):
+            return parts, None  # these flags do not take a job identifier
+        job_idx = 2  # e.g. stop -g <job>
+    else:
+        job_idx = 1  # all other job commands
+
+    if job_idx >= len(parts):
+        return parts, None  # not enough args to have a job identifier yet
+
+    if parts[job_idx] != ".":
+        return parts, None  # no dot to expand
+
+    if detail_job_id is None:
+        return None, (
+            "[Wave] '.' means the current JOB DETAIL job; "
+            "open a job detail first."
+        )
+
+    new_parts = list(parts)
+    new_parts[job_idx] = detail_job_id
+    return new_parts, None
 
 
 def _fmt_elapsed(seconds: float | None) -> str:
@@ -325,6 +443,14 @@ TabbedContent { height: 1fr; }
 #system-job-log { height: 1fr; }
 #session-log { height: 1fr; }
 
+#terminal-container { height: 1fr; }
+#terminal-view { height: 1fr; }
+#terminal-hint {
+    height: auto;
+    padding: 0 1;
+    background: $surface;
+}
+
 #info-panel {
     height: 1fr;
     padding: 1 2;
@@ -365,6 +491,9 @@ class WaveApp(App):
         Binding("f2", "goto_tab('tab-detail')", "Job Detail", show=True),
         Binding("f3", "goto_tab('tab-system')", "System Log", show=True),
         Binding("f4", "goto_tab('tab-help')", "Help", show=True),
+        Binding("f8", "terminal_focus_input", "Terminal Input", show=False),
+        Binding("f9", "terminal_send_ctrl_c", "Ctrl-C", show=False),
+        Binding("f10", "terminal_send_ctrl_d", "Ctrl-D", show=False),
         Binding(":", "focus_cmd", "Command", show=False),
         Binding("escape", "unfocus_cmd", "Exit Command", show=False),
         Binding("left_square_bracket", "previous_detail_job", "Previous Job", show=False),
@@ -402,6 +531,11 @@ class WaveApp(App):
         self._log_total_sync_count: int = 0
         self._session_event_count: int = 0
         self._events_sync_count: int = 0
+
+        # Terminal tab sync counter (separate from log view)
+        self._terminal_sync_count: int = 0
+        # Guard: whether the TERMINAL tab empty/unsupported message has been shown
+        self._terminal_empty_shown: bool = False
 
         # Double-tap quit tracking
         self._last_ctrl_c: float = 0.0
@@ -458,6 +592,10 @@ class WaveApp(App):
                                     yield RichLog(id="events-log", markup=True, max_lines=2000)
                                 with TabPane("SYSTEM", id="detail-system"):
                                     yield RichLog(id="system-job-log", markup=True, max_lines=2000)
+                                with TabPane("TERMINAL", id="detail-terminal"):
+                                    with Vertical(id="terminal-container"):
+                                        yield RichLog(id="terminal-view", markup=False, highlight=False, max_lines=5000)
+                                        yield Static("", id="terminal-hint", markup=True)
 
             # -- Tab 3: SYSTEM LOG (session-level events + command output)
             with TabPane("SYSTEM LOG", id="tab-system"):
@@ -944,6 +1082,8 @@ class WaveApp(App):
         # Reset all incremental sync counters for the new job
         self._log_total_sync_count = 0
         self._events_sync_count = 0
+        self._terminal_sync_count = 0
+        self._terminal_empty_shown = False
         self._data_row_keys = set()
         self._data_cache = {}
 
@@ -956,6 +1096,8 @@ class WaveApp(App):
         self.query_one("#system-job-log", RichLog).clear()
         self.query_one("#data-table", DataTable).clear()
         self.query_one("#info-panel", Static).update("")
+        self.query_one("#terminal-view", RichLog).clear()
+        self._update_terminal_hint(job)
 
         if job is not None:
             self._refresh_right_panels(job)
@@ -1102,6 +1244,32 @@ class WaveApp(App):
 
             self._events_sync_count = len(all_events)
 
+        # -- TERMINAL tab (append-only PTY output) -------------------------
+        terminal_view = self.query_one("#terminal-view", RichLog)
+        if getattr(job, "supports_pty", False):
+            if getattr(job, "_total_log_lines", 0) > 0 and self._terminal_empty_shown:
+                terminal_view.clear()
+                self._terminal_empty_shown = False
+            # PTY job: sync PTY output lines
+            self._terminal_sync_count = self._sync_job_log(
+                job,
+                terminal_view,
+                self._terminal_sync_count,
+            )
+            # Show one-time empty message if no output yet
+            if self._terminal_sync_count == 0 and not self._terminal_empty_shown:
+                terminal_view.write("No PTY output yet.")
+                self._terminal_empty_shown = True
+        else:
+            # Non-PTY job: show one-time unsupported message, never sync batch logs
+            if not self._terminal_empty_shown:
+                terminal_view.write(
+                    "Terminal view is available for PtyCmdJob only.\n"
+                    "This job uses PIPE-based I/O (batch mode).\n"
+                    "Use the Logs view (left panel) for batch output."
+                )
+                self._terminal_empty_shown = True
+
     def _refresh_data_panel(self, job) -> None:
         """Refresh the DATA sub-tab, including a clear empty state."""
         data = getattr(job, "peek_data", lambda: {})()
@@ -1143,6 +1311,32 @@ class WaveApp(App):
             else:
                 dt.add_row(sk, sv, key=sk)
                 self._data_row_keys.add(sk)
+
+    def _update_terminal_hint(self, job) -> None:
+        """Update the TERMINAL tab hint text based on job type."""
+        hint = self.query_one("#terminal-hint", Static)
+        if job is None:
+            hint.update("[dim]No job selected.[/dim]")
+            return
+        if getattr(job, "supports_pty", False):
+            name = _escape_markup(str(job.name))
+            hint.update(
+                f"[dim]PTY terminal for[/dim] [bold]{name}[/bold]  "
+                "[dim]Shortcuts:[/dim]  "
+                "[cyan]F8[/cyan] [dim]input[/dim]  "
+                "[cyan]F9[/cyan] [dim]Ctrl-C[/dim]  "
+                "[cyan]F10[/cyan] [dim]Ctrl-D[/dim]  "
+                "[dim]│[/dim]  "
+                "[cyan]key . ctrl-c[/cyan]  "
+                "[cyan]input . \\<text>[/cyan]"
+            )
+        else:
+            hint.update(
+                "[dim]Terminal view is available for PtyCmdJob only. "
+                "This job uses PIPE-based I/O (batch mode).[/dim]"
+            )
+
+
 
     def _focus_active_panel(self) -> None:
         """Route keyboard focus to the primary widget of the active tab."""
@@ -1208,6 +1402,22 @@ class WaveApp(App):
             )
             return
 
+        # --- TUI-only: expand '.' to the current JOB DETAIL job id ---
+        detail_job_id = (
+            str(self._detail_job.id)
+            if self._detail_job is not None and hasattr(self._detail_job, "id")
+            else None
+        )
+        parts, dot_error = _expand_dot_in_parts(parts, detail_job_id)
+        if dot_error is not None:
+            # '.' was used but no job is open in JOB DETAIL
+            session_log = self.query_one("#session-log", RichLog)
+            session_log.write(f"[dim]$ {_escape_markup(line)}[/dim]")
+            session_log.write(_escape_markup(dot_error))
+            self.notify(dot_error.replace("[Wave] ", ""), severity="error", timeout=4)
+            self.query_one("#main-tabs", TabbedContent).active = "tab-system"
+            return
+
         verb = parts[0].lower()
 
         # -- TUI-specific routing: commands that have dedicated views ----
@@ -1217,6 +1427,29 @@ class WaveApp(App):
 
         if verb == "watch":
             self.notify("'watch' is not needed in TUI mode - the Dashboard auto-refreshes.", severity="warning")
+            return
+
+        if verb == "rerun" and len(parts) >= 2:
+            # Capture the job list before rerun to find the new job after.
+            jobs_before = set(self._job_row_key(j) for j in self._session.jobs())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _handle_cmd(parts, self._session)
+            output = buf.getvalue().strip()
+            if output:
+                session_log = self.query_one("#session-log", RichLog)
+                session_log.write(f"[dim]$ {_escape_markup(line)}[/dim]")
+                for out_line in output.splitlines():
+                    session_log.write(_escape_markup(out_line))
+            first_line = output.splitlines()[0] if output else "Done."
+            if first_line.startswith("[Wave] "):
+                first_line = first_line[7:]
+            self.notify(first_line, timeout=3)
+            # Open the newly created job in JOB DETAIL.
+            for j in reversed(self._session.jobs()):
+                if self._job_row_key(j) not in jobs_before:
+                    self._open_detail_for(j)
+                    break
             return
 
         if verb in ("logs", "show", "data", "events") and len(parts) >= 2:
@@ -1324,3 +1557,63 @@ class WaveApp(App):
     def action_next_running_detail_job(self) -> None:
         """Open the next running job in JOB DETAIL."""
         self._navigate_detail_job(1, status="running")
+
+    # ------------------------------------------------------------------
+    # TERMINAL sub-tab shortcut actions (F8 / F9 / F10)
+    # ------------------------------------------------------------------
+
+    def _is_terminal_shortcut_context(self) -> bool:
+        """Return True when F8/F9/F10 shortcuts should be active.
+
+        All of these must hold:
+        - JOB DETAIL tab is open
+        - TERMINAL sub-tab is active
+        - A job is selected in JOB DETAIL
+        - Command bar is not focused
+        """
+        if not self._is_detail_tab_active():
+            return False
+        try:
+            if self.query_one("#detail-tabs", TabbedContent).active != "detail-terminal":
+                return False
+        except Exception:
+            return False
+        if self._detail_job is None:
+            return False
+        focused = self.focused
+        return getattr(focused, "id", None) != "cmd-input"
+
+    def action_terminal_focus_input(self) -> None:
+        """F8: Focus the command bar and pre-fill 'input . ' (TERMINAL shortcut)."""
+        if not self._is_terminal_shortcut_context():
+            return
+        cmd_input = self.query_one("#cmd-input", CommandInput)
+        cmd_input.focus()
+        cmd_input.value = "input . "
+        cmd_input.cursor_position = len(cmd_input.value)
+
+    def action_terminal_send_ctrl_c(self) -> None:
+        """F9: Send Ctrl-C (\\x03) to the current PTY job via terminal (TERMINAL shortcut)."""
+        self._terminal_send_key("ctrl-c")
+
+    def action_terminal_send_ctrl_d(self) -> None:
+        """F10: Send Ctrl-D (\\x04) to the current PTY job via terminal (TERMINAL shortcut)."""
+        self._terminal_send_key("ctrl-d")
+
+    def _terminal_send_key(self, key: str) -> None:
+        """Send *key* to the current detail job's PTY (used by F9/F10)."""
+        if not self._is_terminal_shortcut_context():
+            return
+        job = self._detail_job
+        if job is None:
+            return
+        name = _escape_markup(str(getattr(job, "name", job)))
+        if not getattr(job, "supports_pty", False) or not hasattr(job, "send_key"):
+            self.notify("Terminal keys require PtyJob.", severity="warning", timeout=3)
+            return
+        try:
+            job.send_key(key)
+            label = {"ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D"}.get(key, key)
+            self.notify(f"{label} sent to '{name}'.", timeout=2)
+        except (ValueError, RuntimeError) as exc:
+            self.notify(f"Key send failed: {exc}", severity="error", timeout=4)

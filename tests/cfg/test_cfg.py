@@ -238,7 +238,7 @@ class TestLinearize:
             "S", "A1", "A2", "An", "B1", "B2", "Bn", "C1", "E",
         ]
 
-    def test_trace_order_uses_insertion_order_for_irreducible_tie_break(self):
+    def test_trace_order_schedules_reducible_loop_header_before_body(self):
         cfg = CFG()
         for bid in ("S", "B", "A"):
             cfg.add_block(bid)
@@ -247,7 +247,36 @@ class TestLinearize:
         cfg.add_edge("B", "A")
         cfg.set_entry("S")
 
-        assert cfg.linearize("trace") == ["S", "B", "A"]
+        assert cfg.linearize("trace") == ["S", "A", "B"]
+
+    def test_trace_order_does_not_block_loop_header_on_back_edge(self):
+        cfg = CFG()
+        for bid in ("entry", "A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("entry", "A")
+        cfg.add_edge("A", "B", cond="loop", priority=0)
+        cfg.add_edge("A", "C", cond="done", priority=1)
+        cfg.add_edge("B", "A")
+        cfg.set_entry("entry")
+
+        assert cfg.linearize("trace") == ["entry", "A", "B", "C"]
+
+    def test_trace_order_force_pick_makes_progress_when_no_node_ready(self):
+        cfg = CFG()
+        for bid in ("S", "A", "B", "C", "D"):
+            cfg.add_block(bid)
+        cfg.add_edge("S", "A")
+        cfg.add_edge("S", "B")
+        cfg.add_edge("A", "C")
+        cfg.add_edge("B", "C")
+        cfg.add_edge("C", "D")
+        cfg.add_edge("D", "B")
+        cfg.set_entry("S")
+
+        order = cfg.linearize("trace")
+        assert order[0] == "S"
+        assert set(order) == {"S", "A", "B", "C", "D"}
+        assert len(order) == 5
 
 
 class TestEdgeCases:
@@ -657,6 +686,31 @@ class TestCFGDisplay:
         cfg = make_linear()
         cfg.add_block("orphan", label="ORPHAN")
         assert "orphan" in cfg.format()
+
+    def test_format_can_hide_unreachable_blocks(self):
+        cfg = make_linear()
+        cfg.add_block("orphan", label="ORPHAN")
+        text = cfg.format(show_unreachable=False)
+        assert "orphan" not in text
+
+    def test_format_can_start_from_specific_block(self):
+        cfg = make_linear()
+        text = cfg.format(start="bb1", show_unreachable=False)
+        assert "bb1" in text
+        assert "end" in text
+        assert not any(line.startswith("▶entry") or line.startswith(" entry") for line in text.splitlines())
+
+    def test_format_can_show_meta(self):
+        cfg = CFG()
+        cfg.add_block("a", label="A", meta={"src": "sheet1"})
+        cfg.set_entry("a")
+        text = cfg.format(show_meta=True)
+        assert "Meta" in text
+        assert "sheet1" in text
+
+    def test_format_unknown_start_raises(self):
+        with pytest.raises(KeyError, match="ghost"):
+            make_linear().format(start="ghost")
 
     def test_format_edge_priority_shown(self):
         """Non-zero priority appears as '(N)' in the edge column."""

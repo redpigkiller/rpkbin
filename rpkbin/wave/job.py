@@ -1,4 +1,4 @@
-﻿"""
+"""
 job.py - WaveJobMixin, WaveCmdJob, WaveFuncJob.
 
 WaveJobMixin adds the following on top of scheduler's CmdJob / FuncJob:
@@ -36,6 +36,7 @@ Hook trigger wiring
 from __future__ import annotations
 
 import logging
+import re
 import signal
 import threading
 import time
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 SLOW_PARSER_WARNING_S = 1.0
 _EXCEPTION_TRACEBACK_LIMIT = 6
 _EVENT_LINE_SNIPPET_LIMIT = 240
+_RERUN_SUFFIX_RE = re.compile(r"(?:#rerun\d+)+$")
 
 if TYPE_CHECKING:
     from rpkbin.wave.hook import Hook
@@ -98,6 +100,7 @@ class WaveJobMixin:
         self._tui_notify: Callable[["WaveJobMixin"], None] | None = None
         self._wave_skipped: bool = False
         self._stop_policy: dict[str, object | None] = {
+            "graceful_key": None,
             "graceful_input": None,
             "graceful_signal": None,
             "graceful_timeout": 5.0,
@@ -111,6 +114,11 @@ class WaveJobMixin:
         self._on_done_cb_injected: bool = False
         self._on_fail_cb_injected: bool = False
         self._on_retry_cb_injected: bool = False
+
+    @staticmethod
+    def _rerun_base_name(name: str) -> str:
+        """Return *name* without trailing rerun suffixes."""
+        return _RERUN_SUFFIX_RE.sub("", name)
 
     # ------------------------------------------------------------------
     # Public API
@@ -283,21 +291,28 @@ class WaveJobMixin:
     def set_stop_policy(
         self,
         *,
+        graceful_key: str | None = None,
         graceful_input: str | None = None,
         graceful_signal: int | None = None,
         graceful_timeout: float = 5.0,
     ) -> None:
         """Declare how this job should be stopped gracefully.
 
-        ``graceful_input`` is written to stdin first when available.
-        ``graceful_signal`` is sent next when available.
-        If the job is still RUNNING after ``graceful_timeout`` seconds,
-        a force-cancel is issued unless the caller requested graceful-only.
+        Stop sequence (each step is attempted if configured; failures
+        are logged and the next step is tried):
+
+        1. ``graceful_key`` — terminal control key written to the PTY
+           (e.g. ``"ctrl-c"``).  Only meaningful for ``PtyCmdJob``.
+        2. ``graceful_input`` — text written to stdin / PTY master.
+        3. ``graceful_signal`` — OS signal sent to the process group.
+        4. Wait ``graceful_timeout`` seconds.
+        5. Force-cancel if still running (unless graceful-only).
         """
         if graceful_timeout <= 0:
             raise ValueError("graceful_timeout must be > 0")
         with self._wave_lock:
             self._stop_policy = {
+                "graceful_key": graceful_key,
                 "graceful_input": graceful_input,
                 "graceful_signal": graceful_signal,
                 "graceful_timeout": graceful_timeout,
@@ -327,6 +342,19 @@ class WaveJobMixin:
         policy = self.peek_stop_policy()
         sent_graceful = False
 
+        # Step 1: terminal control key (PTY jobs)
+        graceful_key = policy.get("graceful_key")
+        if isinstance(graceful_key, str) and graceful_key:
+            if hasattr(self, "send_key"):
+                try:
+                    self.send_key(graceful_key)  # type: ignore[attr-defined]
+                    sent_graceful = True
+                except (RuntimeError, ValueError):
+                    logger.warning("Graceful key ignored for job %r: send_key unavailable or failed.", self.name)  # type: ignore[attr-defined]
+            else:
+                logger.warning("Graceful key ignored for job %r: job does not support send_key().", self.name)  # type: ignore[attr-defined]
+
+        # Step 2: stdin / data channel input
         graceful_input = policy.get("graceful_input")
         if isinstance(graceful_input, str) and graceful_input:
             if hasattr(self, "send_input"):
@@ -336,6 +364,7 @@ class WaveJobMixin:
                 except RuntimeError:
                     logger.warning("Graceful input ignored for job %r: stdin unavailable.", self.name)  # type: ignore[attr-defined]
 
+        # Step 3: OS signal
         graceful_signal = policy.get("graceful_signal")
         if isinstance(graceful_signal, int):
             if hasattr(self, "send_signal"):
@@ -579,6 +608,43 @@ class WaveCmdJob(WaveJobMixin, _CmdJob):
         # different handling (e.g. stdin "quit" command).
         self.set_stop_policy(graceful_signal=signal.SIGINT)
 
+    def _clone_for_rerun(self, rerun_number: int) -> "WaveCmdJob":
+        """Create a new WaveCmdJob with the same configuration for rerun.
+
+        Clones static parameters, parsers (stateless callables — direct
+        reuse), hooks (via ``hook.copy()`` for fresh firing state), and
+        the stop policy.  The new job gets a fresh UUID and a name
+        suffixed with ``#rerunN``.
+        """
+        base_name = self._rerun_base_name(self.name)
+        new = WaveCmdJob(
+            f"{base_name}#rerun{rerun_number}",
+            self.cmd,
+            cwd=self.cwd,
+            env=dict(self.env) if self.env else None,
+            priority=self.priority,
+            max_retries=self.max_retries,
+            resources=dict(self.resources) if self.resources else None,
+            max_log_lines=self._output_buffer.maxlen,
+            flush_tokens=self.flush_tokens,
+            tags=self.tags,
+        )
+        with self._wave_lock:
+            parsers = list(self._wave_parsers)
+            hooks = list(self._wave_hooks)
+        for fn in parsers:
+            new.add_parser(fn)
+        for hook in hooks:
+            new.add_hook(hook.copy())
+        policy = self.peek_stop_policy()
+        new.set_stop_policy(
+            graceful_key=policy.get("graceful_key"),
+            graceful_input=policy.get("graceful_input"),
+            graceful_signal=policy.get("graceful_signal"),
+            graceful_timeout=policy.get("graceful_timeout", 5.0),
+        )
+        return new
+
 
 class WaveFuncJob(WaveJobMixin, _FuncJob):
     """FuncJob with Wave observability: events, hooks (on_done/on_fail/elapsed).
@@ -593,4 +659,36 @@ class WaveFuncJob(WaveJobMixin, _FuncJob):
         super().__init__(*args, **kwargs)
         self._wave_init()
 
+    def _clone_for_rerun(self, rerun_number: int) -> "WaveFuncJob":
+        """Create a new WaveFuncJob with the same configuration for rerun.
 
+        Clones static parameters, the callable and its arguments, parsers,
+        hooks (via ``hook.copy()``), and the stop policy.
+        """
+        base_name = self._rerun_base_name(self.name)
+        new = WaveFuncJob(
+            f"{base_name}#rerun{rerun_number}",
+            self.func,
+            self.args,
+            dict(self.kwargs),
+            priority=self.priority,
+            max_retries=self.max_retries,
+            resources=dict(self.resources) if self.resources else None,
+            max_log_lines=self._output_buffer.maxlen,
+            tags=self.tags,
+        )
+        with self._wave_lock:
+            parsers = list(self._wave_parsers)
+            hooks = list(self._wave_hooks)
+        for fn in parsers:
+            new.add_parser(fn)
+        for hook in hooks:
+            new.add_hook(hook.copy())
+        policy = self.peek_stop_policy()
+        new.set_stop_policy(
+            graceful_key=policy.get("graceful_key"),
+            graceful_input=policy.get("graceful_input"),
+            graceful_signal=policy.get("graceful_signal"),
+            graceful_timeout=policy.get("graceful_timeout", 5.0),
+        )
+        return new

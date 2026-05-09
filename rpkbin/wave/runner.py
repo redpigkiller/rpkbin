@@ -45,8 +45,21 @@ _HELP_TEXT = r"""Wave headless commands
   cancel --all                  - force-cancel all active jobs
   cancel --group <tag>          - force-cancel all active jobs with a tag
   skip <job>                    - skip a pending job (marks as skipped)
-  input <job> <text>            - send stdin text to a running job (\n, \r, \t supported)
-  signal <job> <sig>            - send an OS signal (e.g. SIGINT) to a running job
+  rerun <job>                   - rerun a job (creates a new instance)
+  input <job> <text>            - write text to a running job's stdin (data channel)
+  key <job> <key>               - send a terminal control key to a PTY job
+                                  Supported keys: ctrl-c, ctrl-d, ctrl-z, enter, tab
+                                  This writes the control byte to the PTY master.
+                                  For OS signals, use 'signal' instead.
+  signal <job> <sig>            - deliver an OS signal to a running job's process
+                                  This sends a real OS signal (kill -<sig> <pid>).
+                                  For terminal control keys, use 'key' instead.
+                                  Common signals:
+                                    SIGINT   - interrupt (OS-level, not Ctrl+C key)
+                                    SIGTERM  - request graceful termination
+                                    SIGKILL  - force kill (cannot be caught)
+                                    SIGUSR1  - user-defined signal 1
+                                    SIGUSR2  - user-defined signal 2
   watch status                  - refresh status until Ctrl+C
   watch logs <name> [n]         - refresh log tail until Ctrl+C
   exit                          - leave REPL when no jobs are active
@@ -58,8 +71,16 @@ Names containing spaces must be quoted, e.g. logs "job with spaces"
 """
 
 
+_KEY_COMPLETIONS: list[str] = ["ctrl-c", "ctrl-d", "ctrl-z", "ctrl-\\", "enter", "tab"]
+_SIGNAL_COMPLETIONS: list[str] = ["SIGINT", "SIGTERM", "SIGKILL", "SIGUSR1", "SIGUSR2"]
+
+
 class _WaveCompleter:
-    """Minimal prompt_toolkit completer for Wave REPL."""
+    """Minimal prompt_toolkit completer for Wave REPL.
+
+    Note: the '.' shorthand for the current JOB DETAIL job is TUI-only and
+    is deliberately NOT included here — it has no meaning in headless context.
+    """
 
     def __init__(self, sess) -> None:
         self._sess = sess
@@ -81,7 +102,8 @@ class _WaveCompleter:
 
         commands = [
             "help", "status", "show", "logs", "data", "events",
-            "pause", "resume", "stop", "skip", "cancel", "input", "signal", "watch", "exit",
+            "pause", "resume", "stop", "skip", "cancel", "rerun",
+            "input", "key", "signal", "watch", "exit",
         ]
 
         if len(parts) <= 1:
@@ -93,7 +115,7 @@ class _WaveCompleter:
 
         first = parts[0]
         current = parts[-1]
-        job_cmds = {"show", "logs", "data", "events", "stop", "skip", "cancel", "input", "signal"}
+        job_cmds = {"show", "logs", "data", "events", "stop", "skip", "cancel", "rerun", "input", "key", "signal"}
 
         if first == "watch" and len(parts) == 2:
             for cmd in ("status", "logs"):
@@ -117,6 +139,20 @@ class _WaveCompleter:
             for flag in ("--stop", "--force"):
                 if flag.startswith(current):
                     yield Completion(flag, start_position=-len(current))
+            return
+
+        # key <job> <key-name> — third argument: terminal key names
+        if first == "key" and len(parts) == 3:
+            for k in _KEY_COMPLETIONS:
+                if k.startswith(current):
+                    yield Completion(k, start_position=-len(current))
+            return
+
+        # signal <job> <signal-name> — third argument: signal names
+        if first == "signal" and len(parts) == 3:
+            for s in _SIGNAL_COMPLETIONS:
+                if s.startswith(current):
+                    yield Completion(s, start_position=-len(current))
             return
 
         expect_job = first in job_cmds or (first == "watch" and len(parts) >= 3 and parts[1] == "logs")
@@ -308,8 +344,14 @@ def _handle_cmd(parts: list[str], sess) -> str:
         elif verb == "cancel":
             _cmd_cancel(parts, sess)
 
+        elif verb == "rerun":
+            _cmd_rerun(parts, sess)
+
         elif verb == "input":
             _cmd_input(parts, sess)
+
+        elif verb == "key":
+            _cmd_key(parts, sess)
 
         elif verb == "signal":
             _cmd_signal(parts, sess)
@@ -678,6 +720,29 @@ def _cmd_skip(name: str, sess) -> None:
         print(f"[Wave] {name!r} is not a Wave job; use 'cancel' to force-cancel it.")
 
 
+def _cmd_rerun(parts: list[str], sess) -> None:
+    name = _parse_job_name(parts, 1, "rerun <job>")
+    if name is None:
+        return
+    job = _find_job(name, sess)
+    if job is None:
+        return
+    if not hasattr(job, "_clone_for_rerun"):
+        print(f"[Wave] {name!r} does not support rerun.")
+        return
+
+    # Determine the rerun number from the original base job name, even when
+    # the selected job is itself a rerun.
+    base_name = job._rerun_base_name(job.name)
+    existing = [j.name for j in sess.jobs()]
+    rerun_n = 1
+    while f"{base_name}#rerun{rerun_n}" in existing:
+        rerun_n += 1
+
+    new_job = job._clone_for_rerun(rerun_n)
+    sess.add(new_job)
+    print(f"[Wave] Rerun created: {new_job.name!r}")
+
 def _cmd_input(parts: list[str], sess) -> None:
     if len(parts) != 3:
         print("Usage: input <job_name> <text>")
@@ -721,7 +786,11 @@ def _cmd_signal(parts: list[str], sess) -> None:
         return
     sig_value = _resolve_signal(parts[2])
     if sig_value is None:
-        print(f"[Wave] Unknown signal {parts[2]!r}.")
+        available = sorted(
+            s.name for s in signal.Signals
+            if not s.name.startswith("SIG_")
+        )
+        print(f"[Wave] Unknown signal {parts[2]!r}. Available: {', '.join(available)}")
         return
     try:
         job.send_signal(sig_value)
@@ -729,6 +798,32 @@ def _cmd_signal(parts: list[str], sess) -> None:
         print(f"[Wave] {exc}")
         return
     print(f"[Wave] Signal {parts[2]!r} sent to {parts[1]!r}.")
+
+
+def _cmd_key(parts: list[str], sess) -> None:
+    if len(parts) != 3:
+        print("Usage: key <job_name> <key>")
+        print("  Supported keys: ctrl-c, ctrl-d, ctrl-z, enter, tab")
+        print("  This sends a terminal control key to a PTY job.")
+        print("  For OS signals, use 'signal' instead.")
+        return
+    job = _find_job(parts[1], sess)
+    if job is None:
+        return
+    if not hasattr(job, "send_key"):
+        print(f"[Wave] {parts[1]!r} does not support terminal keys.")
+        print("  'key' is only available for PtyCmdJob (PTY mode).")
+        print("  For OS signals, use: signal <job> SIGINT")
+        return
+    try:
+        job.send_key(parts[2])
+    except ValueError as exc:
+        print(f"[Wave] {exc}")
+        return
+    except RuntimeError as exc:
+        print(f"[Wave] {exc}")
+        return
+    print(f"[Wave] Key {parts[2]!r} sent to {parts[1]!r}.")
 
 
 def _cmd_watch(parts: list[str], sess) -> None:

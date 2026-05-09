@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_wave.py — Unit tests for rpkbin.wave (bottom layer: job, hook, session).
 
 Coverage targets
@@ -627,6 +627,211 @@ class TestWaveCmdJob:
         assert not job.is_skipped
 
 
+# ---------------------------------------------------------------------------
+# Hook.copy() tests
+# ---------------------------------------------------------------------------
+
+class TestHookCopy:
+    def test_copy_returns_fresh_instance(self):
+        original = Hook(when=Hook.log_matches(r"X"), action=lambda j, ctx: None, policy="always", n=1)
+        copied = original.copy()
+        assert copied is not original
+        assert copied.when is original.when
+        assert copied.action is original.action
+        assert copied.policy == original.policy
+        assert copied.n == original.n
+
+    def test_copy_resets_exhausted_state(self):
+        count = [0]
+        original = Hook(when=Hook.log_matches(r"X"), action=lambda j, ctx: count.__setitem__(0, count[0] + 1), policy="once")
+        original._fire(None, {})
+        assert count[0] == 1
+        # Original is exhausted
+        original._fire(None, {})
+        assert count[0] == 1
+
+        copied = original.copy()
+        copied._fire(None, {})
+        assert count[0] == 2  # fresh copy fires again
+
+    def test_copy_resets_fire_count(self):
+        count = [0]
+        original = Hook(
+            when=Hook.log_matches(r"X"),
+            action=lambda j, ctx: count.__setitem__(0, count[0] + 1),
+            policy="every_n",
+            n=3,
+        )
+        # Fire 3 times: action triggers on 3rd
+        for _ in range(3):
+            original._fire(None, {})
+        assert count[0] == 1
+
+        # Copy should have fire_count reset to 0
+        copied = original.copy()
+        # Fire copy 3 times: action triggers on 3rd
+        for _ in range(3):
+            copied._fire(None, {})
+        assert count[0] == 2  # triggered once more via the copy
+
+    def test_copy_does_not_affect_original(self):
+        count = [0]
+        original = Hook(when=Hook.log_matches(r"X"), action=lambda j, ctx: count.__setitem__(0, count[0] + 1), policy="once")
+        copied = original.copy()
+        copied._fire(None, {})
+        assert count[0] == 1
+        assert copied._exhausted is True
+        assert original._exhausted is False  # original untouched
+
+
+# ---------------------------------------------------------------------------
+# Rerun tests (_clone_for_rerun)
+# ---------------------------------------------------------------------------
+
+class TestRerun:
+    def test_clone_cmd_job_copies_static_params(self):
+        job = WaveCmdJob("sim", "make -j4", cwd="/proj", env={"FOO": "bar"},
+                         priority=5, max_retries=2, tags={"rtl", "sim"})
+        clone = job._clone_for_rerun(1)
+        assert clone.name == "sim#rerun1"
+        assert clone.cmd == "make -j4"
+        assert clone.cwd == "/proj"
+        assert clone.env == {"FOO": "bar"}
+        assert clone.env is not job.env  # deep copy
+        assert clone.priority == 5
+        assert clone.max_retries == 2
+        assert clone.tags == frozenset({"rtl", "sim"})
+
+    def test_clone_copies_parsers(self):
+        def my_parser(line):
+            if "RESULT=" in line:
+                return {"result": line.split("=")[1]}
+            return {}
+
+        job = WaveCmdJob("test", "echo RESULT=42")
+        job.add_parser(my_parser)
+        clone = job._clone_for_rerun(1)
+
+        # Simulate log line on clone
+        clone._handle_log(clone, "RESULT=42")
+        assert clone.parsed_data.get("result") == "42"
+        # Original is unaffected
+        assert job.parsed_data.get("result") is None
+
+    def test_clone_hooks_have_fresh_state(self):
+        """policy='once' hook fires again on cloned job."""
+        fired_on = []
+        hook = Hook(
+            when=Hook.on_done(),
+            action=lambda j, ctx: fired_on.append(j.name),
+            policy="once",
+        )
+        job = WaveFuncJob("original", lambda: "ok")
+        job.add_hook(hook)
+        _run(job)
+        assert "original" in fired_on
+
+        clone = job._clone_for_rerun(1)
+        _run(clone)
+        assert "original#rerun1" in fired_on  # fires again on clone
+
+    def test_clone_preserves_stop_policy(self):
+        job = WaveCmdJob("test", "echo hi")
+        job.set_stop_policy(graceful_input="quit\n", graceful_signal=signal.SIGTERM, graceful_timeout=10.0)
+        clone = job._clone_for_rerun(1)
+        assert clone.peek_stop_policy() == {
+            "graceful_key": None,
+            "graceful_input": "quit\n",
+            "graceful_signal": signal.SIGTERM,
+            "graceful_timeout": 10.0,
+        }
+
+    def test_clone_generates_unique_id(self):
+        job = WaveCmdJob("test", "echo hi")
+        clone = job._clone_for_rerun(1)
+        assert clone.id != job.id
+
+    def test_rerun_name_format(self):
+        job = WaveCmdJob("compile", "make")
+        c1 = job._clone_for_rerun(1)
+        c2 = job._clone_for_rerun(2)
+        assert c1.name == "compile#rerun1"
+        assert c2.name == "compile#rerun2"
+
+    def test_clone_func_job(self):
+        results = []
+        def my_func(x, y):
+            results.append(x + y)
+            return x + y
+
+        job = WaveFuncJob("add", my_func, (3, 4))
+        clone = job._clone_for_rerun(1)
+        assert clone.name == "add#rerun1"
+        assert clone.func is my_func
+        assert clone.args == (3, 4)
+        _run(clone)
+        assert results == [7]
+
+    def test_clone_func_job_copies_kwargs_dict(self):
+        kwargs = {"value": 1}
+        job = WaveFuncJob("kw", lambda **kw: kw, kwargs=kwargs)
+        clone = job._clone_for_rerun(1)
+
+        assert clone.kwargs == {"value": 1}
+        assert clone.kwargs is not job.kwargs
+        clone.kwargs["value"] = 2
+        assert job.kwargs == {"value": 1}
+
+    def test_rerun_via_session_add(self):
+        fired = threading.Event()
+        job = WaveCmdJob("test", "echo hello")
+        job.add_hook(Hook(when=Hook.on_done(), action=lambda j, ctx: fired.set()))
+        sess = Session()
+        sess.add(job)
+        sess._start()
+        sess._stop()
+        assert job.status == DONE
+        assert fired.is_set()
+
+        # Rerun
+        fired.clear()
+        clone = job._clone_for_rerun(1)
+        sess2 = Session()
+        sess2.add(clone)
+        sess2._start()
+        sess2._stop()
+        assert clone.status == DONE
+        assert fired.is_set()  # hook fired again on clone
+
+    def test_rerun_of_rerun_increments_correctly(self):
+        job = WaveCmdJob("sim", "echo hi")
+        c1 = job._clone_for_rerun(1)
+        assert c1.name == "sim#rerun1"
+        # Rerunning the rerun should use the base name, not nest suffixes.
+        c2 = c1._clone_for_rerun(2)
+        assert c2.name == "sim#rerun2"
+
+    def test_rerun_command_uses_next_base_name_without_duplicates(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveCmdJob("sim", "echo hi")
+        sess.add(job)
+
+        _handle_cmd(["rerun", "sim"], sess)
+        _handle_cmd(["rerun", "sim#rerun1"], sess)
+        _handle_cmd(["rerun", "sim#rerun1"], sess)
+
+        assert [j.name for j in sess.jobs()] == [
+            "sim",
+            "sim#rerun1",
+            "sim#rerun2",
+            "sim#rerun3",
+        ]
+        out = capsys.readouterr().out
+        assert "sim#rerun3" in out
+
+
 class TestStopPolicy:
     def test_set_stop_policy_snapshot(self):
         job = WaveFuncJob("test", lambda: None)
@@ -636,6 +841,7 @@ class TestStopPolicy:
             graceful_timeout=7.0,
         )
         assert job.peek_stop_policy() == {
+            "graceful_key": None,
             "graceful_input": "exit\n",
             "graceful_signal": signal.SIGINT,
             "graceful_timeout": 7.0,
@@ -1285,7 +1491,7 @@ class TestHeadlessCommandParsing:
         completer = _WaveCompleter(sess)
 
         assert [item.text for item in completer.get_completions(_Doc("pa"), None)] == ["pause"]
-        assert [item.text for item in completer.get_completions(_Doc("re"), None)] == ["resume"]
+        assert [item.text for item in completer.get_completions(_Doc("re"), None)] == ["resume", "rerun"]
 
     def test_pause_resume_commands_dispatch(self, capsys):
         from rpkbin.wave.runner import _handle_cmd

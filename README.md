@@ -31,7 +31,15 @@ Intelligently extract data from complex spreadsheets.
 
 [Learn more in Excel Extractor Documentation](docs/excel_extractor/excel_extractor.md)
 
-### 4. Job Manager
+### 4. CFG — Low-Level Control Flow Toolkit
+Organize assembly-like flows, FSM state machines, and MCU branch layouts before writing target-specific code.
+- **Explicit Flow Modeling**: Build labeled blocks and priority-ordered branch edges without committing to an ISA.
+- **Readable Checks & Layouts**: Validate common control-flow mistakes, print text layouts, and choose deterministic block emission order.
+- **Program Call Checks**: Mark subroutine calls with `CallRef` and check call depth against hardware or coding-rule limits.
+
+[Learn more in CFG Documentation](docs/cfg/cfg.md)
+
+### 5. Job Manager
 A practical, cross-platform job manager for running shell commands and Python callables safely in parallel.
 
 - **One API for Common Workloads**: Run local functions (`FuncJob`) and CLI tasks (`CmdJob`) with the same manager.
@@ -40,7 +48,7 @@ A practical, cross-platform job manager for running shell commands and Python ca
 
 [Job Manager Documentation](docs/job_manager/job_manager.md)
 
-### 5. Wave — Batch Workflow Orchestration with Live TUI
+### 6. Wave — Batch Workflow Orchestration with Live TUI
 A workflow layer built on top of Job Manager for declaring and observing long-running batch flows.
 
 - **Wave File Pattern**: Declare jobs, parsers, and hooks in a plain Python file. Run it with `rpk-wave run`.

@@ -1,6 +1,7 @@
-﻿"""MCU analysis and linearization for CFG Programs.
+"""MCU-oriented checks and layout recipes for CFG Programs.
 
-This module targets MCU (Microcontroller) programs where:
+This module is a target-neutral recipe layer for MCU (Microcontroller) style
+flows. It assumes:
 
 * The *main* CFG represents a sequential instruction flow with an explicit
   halt/exit block (``set_exit()`` must be called on the main CFG).
@@ -9,8 +10,8 @@ This module targets MCU (Microcontroller) programs where:
 * Control flow is expressed via CFG edges (the DSL/frontend emits if/else
   constructs; explicit jump instructions are **not** in the instruction list).
 
-MCU-specific analysis
----------------------
+MCU-specific checks
+-------------------
 ``find_dead_loops``
     SCCs that are reachable from the program entry but have no path to the
     MCU's exit block.  Unlike FSM sink detection, MCU infinite loops are
@@ -20,13 +21,13 @@ MCU-specific analysis
     Removes blocks unreachable from the entry.  Operates in-place on a
     single CFG and returns the list of removed blocks.
 
-MCU linearization
------------------
+MCU layout
+----------
 ``linearize`` returns an :class:`MCULayout`, an ordered list of
 :class:`MCUSlot` objects.  Each slot records whether a jump instruction must
 be emitted after the block's instructions (because the next physical block is
-not the natural fallthrough target).  The caller uses this to emit the correct
-assembly without the tool needing to know the target ISA's jump mnemonic.
+not the natural fallthrough target).  The caller uses these layout hints while
+choosing target-specific branch mnemonics, condition forms, and jump syntax.
 """
 
 from __future__ import annotations
@@ -214,13 +215,12 @@ def linearize(
     ``needs_jump`` / ``jump_target`` so that the caller knows where to insert
     an explicit jump instruction:
 
-    * If a block's sole unconditional successor is the **next** slot in the
-      layout, the block *falls through* — ``needs_jump=False``.
-    * Otherwise (the successor is not adjacent, or the block has multiple /
-      no successors) the block needs an explicit jump to its unconditional
-      successor target — ``needs_jump=True``.
-    * Blocks with zero successors (e.g. the halt block) or multiple
-      conditional successors do not emit a trailing jump.
+    * If a block's default/unconditional successor is the **next** slot in the
+      layout, that edge is physical fallthrough — ``needs_jump=False``.
+    * If the default/unconditional successor is not adjacent, the block needs
+      an explicit jump to that target — ``needs_jump=True``.
+    * Blocks with no default/unconditional successor, including terminal blocks
+      and purely conditional branch blocks, do not emit a trailing jump.
 
     Args:
         program:  The program whose main CFG is linearized.

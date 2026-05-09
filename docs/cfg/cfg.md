@@ -1,400 +1,441 @@
-# rpkbin.cfg — Control Flow Graph IR
+# rpkbin.cfg — Low-Level Control Flow Toolkit
 
 [![English](https://img.shields.io/badge/Language-English-blue.svg)](cfg.md)
 [![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](cfg_zh.md)
 
-`rpkbin.cfg` is a generic Control Flow Graph (CFG) IR library.
-It provides a common graph representation, structural analysis algorithms,
-interprocedural liveness analysis, and optional domain adapters for FSM- and
-MCU-like workflows.
+`rpkbin.cfg` helps low-level and assembly-oriented code authors organize
+control flow before writing or emitting target-specific code.
 
-The tool covers everything from building a CFG to detecting logical errors and
-generating an ordered code layout without assuming any proprietary instruction
-set, register model, or hardware target.
+It models blocks, branches, labels, and optional subroutine calls; checks common
+flow-shape mistakes; prints readable text layouts; and produces deterministic
+block orders for FSM, MCU, and hand-written assembly workflows.
+
+It deliberately does not parse assembly, allocate registers, understand an ISA,
+or decide calling conventions. Those target-specific choices stay in your
+frontend or emitter.
 
 ---
 
 ## Quick Start
 
-### 1. Build a CFG
+### 1. Build a Flow
 
-Start with the generic `CFG` class. A block is a node, and an edge is a
-possible control-flow transition. `cond=None` means an unconditional/default
-transition; any other value is a condition string owned by your frontend or
-emitter.
+A `CFG` is made of blocks and directed edges. Edge conditions are plain strings
+owned by your DSL, spreadsheet parser, flowchart importer, or emitter.
+`cond=None` means the default or unconditional path.
 
 ```python
-from rpkbin.cfg import CFG, Assignment
+from rpkbin.cfg import CFG
 
 cfg = CFG()
-cfg.add_block("entry", label="ENTRY", insns=[Assignment("x", [])])
+cfg.add_block("entry", label="ENTRY")
 cfg.add_block("work", label="WORK")
 cfg.add_block("done", label="DONE")
+
 cfg.add_edge("entry", "work", cond="start", priority=0)
 cfg.add_edge("entry", "done", cond=None, priority=1)
 cfg.add_edge("work", "done")
+
 cfg.set_entry("entry")
 cfg.set_exit("done")
-
-print(cfg.validate())       # [] when no structural issues are found
-print(cfg.linearize("trace"))
 ```
 
-### 2. Bundle Multiple CFGs
+### 2. Check and Print It
 
-A `Program` bundles related CFGs, such as one entry flow plus callable helper
-flows. It is used by interprocedural analysis and by the optional FSM/MCU
-adapters.
+`validate()` catches common control-flow mistakes that are easy to miss while
+translating a flowchart or planning assembly labels.
 
 ```python
-from rpkbin.cfg import CFG, Assignment, CallRef, Program
+issues = cfg.validate()
+if issues:
+    for issue in issues:
+        print(issue)
 
-# --- Main flow ---
-main = CFG()
-main.add_block("IDLE",  label="IDLE",  insns=[Assignment("x", [])])
-main.add_block("FETCH", label="FETCH", insns=[CallRef("SUB_CHECK")])
-main.add_block("DONE",  label="DONE")
-main.add_edge("IDLE",  "FETCH", cond="start", priority=0)
-main.add_edge("FETCH", "IDLE",  cond="loop",  priority=0)
-main.add_edge("FETCH", "DONE",  cond="halt",  priority=1)
-main.set_entry("IDLE")
-
-# --- Subroutine ---
-sub = CFG()
-sub.add_block("sub_body", insns=[Assignment("y", ["x"])])
-sub.add_block("sub_ret")
-sub.add_edge("sub_body", "sub_ret")
-sub.set_entry("sub_body")
-sub.set_exit("sub_ret")
-
-program = Program(cfgs={"main": main, "SUB_CHECK": sub}, entry_fn="main")
+print(cfg.format())
 ```
 
-### 3. Optional FSM Adapter
+`format()` is the primary display path: a deterministic text table of blocks,
+instruction previews, and outgoing edges. It is meant to be useful in terminals,
+logs, reviews, and tests.
+
+### 3. Pick an Emission Order
+
+`linearize()` returns reachable block ids in an order suitable for code layout.
 
 ```python
-from rpkbin.cfg import fsm
-
-dead   = fsm.find_dead_states(program)          # unreachable states
-sinks  = fsm.find_sink_sccs(program)            # trap cycles
-issues = fsm.check_conditions_complete(program) # states with no default exit
-
-layout = fsm.linearize(program)
-for slot in layout.slots:
-    for edge in slot.exits:   # sorted by priority
-        print(slot.block.id, edge.cond, "->", edge.target)
+order = cfg.linearize("trace")
+print(order)
 ```
 
-### 4. Optional MCU Adapter
+Available strategies:
 
-```python
-from rpkbin.cfg import mcu
+| Strategy | Use When |
+|---|---|
+| `rpo` | You want a stable general-purpose order that handles loops. |
+| `trace` | You want branch chains kept close together for readable emitted code. |
+| `topological` | You know the flow is a DAG and want a strict topological order. |
 
-dead_loops = mcu.find_dead_loops(program, exit_block="HALT")
-removed    = mcu.dead_code_elimination(main)
-
-layout = mcu.linearize(program)
-for slot in layout.slots:
-    emit_block(slot.block)
-    if slot.needs_jump:
-        emit_jump(slot.jump_target)  # insert explicit JMP / branch
-```
-
-### 5. Interprocedural Liveness
-
-```python
-from rpkbin.cfg.analysis import interprocedural_liveness, check_call_depth
-
-check_call_depth(program, max_depth=2)          # raises on cycle or excess depth
-
-results = interprocedural_liveness(program)
-r = results["main"]
-print(r.live_in["FETCH"])                       # frozenset of live variables
-print(r.is_live_at_exit("IDLE", "x"))           # True / False
-```
+All strategies start at `start` or the CFG entry and return only reachable
+blocks. Use `find_unreachable()` to inspect blocks that are not part of the
+main flow.
 
 ---
 
-## API Reference
+## Product Shape
 
-### Instruction Types
+The package is organized around four layers:
 
-Every element in `BasicBlock.insns` must be one of:
+| Layer | Purpose |
+|---|---|
+| Core Flow | Build, check, display, and order one control-flow graph. |
+| Program Calls | Mark subroutine calls and check call depth. |
+| Domain Recipes | Apply common FSM and MCU flow checks/layouts. |
+| Graph Utilities | Reachability, loops, dominance, merging, and deeper analysis. |
 
-| Type | Key Fields | `def` | `use` |
-|---|---|---|---|
-| `Assignment(lhs, rhs, raw="")` | `lhs: str`, `rhs: list[str]` | `{lhs}` | `set(rhs)` |
-| `CallRef(callee, raw="")` | `callee: str` | from callee summary | from callee summary |
-| `OtherInsn(raw="", defs=set(), uses=set())` | `defs`, `uses` | `defs` | `uses` |
-
-> `Assignment.rhs` must contain **variable names only** — constants must be excluded by the frontend.
-> `CallRef.callee` must match a key in `Program.cfgs`.
+Most users start with Core Flow. Add the other layers only when your workflow
+needs them.
 
 ---
+
+## Core Flow
 
 ### `BasicBlock`
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | Unique identifier, used as the graph node key |
-| `label` | `str | None` | Human-readable name (from Visio label or DSL) |
-| `insns` | `list[Insn]` | Ordered instructions (`Assignment | CallRef | OtherInsn`) |
-| `meta` | `dict` | Arbitrary metadata |
+| `id` | `str` | Unique graph key. Stable ids are best for tests and generated code. |
+| `label` | `str | None` | Human-readable label, often the assembly label or flowchart state name. |
+| `insns` | `list[Insn]` | Optional instruction annotations. Core flow features do not require them. |
+| `meta` | `dict` | Source location, spreadsheet row, flowchart id, or other caller-owned data. |
 
----
+You can create blocks through `CFG.add_block(...)` or pass a pre-built
+`BasicBlock` object.
+
+```python
+from rpkbin.cfg import BasicBlock, CFG
+
+cfg = CFG()
+cfg.add_block("idle", label="IDLE", meta={"page": "main"})
+cfg.add_block(BasicBlock("halt", label="HALT"))
+```
 
 ### `CFG`
 
-Core CFG class backed by `networkx.DiGraph`.
-
-#### Construction
+Construction:
 
 ```python
 cfg = CFG()
-cfg.add_block("entry", label="IDLE", insns=[Assignment("x", [])])
-cfg.add_block("end")
-cfg.add_edge("entry", "end", cond="done", priority=0)
-cfg.set_entry("entry")
-cfg.set_exit("end")   # optional; required only by analyses that need an exit
-
-# You can also pass a pre-built BasicBlock directly
-bb = BasicBlock("aux", label="AUX", meta={"src": "visio"})
-cfg.add_block(bb)
+cfg.add_block("idle", label="IDLE")
+cfg.add_block("work", label="WORK")
+cfg.add_edge("idle", "work", cond="go", priority=0)
+cfg.set_entry("idle")
 ```
 
-> `add_block` raises `ValueError` on duplicate `id`.
-> `add_block(BasicBlock)` must not be combined with `label`/`insns`/`meta` arguments.
-> `add_edge` raises `KeyError` if either block does not exist.
-> `cond=None` means an unconditional (default/else) edge.
-
-#### Mutation
+Access:
 
 ```python
-removed_bb   = cfg.remove_block("aux")          # removes block + all incident edges, returns BasicBlock
-removed_attrs = cfg.remove_edge("entry", "end")  # removes edge, returns attrs dict
+cfg.get_block("idle")          # BasicBlock
+cfg.blocks                     # list[BasicBlock], insertion order
+cfg.edges                      # list[(src, dst, attrs)]
+cfg.entry / cfg.exit           # BasicBlock or None
+cfg.successors("idle")         # list[BasicBlock]
+cfg.predecessors("work")       # list[BasicBlock]
+cfg.out_edges("idle")          # sorted by priority
+cfg.in_edges("work")           # sorted by priority
+cfg.edge_attrs("idle", "work") # dict copy
+"idle" in cfg                  # True / False
+len(cfg)                       # number of blocks
 ```
 
-> `remove_block` automatically clears entry / exit designation if the removed block was entry or exit.
-
-#### Access & Display
+Mutation:
 
 ```python
-cfg.get_block("entry")           # BasicBlock
-cfg.blocks                        # list[BasicBlock] in insertion order
-cfg.edges                         # list[(src, dst, attrs)] all edges
-cfg.entry / cfg.exit              # BasicBlock or None
-cfg.predecessors("end")           # list[BasicBlock]
-cfg.successors("entry")           # list[BasicBlock]
-cfg.edge_attrs("entry", "end")    # dict
-cfg.out_edges("entry")            # list[(src, dst, attrs)] sorted by priority
-cfg.in_edges("end")               # list[(src, dst, attrs)] sorted by priority
-cfg.has_edge("entry", "end")      # True / False
-"entry" in cfg                    # True / False
-len(cfg)                          # number of blocks
-
-print(repr(cfg))                  # CFG(2 blocks, 1 edges, entry='entry')
-print(cfg.format())               # Multi-line human-readable table of blocks & edges
+removed_block = cfg.remove_block("work")
+removed_attrs = cfg.remove_edge("idle", "work")
+clone = cfg.copy()
 ```
 
-#### Copy & Validation
+Validation:
 
 ```python
-clone = cfg.copy()               # deep copy (mutating clone does not affect the original)
-
-issues = cfg.validate()          # list[str], empty = no issues
-# Checks: entry/exit existence, isolated blocks,
-#         duplicate priorities, multiple default outgoing edges,
-#         single conditional edge with no default path
+issues = cfg.validate()
 ```
 
-#### Traversal
+The generic validator checks:
+
+- missing or invalid entry/exit references
+- isolated blocks
+- duplicate outgoing priorities
+- multiple default outgoing edges
+- a single conditional outgoing edge with no default path
+
+### Edge Meaning
+
+`add_edge(src, dst, cond=None, priority=0, **attrs)` stores a control-flow
+transition.
+
+| Attribute | Meaning |
+|---|---|
+| `cond=None` | Default, else, or unconditional path. |
+| `cond="..."` | A caller-owned condition string. The CFG does not interpret it. |
+| `priority` | Evaluation order when a block has multiple outgoing edges. Lower runs first. |
+| `**attrs` | Extra caller-owned metadata. |
+
+This keeps the CFG target-neutral: one emitter can turn `cond="start"` into an
+assembly branch, while another can turn it into a table entry or HDL case item.
+
+### Text Display
 
 ```python
-for bb in cfg.dfs():             # depth-first pre-order from entry
-    ...
-for bb in cfg.bfs():             # breadth-first from entry
-    ...
-order = cfg.reverse_postorder()  # RPO, standard for forward dataflow
+print(cfg.format())
+print(cfg)          # same as cfg.format()
 ```
 
-#### Reachability
+`format()` orders blocks by reverse post-order when an entry is set, appends
+unreachable blocks afterward, and lists outgoing edges by priority. Use it as
+the first debugging view before reaching for heavier visualization.
+
+Useful display options:
 
 ```python
-cfg.can_reach("entry", "end")    # True / False
-cfg.find_unreachable()           # list[BasicBlock]
-cfg.find_sccs()                  # list[list[str]], topological order
+print(cfg.format(start="work", show_unreachable=False))
+print(cfg.format(show_meta=True))
 ```
-
-#### Loop Analysis
-
-```python
-backs = cfg.find_back_edges()     # list[(tail, header)]
-loops = cfg.find_natural_loops()  # list[NaturalLoop]
-# loop.header, loop.body (set[str]), loop.back_edge
-```
-
-#### Dominance
-
-```python
-idom  = cfg.dominators()                       # {node: idom_node}
-ipost = cfg.post_dominators(exit_node="end")   # explicit exit_node required
-tree  = cfg.dominator_tree()                   # networkx DiGraph
-```
-
-#### Linearization
-
-```python
-order = cfg.linearize("rpo")          # handles cycles
-order = cfg.linearize("topological")  # DAG-only; raises ValueError on cycles
-order = cfg.linearize("trace")        # priority-guided trace: keeps branch chains grouped
-# => list[str] of block ids in emission order
-```
-
-> All strategies start from `start` or the CFG entry and return only reachable
-> blocks. Use `find_unreachable()` if you need to inspect orphan/dead blocks.
->
-> The `"trace"` strategy follows edges in priority order, keeping each conditional
-> branch's sub-chain contiguous and deferring common join points — ideal for
-> generating readable code layouts.
-> When multiple deferred nodes are equally valid, insertion order is used as a
-> deterministic tie-breaker.
-
-#### Merging
-
-```python
-from rpkbin.cfg import merge_cfgs
-
-# Unify matching blocks by label across multiple CFGs into a single CFG
-merged = merge_cfgs(flow1, flow2) 
-```
-
-> **Rules**: matching labeled blocks are unified; blocks with instructions override placeholders.
-> The same connecting edge across flows is silently deduplicated.
-> Conflicting attributes or instructions on the same label/edge raise errors (`CFGMergeError`).
-> The `entry` and `exit` fields of the returned CFG are left unset.
 
 ---
 
-### `Program`
+## Program Calls
+
+Use `Program` and `CallRef` only when you want to describe subroutine
+relationships across multiple CFGs.
 
 ```python
-program = Program(
-    cfgs={"main": main_cfg, "SUB_CHECK": sub_cfg},
-    entry_fn="main",
-)
-program.main             # shorthand for program.cfgs[program.entry_fn]
-program["SUB_CHECK"]     # shorthand for program.cfgs["SUB_CHECK"]
-"SUB_CHECK" in program   # True
-len(program)             # number of functions
-list(program)            # ["main", "SUB_CHECK"]
+from rpkbin.cfg import CFG, CallRef, Program
+from rpkbin.cfg.analysis import build_call_graph, check_call_depth
+
+main = CFG()
+main.add_block("entry", label="ENTRY", insns=[CallRef("SUB_CHECK")])
+main.add_block("done", label="DONE")
+main.add_edge("entry", "done")
+main.set_entry("entry")
+
+sub = CFG()
+sub.add_block("body", label="SUB_CHECK")
+sub.add_block("ret", label="RET")
+sub.add_edge("body", "ret")
+sub.set_entry("body")
+sub.set_exit("ret")
+
+program = Program({"main": main, "SUB_CHECK": sub}, entry_fn="main")
+
+call_graph = build_call_graph(program)
+depth = check_call_depth(program, max_depth=2)
+
+print(program.format())
+print(program)      # same as program.format()
 ```
 
-> `Program` validates on construction:
-> - `cfgs` must not be empty
-> - `entry_fn` must exist in `cfgs`
-> - Every `CallRef.callee` must reference an existing key in `cfgs` (raises `KeyError` otherwise)
+`CallRef("SUB_CHECK")` means "this block calls the CFG named `SUB_CHECK`."
+It does not imply any target calling convention, stack behavior, register
+clobber, or return instruction. It only gives the toolkit enough information to
+answer structure questions such as:
 
-Use `Program` only when you need multiple CFGs or call-aware analysis. For a
-single graph, using `CFG` directly is enough.
+- Who calls whom?
+- Is there recursion?
+- Does the call depth exceed my hardware or coding-rule limit?
+
+`Program` validates on construction:
+
+- `cfgs` must not be empty
+- `entry_fn` must exist in `cfgs`
+- every `CallRef.callee` must match a key in `cfgs`
+
+For a single flow with no call-depth checks, use `CFG` directly.
+
+`Program.format()` accepts the same instruction preview controls as
+`CFG.format()`, can show call sites, and can optionally hide the call graph or
+show only selected functions:
+
+```python
+print(program.format(max_insns=4, max_insn_chars=60))
+print(program.format(show_call_graph=False, fn_names=["main"]))
+print(program.format(show_call_sites=False, show_meta=True))
+```
+
+`Program.validate()` collects structural issues across all CFGs:
+
+```python
+issues = program.validate(max_call_depth=2)
+```
 
 ---
 
-### `rpkbin.cfg.fsm` — FSM Analysis and Linearization
+## Domain Recipes
 
-| Function | Returns | Description |
+The FSM and MCU modules are small, target-neutral recipes built on top of the
+same CFG model.
+
+### FSM
+
+Use `rpkbin.cfg.fsm` when the main flow is a state machine that normally runs
+forever.
+
+```python
+from rpkbin.cfg import fsm
+
+dead_states = fsm.find_dead_states(program)
+sink_cycles = fsm.find_sink_sccs(program)
+missing_defaults = fsm.check_conditions_complete(program)
+layout = fsm.linearize(program, strategy="rpo")
+```
+
+| Function | Returns | Use For |
 |---|---|---|
-| `find_dead_states(program)` | `list[BasicBlock]` | Unreachable from entry |
-| `find_sink_sccs(program)` | `list[list[str]]` | Trap cycles with no path back to entry |
-| `check_conditions_complete(program)` | `list[str]` | States where all exits are conditional |
-| `linearize(program, strategy="rpo")` | `FSMLayout` | Ordered state layout |
+| `find_dead_states(program)` | `list[BasicBlock]` | States unreachable from reset/entry. |
+| `find_sink_sccs(program)` | `list[list[str]]` | Trap cycles that cannot reach reset/entry. |
+| `check_conditions_complete(program)` | `list[str]` | States with only conditional exits and no default path. |
+| `linearize(program, strategy="rpo")` | `FSMLayout` | Ordered state slots and priority-sorted exits. |
+
+FSM sink SCCs are cycles from which the reset state is unreachable. Regular
+loops are fine; trap cycles are suspicious.
+
+### MCU
+
+Use `rpkbin.cfg.mcu` when the main flow is expected to eventually reach a halt
+or exit block.
 
 ```python
-layout = fsm.linearize(program)
-for slot in layout.slots:
-    # slot.block : BasicBlock
-    for edge in slot.exits:   # list[ExitEdge], sorted by priority
-        # edge.priority : int
-        # edge.cond     : str | None  (None = unconditional)
-        # edge.target   : str (block id)
-        ...
+from rpkbin.cfg import mcu
+
+dead_loops = mcu.find_dead_loops(program, exit_block="HALT")
+removed = mcu.dead_code_elimination(program.main)
+layout = mcu.linearize(program, strategy="trace")
 ```
 
-> **FSM sink SCCs**: cycles from which the reset (entry) state is unreachable.
-> An FSM by design loops forever; only sink traps are flagged as bugs.
-
----
-
-### `rpkbin.cfg.mcu` — MCU Analysis and Linearization
-
-| Function | Returns | Description |
+| Function | Returns | Use For |
 |---|---|---|
-| `find_dead_loops(program, exit_block=None)` | `list[list[str]]` | Cycles with no path to `exit_block` |
-| `dead_code_elimination(cfg, start=None)` | `list[BasicBlock]` | Remove unreachable blocks in-place |
-| `linearize(program, strategy="rpo")` | `MCULayout` | Ordered block layout with jump and exit edge info |
+| `find_dead_loops(program, exit_block=None)` | `list[list[str]]` | Reachable cycles with no path to halt/exit. |
+| `dead_code_elimination(cfg, start=None)` | `list[BasicBlock]` | Remove unreachable blocks in place. |
+| `linearize(program, strategy="rpo")` | `MCULayout` | Ordered slots with exit-edge and fallthrough hints. |
+
+`MCULayout` does not emit assembly. It tells your emitter which block comes
+next, which outgoing edge is physical fallthrough, and when an unconditional
+jump is needed. Branch mnemonics, condition inversion, and target-specific
+instruction selection remain the emitter's job.
 
 ```python
-layout = mcu.linearize(program)
 for slot in layout.slots:
-    # slot.block       : BasicBlock
-    # slot.needs_jump  : bool
-    # slot.jump_target : str | None
-    # slot.exits       : list[MCUExitEdge] (full exit edge info)
     emit_block(slot.block)
     for edge in slot.exits:
-        # edge.priority       : int
-        # edge.cond           : str | None
-        # edge.target         : str
-        # edge.is_fallthrough : bool (True only for unconditional + adjacent)
         if edge.cond is not None:
             emit_conditional_branch(edge.cond, edge.target)
     if slot.needs_jump:
         emit_jump(slot.jump_target)
 ```
 
-> MCU infinite loops are always bugs (the machine must eventually reach HALT).
-> `exit_block` defaults to `cfg._exit` if `set_exit()` was called.
-> `is_fallthrough` is `True` only when the edge is the sole unconditional successor
-> **and** it is the physically next slot. Conditional edges are never fallthrough.
+---
+
+## Graph Utilities
+
+These helpers are available when you need deeper graph inspection. They are not
+required for the common build/check/layout workflow.
+
+### Traversal and Reachability
+
+```python
+list(cfg.dfs())
+list(cfg.bfs())
+cfg.reverse_postorder()
+cfg.can_reach("entry", "done")
+cfg.find_unreachable()
+cfg.find_sccs()
+```
+
+### Loops and Dominance
+
+```python
+cfg.find_back_edges()
+cfg.find_natural_loops()
+cfg.dominators()
+cfg.post_dominators(exit_node="done")
+cfg.dominator_tree()
+```
+
+### Merging Labeled Flows
+
+`merge_cfgs()` combines multiple CFGs by unifying blocks that share the same
+non-`None` label. This is useful when separate extracted flow fragments use
+labels as connection points.
+
+```python
+from rpkbin.cfg import merge_cfgs
+
+merged = merge_cfgs(flow1, flow2)
+merged.set_entry("ENTRY")
+```
+
+Rules:
+
+- matching labeled blocks are unified
+- blocks with instructions override placeholder blocks with the same label
+- identical connecting edges are deduplicated
+- conflicting labels, instructions, metadata, or edge attributes raise `CFGMergeError`
+- the merged CFG starts with no entry or exit; set them after merging
+
+### Instruction Annotations and Liveness
+
+Instruction annotations are optional. They are used only by analyses that need
+def/use information.
+
+| Type | Meaning |
+|---|---|
+| `Assignment(lhs, rhs, raw="")` | Defines `lhs` and uses the variables in `rhs`. Constants should be excluded by the frontend. |
+| `CallRef(callee, raw="")` | Marks a call to another CFG in a `Program`. |
+| `OtherInsn(raw="", defs=set(), uses=set())` | Caller-provided def/use annotation for anything else. |
+
+```python
+from rpkbin.cfg import Assignment, OtherInsn
+from rpkbin.cfg.analysis import interprocedural_liveness
+
+bb = cfg.get_block("work")
+bb.insns.append(Assignment("acc", ["sample"], raw="acc = sample"))
+bb.insns.append(OtherInsn(raw="CUSTOM", defs={"flag"}, uses={"acc"}))
+
+results = interprocedural_liveness(program)
+live = results["main"].live_in["work"]
+```
+
+Liveness is structural and annotation-driven. It does not understand ISA
+register aliases, flags, memory aliasing, stack conventions, or implicit
+clobbers unless your frontend records them in `defs` and `uses`.
 
 ---
 
-### `rpkbin.cfg.analysis` — Interprocedural Analysis
+## Non-Goals
 
-| Function | Returns | Description |
-|---|---|---|
-| `build_call_graph(program)` | `nx.DiGraph` | Scans `CallRef`, builds call graph automatically |
-| `check_call_depth(program, max_depth=None)` | `int` | Actual depth; raises on cycle or excess |
-| `interprocedural_liveness(program)` | `dict[str, LivenessResult]` | Bottom-up liveness |
+`rpkbin.cfg` intentionally stays small and target-neutral. It does not:
 
-```python
-results = interprocedural_liveness(program)
-r = results["main"]               # LivenessResult
-r.live_in["FETCH"]                # frozenset
-r.live_out["IDLE"]                # frozenset
-r.is_live_at_entry("FETCH", "x")  # bool
-r.is_live_at_exit("IDLE", "x")    # bool
-```
+- parse assembly source
+- generate final target assembly by itself
+- allocate registers
+- model ISA-specific flags, memory aliasing, stacks, or calling conventions
+- optimize branch forms or instruction selection
+- replace LLVM, a compiler framework, or `networkx`
 
-> Call graph must be a **DAG** (no recursion allowed).
-> Callee summaries are computed bottom-up, so `CallRef` def/use is always accurate.
+The intended boundary is simple: `rpkbin.cfg` makes the control flow clear,
+checkable, and ordered; your domain code decides what each block and condition
+means on the target.
 
 ---
 
 ## Module Layout
 
+```text
+rpkbin/cfg/
+  block.py     BasicBlock plus optional instruction annotations
+  cfg.py       CFG structure, validation, layout, and graph utilities
+  program.py   Program container for multiple CFGs
+  analysis.py  call graph, call depth, and liveness analysis
+  fsm.py       FSM-oriented checks and layout
+  mcu.py       MCU-oriented checks and layout
 ```
-mypkg/cfg/
-  block.py     BasicBlock, Assignment, CallRef, OtherInsn, Insn
-  cfg.py       CFG class -- graph structure and structural analysis
-  program.py   Program container (dict[str, CFG] + entry_fn)
-  analysis.py  build_call_graph, check_call_depth, interprocedural_liveness
-  fsm.py       FSM analyzer + FSMLayout compiler
-  mcu.py       MCU analyzer + MCULayout compiler
-```
-
-| Module | Responsibility |
-|---|---|
-| `cfg.py` | Graph structure, traversal, loop / dominance analysis |
-| `analysis.py` | Call graph + cross-function liveness |
-| `fsm.py` | FSM-specific checks (sink SCCs, condition completeness) and layout |
-| `mcu.py` | MCU-specific checks (dead loops, DCE) and layout |

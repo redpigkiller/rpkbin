@@ -1,4 +1,4 @@
-﻿"""
+"""
 hook.py - Hook and HookWhen definitions for Wave.
 
 A Hook binds a *when* condition (HookWhen) to an *action* callable.
@@ -142,6 +142,16 @@ class Hook:
         self._exhausted = False
         self._fire_count: int = 0
         self._lock = threading.Lock()  # protect once/every_n state from concurrent fires
+
+    def copy(self) -> "Hook":
+        """Return a fresh copy with reset firing state.
+
+        The new Hook shares the same ``when`` and ``action`` references
+        (both are effectively immutable / stateless), but has independent
+        ``_exhausted``, ``_fire_count``, and ``_lock`` state — safe for
+        use on a different job without interfering with the original.
+        """
+        return Hook(self.when, self.action, policy=self.policy, n=self.n)
 
     # ------------------------------------------------------------------
     # Internal trigger
@@ -319,6 +329,62 @@ class Hook:
                 logger.warning(
                     "Hook.action_send_input ignored: job %r does not support send_input().",
                     getattr(job, "name", job),
+                )
+        return _action
+
+    @staticmethod
+    def action_send_key(key: str) -> HookAction:
+        """Send a terminal control key to a PTY job.
+
+        Calls ``job.send_key(key)`` if the job supports it.  Only meaningful
+        for ``PtyCmdJob``; silently warns and does nothing for other job types.
+
+        Unlike ``action_send_input``, this sends a terminal control byte (e.g.
+        ``\\x03`` for Ctrl-C) to the PTY master, which the kernel line
+        discipline translates into the appropriate signal or action for the
+        child's foreground process group.
+
+        Supported keys: ``\"ctrl-c\"``, ``\"ctrl-d\"``, ``\"ctrl-z\"``,
+        ``\"ctrl-\\\\"``, ``\"enter\"``, ``\"tab\"``.
+
+        Parameters
+        ----------
+        key:
+            Name of the terminal control key to send.
+
+        Examples::
+
+            # Gracefully interrupt a PTY job on timeout
+            job.add_hook(Hook(
+                when=Hook.elapsed_exceeds(30),
+                action=Hook.action_send_key("ctrl-c"),
+                policy="once",
+            ))
+
+            # Chain: send ctrl-d then emit an event
+            job.add_hook(Hook(
+                when=Hook.log_matches("DONE"),
+                action=Hook.action_chain(
+                    Hook.action_send_key("ctrl-d"),
+                    Hook.action_emit("eof", "sent EOF to PTY"),
+                ),
+                policy="once",
+            ))
+        """
+        def _action(job, ctx):
+            if not hasattr(job, "send_key"):
+                logger.warning(
+                    "Hook.action_send_key ignored: job %r does not support send_key() "
+                    "(requires PtyCmdJob).",
+                    getattr(job, "name", job),
+                )
+                return
+            try:
+                job.send_key(key)  # type: ignore[attr-defined]
+            except (ValueError, RuntimeError) as exc:
+                logger.warning(
+                    "Hook.action_send_key failed for job %r with key %r: %s",
+                    getattr(job, "name", job), key, exc,
                 )
         return _action
 

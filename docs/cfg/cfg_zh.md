@@ -1,394 +1,402 @@
-# rpkbin.cfg — 控制流圖 IR
+# rpkbin.cfg — 低階控制流工具組
 
 [![English](https://img.shields.io/badge/Language-English-blue.svg)](cfg.md)
 [![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](cfg_zh.md)
 
-`rpkbin.cfg` 是一個通用的控制流圖（CFG）IR 常式庫。
-它提供共用的圖結構表示、結構分析演算法、跨函式 Liveness 分析，
-以及可選的 FSM / MCU-like 工作流程 adapter。
+`rpkbin.cfg` 是給 low-level / assembly-oriented 程式作者使用的控制流整理工具。
 
-此工具涵蓋從建立 CFG 到偵測邏輯錯誤、產生有序 code layout 的全流程—
-不假設任何特定指令集、register model 或硬體目標。
+它用來描述 block、branch、label，以及可選的 subroutine call；檢查常見的流程形狀錯誤；輸出可讀的文字 layout；並產生 deterministic 的 block 排列，方便 FSM、MCU、手寫 assembly 或 generated assembly workflow 使用。
+
+它刻意不負責 parse assembly、不配置 register、不理解特定 ISA，也不決定 calling convention。這些 target-specific 的選擇應該留在你的 frontend 或 emitter。
 
 ---
 
 ## 快速開始
 
-### 1. 建立 CFG
+### 1. 建立 Flow
 
-先從通用的 `CFG` 類別開始。block 是節點，edge 是可能的控制流轉移。
-`cond=None` 表示無條件 / default 轉移；其他值則是由你的 frontend 或
-emitter 解讀的條件字串。
+一個 `CFG` 由 blocks 與 directed edges 組成。Edge condition 是單純的字串，由你的 DSL、spreadsheet parser、flowchart importer 或 emitter 解讀。`cond=None` 表示 default 或 unconditional path。
 
 ```python
-from rpkbin.cfg import CFG, Assignment
+from rpkbin.cfg import CFG
 
 cfg = CFG()
-cfg.add_block("entry", label="ENTRY", insns=[Assignment("x", [])])
+cfg.add_block("entry", label="ENTRY")
 cfg.add_block("work", label="WORK")
 cfg.add_block("done", label="DONE")
+
 cfg.add_edge("entry", "work", cond="start", priority=0)
 cfg.add_edge("entry", "done", cond=None, priority=1)
 cfg.add_edge("work", "done")
+
 cfg.set_entry("entry")
 cfg.set_exit("done")
-
-print(cfg.validate())       # [] 表示沒有結構問題
-print(cfg.linearize("trace"))
 ```
 
-### 2. 打包多個 CFG
+### 2. 檢查並印出
 
-`Program` 將一組相關 CFG 打包在一起，例如一個 entry flow 加上可呼叫的 helper
-flows。跨函式分析與可選的 FSM/MCU adapter 會使用它。
+`validate()` 會找出從流程圖或 assembly label 規劃轉換時常見、但很容易漏看的控制流問題。
 
 ```python
-from rpkbin.cfg import CFG, Assignment, CallRef, Program
+issues = cfg.validate()
+if issues:
+    for issue in issues:
+        print(issue)
 
-# --- 主流程 ---
-main = CFG()
-main.add_block("IDLE",  label="IDLE",  insns=[Assignment("x", [])])
-main.add_block("FETCH", label="FETCH", insns=[CallRef("SUB_CHECK")])
-main.add_block("DONE",  label="DONE")
-main.add_edge("IDLE",  "FETCH", cond="start", priority=0)
-main.add_edge("FETCH", "IDLE",  cond="loop",  priority=0)
-main.add_edge("FETCH", "DONE",  cond="halt",  priority=1)
-main.set_entry("IDLE")
-
-# --- 子程式 ---
-sub = CFG()
-sub.add_block("sub_body", insns=[Assignment("y", ["x"])])
-sub.add_block("sub_ret")
-sub.add_edge("sub_body", "sub_ret")
-sub.set_entry("sub_body")
-sub.set_exit("sub_ret")
-
-program = Program(cfgs={"main": main, "SUB_CHECK": sub}, entry_fn="main")
+print(cfg.format())
 ```
 
-### 3. 可選的 FSM Adapter
+`format()` 是主要的顯示方式：它會產生 deterministic 的文字表格，列出 blocks、instruction preview 與 outgoing edges。它適合用在 terminal、log、review 與測試裡。
+
+### 3. 選擇發射順序
+
+`linearize()` 回傳 reachable block ids，順序適合拿來做 code layout。
 
 ```python
-from rpkbin.cfg import fsm
-
-dead   = fsm.find_dead_states(program)          # 無法從 reset 到達的狀態
-sinks  = fsm.find_sink_sccs(program)            # 降落入後無法回到 entry 的 SCC
-issues = fsm.check_conditions_complete(program) # 沒有預設出邊的狀態
-
-layout = fsm.linearize(program)
-for slot in layout.slots:
-    for edge in slot.exits:   # 依 priority 由小到大排列
-        print(slot.block.id, edge.cond, "->", edge.target)
+order = cfg.linearize("trace")
+print(order)
 ```
 
-### 4. 可選的 MCU Adapter
+可用策略：
 
-```python
-from rpkbin.cfg import mcu
+| Strategy | 適合情境 |
+|---|---|
+| `rpo` | 需要穩定、通用、可處理 loop 的排列。 |
+| `trace` | 希望 branch chain 盡量聚在一起，讓 emitted code 比較好讀。 |
+| `topological` | 已知 flow 是 DAG，並希望取得嚴格拓樸順序。 |
 
-dead_loops = mcu.find_dead_loops(program, exit_block="HALT")  # 無限迴圈（Bug）
-removed    = mcu.dead_code_elimination(main)                   # 移除不可達 block
-
-layout = mcu.linearize(program)
-for slot in layout.slots:
-    emit_block(slot.block)
-    if slot.needs_jump:
-        emit_jump(slot.jump_target)  # 補上屬於內部的 JMP 指令
-```
-
-### 5. 跨函式 Liveness 分析
-
-```python
-from rpkbin.cfg.analysis import interprocedural_liveness, check_call_depth
-
-check_call_depth(program, max_depth=2)         # 超過或有遞迴則 raise
-
-results = interprocedural_liveness(program)
-r = results["main"]
-print(r.live_in["FETCH"])                      # frozenset，FETCH 入口時的 live 變數
-print(r.is_live_at_exit("IDLE", "x"))          # True / False
-```
+所有策略都會從 `start` 或 CFG entry 開始，只回傳 reachable blocks。若要檢查不在主流程上的 blocks，使用 `find_unreachable()`。
 
 ---
 
-## API 參考
+## 產品結構
 
-### 指令型別
+這個 package 分成四層：
 
-`BasicBlock.insns` 中的每個元素必須是以下其中一種，分析工具從型別自動推導 def/use：
+| Layer | 用途 |
+|---|---|
+| Core Flow | 建立、檢查、顯示、排序單一控制流圖。 |
+| Program Calls | 標註 subroutine calls，並檢查 call depth。 |
+| Domain Recipes | 套用常見 FSM 與 MCU flow 檢查 / layout。 |
+| Graph Utilities | 可達性、loop、dominance、merge 與 deeper analysis。 |
 
-| 型別 | 主要欄位 | `def` | `use` |
-|---|---|---|---|
-| `Assignment(lhs, rhs, raw="")` | `lhs: str`, `rhs: list[str]` | `{lhs}` | `set(rhs)` |
-| `CallRef(callee, raw="")` | `callee: str` | 由 callee summary 推導 | 由 callee summary 推導 |
-| `OtherInsn(raw="", defs=set(), uses=set())` | `defs`, `uses` | `defs` | `uses` |
-
-> `Assignment.rhs` 只能含**變數名稱**，常數和編譯期常數必須由前端解析器排除。
-> `CallRef.callee` 必須對應 `Program.cfgs` 中的一個 key。
+大多數使用者從 Core Flow 開始。只有 workflow 真的需要時，才加入其他層。
 
 ---
+
+## Core Flow
 
 ### `BasicBlock`
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| `id` | `str` | 唯一識別符，作為 graph node key |
-| `label` | `str | None` | 人類可讀名稱（來自 Visio label 或 DSL） |
-| `insns` | `list[Insn]` | 有序指令列表（`Assignment | CallRef | OtherInsn`） |
-| `meta` | `dict` | 任意 metadata |
+| `id` | `str` | 唯一 graph key。穩定的 id 很適合測試與 generated code。 |
+| `label` | `str | None` | 人類可讀的 label，通常是 assembly label 或 flowchart state name。 |
+| `insns` | `list[Insn]` | 可選的 instruction annotations。Core flow 功能不需要它。 |
+| `meta` | `dict` | source location、spreadsheet row、flowchart id 或 caller-owned data。 |
 
----
+你可以透過 `CFG.add_block(...)` 建立 block，也可以傳入已建立好的 `BasicBlock`。
+
+```python
+from rpkbin.cfg import BasicBlock, CFG
+
+cfg = CFG()
+cfg.add_block("idle", label="IDLE", meta={"page": "main"})
+cfg.add_block(BasicBlock("halt", label="HALT"))
+```
 
 ### `CFG`
 
-以 `networkx.DiGraph` 為底層的控制流圖類別。
-
-#### 建構
+建構：
 
 ```python
 cfg = CFG()
-cfg.add_block("entry", label="IDLE", insns=[Assignment("x", [])])
-cfg.add_block("end")
-cfg.add_edge("entry", "end", cond="done", priority=0)
-cfg.set_entry("entry")
-cfg.set_exit("end")   # 可選；只有需要 exit 的分析才必須設定
-
-# 也可以直接傳入已建好的 BasicBlock
-bb = BasicBlock("aux", label="AUX", meta={"src": "visio"})
-cfg.add_block(bb)
+cfg.add_block("idle", label="IDLE")
+cfg.add_block("work", label="WORK")
+cfg.add_edge("idle", "work", cond="go", priority=0)
+cfg.set_entry("idle")
 ```
 
-> `add_block` 重複 `id` 會 raise `ValueError`。
-> `add_block(BasicBlock)` 時不可同時傳 `label`/`insns`/`meta`。
-> `add_edge` 如果任一 block 不存在會 raise `KeyError`。
-> `cond=None` 表示無條件（預設 / else）邊。
-
-#### 修改
+存取：
 
 ```python
-removed_bb   = cfg.remove_block("aux")          # 移除 block 及所有關聯 edge，回傳 BasicBlock
-removed_attrs = cfg.remove_edge("entry", "end")  # 移除 edge，回傳 attrs dict
+cfg.get_block("idle")          # BasicBlock
+cfg.blocks                     # list[BasicBlock]，依新增順序
+cfg.edges                      # list[(src, dst, attrs)]
+cfg.entry / cfg.exit           # BasicBlock 或 None
+cfg.successors("idle")         # list[BasicBlock]
+cfg.predecessors("work")       # list[BasicBlock]
+cfg.out_edges("idle")          # 依 priority 排序
+cfg.in_edges("work")           # 依 priority 排序
+cfg.edge_attrs("idle", "work") # dict copy
+"idle" in cfg                  # True / False
+len(cfg)                       # block 數量
 ```
 
-> `remove_block` 會自動清除 entry / exit 指定（若被移除的剛好是 entry 或 exit）。
-
-#### 存取與顯示
+修改：
 
 ```python
-cfg.get_block("entry")          # BasicBlock
-cfg.blocks                       # list[BasicBlock] 依新增順序
-cfg.edges                        # list[(src, dst, attrs)] 所有 edge
-cfg.entry / cfg.exit             # BasicBlock 或 None
-cfg.predecessors("end")          # list[BasicBlock]
-cfg.successors("entry")          # list[BasicBlock]
-cfg.edge_attrs("entry", "end")   # dict
-cfg.out_edges("entry")           # list[(src, dst, attrs)]，依 priority 排序
-cfg.in_edges("end")              # list[(src, dst, attrs)]，依 priority 排序
-cfg.has_edge("entry", "end")     # True / False
-"entry" in cfg                   # True / False
-len(cfg)                         # block 數量
-
-print(repr(cfg))                 # CFG(2 blocks, 1 edges, entry='entry')
-print(cfg.format())              # 可讀性高的多行圖表（表格）輸出
+removed_block = cfg.remove_block("work")
+removed_attrs = cfg.remove_edge("idle", "work")
+clone = cfg.copy()
 ```
 
-#### 複製與驗證
+驗證：
 
 ```python
-clone = cfg.copy()              # deep copy（修改 clone 不影響原圖）
-
-issues = cfg.validate()         # list[str]，空 = 無問題
-# 檢查項：entry/exit 是否存在、isolated block、
-#         重複 priority、多個 default 出邊、
-#         單一 conditional 出邊但沒有 default path
+issues = cfg.validate()
 ```
 
-#### 遞歷
+Generic validator 會檢查：
+
+- missing 或 invalid entry/exit references
+- isolated blocks
+- duplicate outgoing priorities
+- multiple default outgoing edges
+- 單一 conditional outgoing edge 但沒有 default path
+
+### Edge 語意
+
+`add_edge(src, dst, cond=None, priority=0, **attrs)` 會儲存一條控制流轉移。
+
+| Attribute | 意義 |
+|---|---|
+| `cond=None` | Default、else 或 unconditional path。 |
+| `cond="..."` | Caller-owned condition string。CFG 不解讀。 |
+| `priority` | 同一 block 有多條 outgoing edges 時的 evaluation order。數字越小越先檢查。 |
+| `**attrs` | 額外 caller-owned metadata。 |
+
+這讓 CFG 保持 target-neutral：同一個 `cond="start"` 可以被一個 emitter 轉成 assembly branch，也可以被另一個 emitter 轉成 table entry 或 HDL case item。
+
+### 文字顯示
 
 ```python
-for bb in cfg.dfs():             # 深度優先，從 entry 開始
-    ...
-for bb in cfg.bfs():             # 廣度優先
-    ...
-order = cfg.reverse_postorder()  # RPO，正向 Dataflow 分析標準順序
+print(cfg.format())
+print(cfg)          # 等同於 cfg.format()
 ```
 
-#### 可達性
+`format()` 在 entry 已設定時會使用 reverse post-order 排列 blocks，並把 unreachable blocks 接在後面；outgoing edges 依 priority 列出。在使用更重的視覺化之前，先用它當第一層 debug view。
+
+常用顯示選項：
 
 ```python
-cfg.can_reach("entry", "end")    # True / False
-cfg.find_unreachable()           # list[BasicBlock]
-cfg.find_sccs()                  # list[list[str]]，拓樸順序
+print(cfg.format(start="work", show_unreachable=False))
+print(cfg.format(show_meta=True))
 ```
 
-#### 迴圈分析
+---
+
+## Program Calls
+
+只有當你想描述多個 CFG 之間的 subroutine 關係時，才需要使用 `Program` 與 `CallRef`。
 
 ```python
-backs = cfg.find_back_edges()     # list[(tail, header)]
-loops = cfg.find_natural_loops()  # list[NaturalLoop]
-# loop.header, loop.body (set[str]), loop.back_edge
+from rpkbin.cfg import CFG, CallRef, Program
+from rpkbin.cfg.analysis import build_call_graph, check_call_depth
+
+main = CFG()
+main.add_block("entry", label="ENTRY", insns=[CallRef("SUB_CHECK")])
+main.add_block("done", label="DONE")
+main.add_edge("entry", "done")
+main.set_entry("entry")
+
+sub = CFG()
+sub.add_block("body", label="SUB_CHECK")
+sub.add_block("ret", label="RET")
+sub.add_edge("body", "ret")
+sub.set_entry("body")
+sub.set_exit("ret")
+
+program = Program({"main": main, "SUB_CHECK": sub}, entry_fn="main")
+
+call_graph = build_call_graph(program)
+depth = check_call_depth(program, max_depth=2)
+
+print(program.format())
+print(program)      # 等同於 program.format()
 ```
 
-#### 支配領域
+`CallRef("SUB_CHECK")` 表示「這個 block 會 call 名為 `SUB_CHECK` 的 CFG」。它不代表任何 target calling convention、stack behavior、register clobber 或 return instruction。它只提供足夠資訊，讓工具回答結構性問題：
+
+- 誰 call 誰？
+- 是否有 recursion？
+- call depth 是否超過 hardware 或 coding-rule limit？
+
+`Program` 建立時會驗證：
+
+- `cfgs` 不可為空
+- `entry_fn` 必須存在於 `cfgs`
+- 每個 `CallRef.callee` 都必須對應 `cfgs` 中的一個 key
+
+若只有單一 flow，且不需要 call-depth 檢查，直接使用 `CFG` 即可。
+
+`Program.format()` 接受和 `CFG.format()` 相同的 instruction preview 控制參數，可以顯示 call sites，也可以隱藏 call graph 或只顯示指定 functions：
 
 ```python
-idom  = cfg.dominators()                       # {node: idom_node}
-ipost = cfg.post_dominators(exit_node="end")   # 必須明確傳入 exit_node
-tree  = cfg.dominator_tree()                   # networkx DiGraph
+print(program.format(max_insns=4, max_insn_chars=60))
+print(program.format(show_call_graph=False, fn_names=["main"]))
+print(program.format(show_call_sites=False, show_meta=True))
 ```
 
-#### 線性化
+`Program.validate()` 會彙整所有 CFG 的結構問題：
 
 ```python
-order = cfg.linearize("rpo")          # Reverse Post-Order，可處理 cycle
-order = cfg.linearize("topological")  # 僅適用 DAG；有 cycle 則 raise ValueError
-order = cfg.linearize("trace")        # Priority-guided trace：保持 branch chain 聚集
-# => list[str]， block id 的發射順序
+issues = program.validate(max_call_depth=2)
 ```
 
-> 所有 strategy 都會從 `start` 或 CFG entry 開始，只回傳 reachable blocks。
-> 若要檢查 orphan/dead blocks，請使用 `find_unreachable()`。
->
-> `"trace"` 策略依 edge priority 優先走訪，將條件分支的各子鏈保持連續，
-> 延遲 common join point，適合產生可讀性高的 code layout。
-> 當多個 deferred node 都同樣可選時，會使用 block 新增順序作為 deterministic
-> tie-breaker。
+---
 
-#### 合併
+## Domain Recipes
+
+FSM 與 MCU modules 是建立在同一套 CFG model 上的小型 target-neutral recipes。
+
+### FSM
+
+當 main flow 是通常會永遠運行的 state machine 時，使用 `rpkbin.cfg.fsm`。
+
+```python
+from rpkbin.cfg import fsm
+
+dead_states = fsm.find_dead_states(program)
+sink_cycles = fsm.find_sink_sccs(program)
+missing_defaults = fsm.check_conditions_complete(program)
+layout = fsm.linearize(program, strategy="rpo")
+```
+
+| Function | Returns | 用途 |
+|---|---|---|
+| `find_dead_states(program)` | `list[BasicBlock]` | 從 reset/entry 無法到達的 states。 |
+| `find_sink_sccs(program)` | `list[list[str]]` | 無法回到 reset/entry 的 trap cycles。 |
+| `check_conditions_complete(program)` | `list[str]` | 只有 conditional exits、沒有 default path 的 states。 |
+| `linearize(program, strategy="rpo")` | `FSMLayout` | Ordered state slots 與依 priority 排序的 exits。 |
+
+FSM sink SCCs 是進入後無法回到 reset state 的 cycles。一般 loop 是正常的；trap cycles 才可疑。
+
+### MCU
+
+當 main flow 預期最後應該到達 halt 或 exit block 時，使用 `rpkbin.cfg.mcu`。
+
+```python
+from rpkbin.cfg import mcu
+
+dead_loops = mcu.find_dead_loops(program, exit_block="HALT")
+removed = mcu.dead_code_elimination(program.main)
+layout = mcu.linearize(program, strategy="trace")
+```
+
+| Function | Returns | 用途 |
+|---|---|---|
+| `find_dead_loops(program, exit_block=None)` | `list[list[str]]` | Reachable cycles 但沒有 path 到 halt/exit。 |
+| `dead_code_elimination(cfg, start=None)` | `list[BasicBlock]` | In-place 移除 unreachable blocks。 |
+| `linearize(program, strategy="rpo")` | `MCULayout` | Ordered slots，包含 exit-edge 與 fallthrough hints。 |
+
+`MCULayout` 不會產生 assembly。它告訴你的 emitter 哪個 block 在下一個位置、哪條 outgoing edge 是 physical fallthrough，以及何時需要 unconditional jump。Branch mnemonic、condition inversion 與 target-specific instruction selection 仍然是 emitter 的工作。
+
+```python
+for slot in layout.slots:
+    emit_block(slot.block)
+    for edge in slot.exits:
+        if edge.cond is not None:
+            emit_conditional_branch(edge.cond, edge.target)
+    if slot.needs_jump:
+        emit_jump(slot.jump_target)
+```
+
+---
+
+## Graph Utilities
+
+當你需要更深的 graph inspection 時，可以使用以下 helpers。一般 build/check/layout workflow 不需要先懂這些。
+
+### Traversal 與 Reachability
+
+```python
+list(cfg.dfs())
+list(cfg.bfs())
+cfg.reverse_postorder()
+cfg.can_reach("entry", "done")
+cfg.find_unreachable()
+cfg.find_sccs()
+```
+
+### Loops 與 Dominance
+
+```python
+cfg.find_back_edges()
+cfg.find_natural_loops()
+cfg.dominators()
+cfg.post_dominators(exit_node="done")
+cfg.dominator_tree()
+```
+
+### 合併 Labeled Flows
+
+`merge_cfgs()` 會把多個 CFG 中具有相同 non-`None` label 的 blocks 合併。當多個被抽出的 flow fragments 使用 label 作為連接點時，這很有用。
 
 ```python
 from rpkbin.cfg import merge_cfgs
 
-# 把多個 CFG 的 block 依 label 為鍵值合併成單一 CFG
-merged = merge_cfgs(flow1, flow2) 
+merged = merge_cfgs(flow1, flow2)
+merged.set_entry("ENTRY")
 ```
 
-> **合併規則**：具備相同 label 的 block 將會自動合併；帶有 instruction 的會覆蓋純粹當連接錨點的佔位用 block。
-> 若不同 flow 指定了完全相同屬性的連線 edge 將會平穩自動去重。
-> 對同樣 label 或是連線有衝突時會 raise `CFGMergeError`。
-> 合併後的 CFG 不具有 `entry` 和 `exit` 屬性，需要重新呼叫 `set_entry`/`set_exit` 指派。
+規則：
 
----
+- 具有相同 label 的 blocks 會合併
+- 帶有 instructions 的 block 會覆蓋同 label 的 placeholder block
+- 完全相同的 connecting edges 會自動去重
+- label、instruction、metadata 或 edge attributes 衝突時會 raise `CFGMergeError`
+- merged CFG 一開始沒有 entry 或 exit；合併後再設定
 
-### `Program`
+### Instruction Annotations 與 Liveness
 
-```python
-program = Program(
-    cfgs={"main": main_cfg, "SUB_CHECK": sub_cfg},
-    entry_fn="main",
-)
-program.main             # 等同於 program.cfgs[program.entry_fn]
-program["SUB_CHECK"]     # 等同於 program.cfgs["SUB_CHECK"]
-"SUB_CHECK" in program   # True
-len(program)             # 函式數量
-list(program)            # ["main", "SUB_CHECK"]
-```
+Instruction annotations 是可選的。只有需要 def/use 資訊的分析才會使用它。
 
-> `Program` 建立時會自動驗證：
-> - `cfgs` 不可為空
-> - `entry_fn` 必須存在於 `cfgs`
-> - 所有 `CallRef.callee` 必須對應 `cfgs` 中的 key（否則 raise `KeyError`）
-
-只有在需要多個 CFG 或 call-aware analysis 時才需要 `Program`。若只是單一圖，
-直接使用 `CFG` 即可。
-
----
-
-### `rpkbin.cfg.fsm` — FSM 分析與線性化
-
-| 函式 | 回傳 | 說明 |
-|---|---|---|
-| `find_dead_states(program)` | `list[BasicBlock]` | 從 entry 無法到達的狀態 |
-| `find_sink_sccs(program)` | `list[list[str]]` | 陷阱循環（無法回到 entry） |
-| `check_conditions_complete(program)` | `list[str]` | 所有出邊均為條件式的狀態 |
-| `linearize(program, strategy="rpo")` | `FSMLayout` | 有序狀態 layout |
+| Type | 意義 |
+|---|---|
+| `Assignment(lhs, rhs, raw="")` | 定義 `lhs`，並使用 `rhs` 中的變數。Constants 應由 frontend 排除。 |
+| `CallRef(callee, raw="")` | 標註對 `Program` 中另一個 CFG 的呼叫。 |
+| `OtherInsn(raw="", defs=set(), uses=set())` | Caller-provided def/use annotation，給其他指令使用。 |
 
 ```python
-layout = fsm.linearize(program)
-for slot in layout.slots:
-    # slot.block : BasicBlock
-    for edge in slot.exits:   # list[ExitEdge]，依 priority 排序
-        # edge.priority : int
-        # edge.cond     : str | None  (None = 無條件)
-        # edge.target   : str (block id)
-        ...
-```
+from rpkbin.cfg import Assignment, OtherInsn
+from rpkbin.cfg.analysis import interprocedural_liveness
 
-> **FSM Sink SCC**：進入後無法回到 reset 狀態的循環。
-> FSM 本身就是無限迴圈，只有陷阱狀態才會被標記為錯誤。
+bb = cfg.get_block("work")
+bb.insns.append(Assignment("acc", ["sample"], raw="acc = sample"))
+bb.insns.append(OtherInsn(raw="CUSTOM", defs={"flag"}, uses={"acc"}))
 
----
-
-### `rpkbin.cfg.mcu` — MCU 分析與線性化
-
-| 函式 | 回傳 | 說明 |
-|---|---|---|
-| `find_dead_loops(program, exit_block=None)` | `list[list[str]]` | 無法到達 exit_block 的 SCC |
-| `dead_code_elimination(cfg, start=None)` | `list[BasicBlock]` | In-place 移除不可達 block |
-| `linearize(program, strategy="rpo")` | `MCULayout` | 含跟蹤跳轉與完整出邊資訊的有序 layout |
-
-```python
-layout = mcu.linearize(program)
-for slot in layout.slots:
-    # slot.block       : BasicBlock
-    # slot.needs_jump  : bool
-    # slot.jump_target : str | None
-    # slot.exits       : list[MCUExitEdge]（完整出邊資訊）
-    emit_block(slot.block)
-    for edge in slot.exits:
-        # edge.priority       : int
-        # edge.cond           : str | None
-        # edge.target         : str
-        # edge.is_fallthrough : bool（僅無條件後繼且物理相鄰時為 True）
-        if edge.cond is not None:
-            emit_conditional_branch(edge.cond, edge.target)
-    if slot.needs_jump:
-        emit_jump(slot.jump_target)  # 補 JMP 指令（適配硬體）
-```
-
-> MCU 的無限迴圈必定是 Bug（機器應最終到達 HALT）。
-> `exit_block` 若未傳入，預設從 `cfg.set_exit()` 讀取。
-> `is_fallthrough` 只有在「無條件後繼 **且** 物理相鄰」時為 `True`，條件邊永遠為 `False`。
-
----
-
-### `rpkbin.cfg.analysis` — 跨函式分析
-
-| 函式 | 回傳 | 說明 |
-|---|---|---|
-| `build_call_graph(program)` | `nx.DiGraph` | 自動掃描 `CallRef` 建立 call graph |
-| `check_call_depth(program, max_depth=None)` | `int` | 實際深度；超限或有遞迴則 raise |
-| `interprocedural_liveness(program)` | `dict[str, LivenessResult]` | Bottom-up 跨函式 Liveness |
-
-```python
 results = interprocedural_liveness(program)
-r = results["main"]               # LivenessResult
-r.live_in["FETCH"]                # frozenset
-r.live_out["IDLE"]                # frozenset
-r.is_live_at_entry("FETCH", "x")  # bool
-r.is_live_at_exit("IDLE", "x")    # bool
+live = results["main"].live_in["work"]
 ```
 
-> Call graph 必須是 **DAG**（不允許遞迴）。
-> Callee summary 從葉節點 bottom-up 計算，`CallRef` 的 def/use 常保正確。
+Liveness 是 structural 且 annotation-driven 的。除非你的 frontend 把資訊記錄在 `defs` / `uses`，否則它不理解 ISA register alias、flags、memory aliasing、stack convention 或 implicit clobbers。
+
+---
+
+## Non-Goals
+
+`rpkbin.cfg` 刻意保持小而 target-neutral。它不做：
+
+- parse assembly source
+- 自行產生最終 target assembly
+- register allocation
+- modeling ISA-specific flags、memory aliasing、stack 或 calling conventions
+- branch form 或 instruction selection 最佳化
+- 取代 LLVM、compiler framework 或 `networkx`
+
+它的邊界很簡單：`rpkbin.cfg` 讓控制流本身變得清楚、可檢查、可排序；你的 domain code 決定每個 block 與 condition 在 target 上代表什麼。
 
 ---
 
 ## 目錄結構
 
+```text
+rpkbin/cfg/
+  block.py     BasicBlock 與可選的 instruction annotations
+  cfg.py       CFG structure、validation、layout 與 graph utilities
+  program.py   多個 CFG 的 Program container
+  analysis.py  call graph、call depth 與 liveness analysis
+  fsm.py       FSM-oriented checks 與 layout
+  mcu.py       MCU-oriented checks 與 layout
 ```
-mypkg/cfg/
-  block.py     BasicBlock, Assignment, CallRef, OtherInsn, Insn
-  cfg.py       CFG 類別 — 圖結構與結構分析
-  program.py   Program 容器（dict[str, CFG] + entry_fn）
-  analysis.py  build_call_graph, check_call_depth, interprocedural_liveness
-  fsm.py       FSM analyzer + FSMLayout compiler
-  mcu.py       MCU analyzer + MCULayout compiler
-```
-
-| 模組 | 職責 |
-|---|---|
-| `cfg.py` | 圖結構、遞歷、迴圈 / 支配分析 |
-| `analysis.py` | Call graph + 跨函式 Liveness |
-| `fsm.py` | FSM 專屬檢查（Sink SCC、條件完整性）與 layout |
-| `mcu.py` | MCU 專屬檢查（Dead loop、DCE）與 layout |

@@ -1,6 +1,7 @@
-﻿"""FSM analysis and linearization for CFG Programs.
+"""FSM-oriented checks and layout recipes for CFG Programs.
 
-This module targets FSM (Finite State Machine) programs where:
+This module is a target-neutral recipe layer for FSM (Finite State Machine)
+flows. It assumes:
 
 * The *main* CFG represents the top-level state flow (often an infinite loop
   back to the reset/idle state).
@@ -10,8 +11,8 @@ This module targets FSM (Finite State Machine) programs where:
 * There is typically **no exit block** on the main CFG — the machine runs
   forever.
 
-FSM-specific analysis
----------------------
+FSM-specific checks
+-------------------
 ``find_dead_states``
     States unreachable from the reset (entry) state.
 
@@ -27,13 +28,13 @@ FSM-specific analysis
     ``cond=None`` / unconditional edge) — a potential "stuck" condition
     if no condition is satisfied at runtime.
 
-FSM linearization
------------------
+FSM layout
+----------
 ``linearize`` returns an :class:`FSMLayout`, an ordered list of
 :class:`FSMSlot` objects.  Each slot holds a :class:`BasicBlock` together
 with its outgoing edges sorted by ``priority``.  The caller uses this
-structure to emit hardware description code (e.g. a Verilog case statement
-or a ROM state table) without the tool needing to know the target ISA.
+structure to build a target-specific emitter, table, or hardware description
+without the CFG package needing to know the target ISA or output format.
 """
 
 from __future__ import annotations

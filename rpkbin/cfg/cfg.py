@@ -620,20 +620,32 @@ class CFG:
         root = start or self._start()
         reachable = nx.descendants(self._g, root) | {root}
         node_rank = {bb.id: i for i, bb in enumerate(self.blocks)}
+        back_edges = {
+            edge for edge in self.find_back_edges(root)
+            if edge[0] in reachable and edge[1] in reachable
+        }
         visited: set[str] = set()
         order: list[str] = []
 
         def _preds_ready(node: str) -> bool:
-            preds = [p for p in self._g.predecessors(node) if p in reachable]
+            preds = [
+                p for p in self._g.predecessors(node)
+                if p in reachable and (p, node) not in back_edges
+            ]
             return len(preds) <= 1 or all(p in visited for p in preds)
 
-        def _follow_chain(seed: str) -> None:
+        def _follow_chain(seed: str, *, force_seed: bool = False) -> None:
             """Iterative DFS from *seed*, respecting priority and readiness."""
             stack: list[str] = [seed]
             while stack:
                 node = stack.pop()
-                if node in visited or not _preds_ready(node):
+                if node in visited:
                     continue
+                if not _preds_ready(node):
+                    if force_seed and node == seed:
+                        force_seed = False
+                    else:
+                        continue
                 visited.add(node)
                 order.append(node)
                 # Push successors in reverse priority so highest-priority
@@ -654,7 +666,13 @@ class CFG:
             if candidate is None:
                 # Irreducible CFG: force-pick an arbitrary node.
                 candidate = min(remaining, key=lambda n: node_rank[n])
-            _follow_chain(candidate)
+            before = len(visited)
+            _follow_chain(candidate, force_seed=(not ready))
+            if len(visited) == before:
+                # Defensive guard: trace linearization must always make
+                # progress, even for unusual irreducible graphs.
+                visited.add(candidate)
+                order.append(candidate)
             remaining = reachable - visited
 
         return order
@@ -717,6 +735,10 @@ class CFG:
         self,
         max_insns: int = 2,
         max_insn_chars: int = 35,
+        *,
+        start: str | None = None,
+        show_unreachable: bool = True,
+        show_meta: bool = False,
     ) -> str:
         """Return a human-readable table of the CFG as a plain string.
 
@@ -729,6 +751,12 @@ class CFG:
             max_insns:      Maximum instructions to preview per block (default 2).
             max_insn_chars: Maximum characters per single instruction preview
                             before truncation with "\u2026" (default 35).
+            start:          Optional block id to use as the display root.
+                            Defaults to the CFG entry when set.
+            show_unreachable:
+                            If ``True``, append blocks not reachable from the
+                            display root after the main traversal.
+            show_meta:      If ``True``, include a metadata preview column.
 
         Returns:
             A multi-line ``str``.  Pass to ``print()`` or write to a file.
@@ -744,6 +772,9 @@ class CFG:
                     raw = raw[: max_insn_chars - 1] + "\u2026"
                 parts.append(raw)
             return "; ".join(parts) + (" \u2026" if len(bb.insns) > max_insns else "")
+
+        def _meta_preview(bb: BasicBlock) -> str:
+            return repr(bb.meta) if bb.meta else ""
 
         def _edge_line(dst_id: str, attrs: dict[str, Any]) -> str:
             dst_bb = self.get_block(dst_id)
@@ -763,14 +794,18 @@ class CFG:
             tokens.append(f"\u2500\u25ba {target}")
             return " ".join(tokens)
 
-        # -- block order: RPO from entry, orphans appended ----------------
-        if self._entry is not None:
+        # -- block order: RPO from display root, orphans optionally appended -
+        display_root = start if start is not None else self._entry
+        if display_root is not None and display_root not in self._g:
+            raise KeyError(f"Block {display_root!r} not found in CFG.")
+        if display_root is not None:
             try:
-                ordered: list[BasicBlock] = self.reverse_postorder()
+                ordered: list[BasicBlock] = self.reverse_postorder(display_root)
                 seen = {bb.id for bb in ordered}
-                for bb in self.blocks:
-                    if bb.id not in seen:
-                        ordered.append(bb)
+                if show_unreachable:
+                    for bb in self.blocks:
+                        if bb.id not in seen:
+                            ordered.append(bb)
             except RuntimeError:
                 ordered = list(self.blocks)
         else:
@@ -780,12 +815,14 @@ class CFG:
         id_w    = max(max((len(bb.id)           for bb in ordered), default=0), 8)
         label_w = max(max((len(bb.label or "")  for bb in ordered), default=0), 5)
         insns_w = max(max((len(_preview(bb))    for bb in ordered), default=0), 15)
+        meta_w  = max(max((len(_meta_preview(bb)) for bb in ordered), default=0), 4)
 
         SEP          = "  \u2502  "
         blank_marker = " "
         blank_id     = " " * id_w
         blank_label  = " " * label_w
         blank_insns  = " " * insns_w
+        blank_meta   = " " * meta_w
 
         # -- header -------------------------------------------------------
         n_b, n_e = len(self), self._g.number_of_edges()
@@ -798,10 +835,15 @@ class CFG:
             xbb = self.get_block(self._exit)
             hdr.append(f"exit='{xbb.label or self._exit}'")
 
-        col_hdr = (
-            f" {'Block ID':<{id_w}}{SEP}{'Label':<{label_w}}{SEP}"
-            f"{'Insns (preview)':<{insns_w}}{SEP}Out-edges"
-        )
+        col_parts = [
+            f" {'Block ID':<{id_w}}",
+            f"{'Label':<{label_w}}",
+            f"{'Insns (preview)':<{insns_w}}",
+        ]
+        if show_meta:
+            col_parts.append(f"{'Meta':<{meta_w}}")
+        col_parts.append("Out-edges")
+        col_hdr = SEP.join(col_parts)
         rule = "\u2500" * len(col_hdr)
 
         lines: list[str] = ["  ".join(hdr), col_hdr, rule]
@@ -818,15 +860,25 @@ class CFG:
             out = self.out_edges(bb.id)       # sorted by priority already
             first_edge = _edge_line(out[0][1], out[0][2]) if out else "(terminal)"
 
-            lines.append(
-                f"{marker}{bb.id:<{id_w}}{SEP}{bb.label or '':<{label_w}}{SEP}"
-                f"{_preview(bb):<{insns_w}}{SEP}{first_edge}"
-            )
+            row_parts = [
+                f"{marker}{bb.id:<{id_w}}",
+                f"{bb.label or '':<{label_w}}",
+                f"{_preview(bb):<{insns_w}}",
+            ]
+            if show_meta:
+                row_parts.append(f"{_meta_preview(bb):<{meta_w}}")
+            row_parts.append(first_edge)
+            lines.append(SEP.join(row_parts))
             for _, dst, attrs in out[1:]:
-                lines.append(
-                    f"{blank_marker}{blank_id}{SEP}{blank_label}{SEP}"
-                    f"{blank_insns}{SEP}{_edge_line(dst, attrs)}"
-                )
+                edge_parts = [
+                    f"{blank_marker}{blank_id}",
+                    blank_label,
+                    blank_insns,
+                ]
+                if show_meta:
+                    edge_parts.append(blank_meta)
+                edge_parts.append(_edge_line(dst, attrs))
+                lines.append(SEP.join(edge_parts))
 
         lines.append(rule)
         return "\n".join(lines)

@@ -39,11 +39,14 @@ wave file (Python)          Runtime
 |---|---|---|
 | Run a shell command | `CmdJob(name, cmd)` | wave file |
 | Run a Python function | `FuncJob(name, fn)` | wave file |
+| Run an interactive CLI program | `PtyJob(name, cmd)` | wave file |
 | Extract progress/state from logs | `job.add_parser(fn)` | wave file |
 | Auto-kill on timeout | `Hook(when=Hook.elapsed_exceeds(s), action=Hook.action_kill())` | wave file |
 | React to a specific log pattern | `Hook(when=Hook.log_matches(pattern), action=...)` | wave file |
 | Notify on completion | `Hook(when=Hook.on_done(), action=Hook.action_emit(...))` | wave file |
-| Graceful shutdown of interactive tool | `job.set_stop_policy(graceful_input=..., graceful_signal=...)` | wave file |
+| Send Ctrl-C to a PTY job | `key <job> ctrl-c` or TUI `F9` | REPL / TUI |
+| Send an OS signal to a job | `signal <job> SIGTERM` | REPL / TUI |
+| Graceful shutdown of interactive tool | `job.set_stop_policy(graceful_key=..., graceful_input=..., graceful_signal=...)` | wave file |
 | Auto-retry on failure | `CmdJob(name, cmd, max_retries=3)` | wave file |
 | Limit GPU / license concurrency | `session.configure(resources={"gpu": 2})` + `CmdJob(..., resources={"gpu": 1})` | wave file |
 | Write report after batch completes | `session.on_finish(callback)` | wave file |
@@ -163,8 +166,15 @@ program.
 Wave extends job manager jobs with observability features.
 
 - `CmdJob` / `WaveCmdJob`
-  - shell command job
+  - shell command job (PIPE-based stdin/stdout)
   - supports log parsers, log-driven hooks, stdin input, and OS signals
+  - default stop policy: `graceful_signal=SIGINT`
+- `PtyJob` / `PtyCmdJob`
+  - shell command job inside a **pseudo-terminal** (PTY)
+  - child process sees `isatty() == True`; suitable for interactive programs
+  - supports log parsers, hooks, terminal control keys (`key`), stdin input, and OS signals
+  - default stop policy: `graceful_key="ctrl-c"`
+  - Linux / macOS only; on Windows, construction succeeds but execution fails with a clear error
 - `FuncJob` / `WaveFuncJob`
   - Python callable job
   - supports hooks, events, and parsed data updates
@@ -182,6 +192,31 @@ Wave-specific job features include:
 - `job.tags`
 - `job.set_progress(value)`
 - `job.retry_count`
+
+#### CmdJob vs PtyJob: When to Use Which
+
+| | `CmdJob` | `PtyJob` |
+|---|---|---|
+| Child I/O | PIPE (stdin/stdout) | PTY (pseudo-terminal) |
+| `isatty()` | `False` | `True` |
+| Use case | Batch scripts, builds, tests | Interactive REPLs, `read`-based scripts |
+| Ctrl-C behavior | `signal <job> SIGINT` (OS signal) | `key <job> ctrl-c` (terminal key → kernel SIGINT) |
+| Default stop | `graceful_signal=SIGINT` | `graceful_key="ctrl-c"` |
+| Platform | All (Windows, Linux, macOS) | Linux / macOS only |
+
+Use `CmdJob` unless the program specifically needs `isatty() == True` or terminal control key semantics.
+
+#### `input` vs `key` vs `signal`
+
+| Command | What it does | Works on |
+|---|---|---|
+| `input <job> <text>` | Write text to stdin / PTY master (data channel) | `CmdJob`, `PtyJob` |
+| `key <job> <key>` | Write a terminal control byte to the PTY master | `PtyJob` only |
+| `signal <job> <sig>` | Send an OS signal to the process group | `CmdJob`, `PtyJob` |
+
+`key ctrl-c` writes `\x03` to the PTY. Because `PtyJob` uses `pty.fork()` to establish a proper controlling terminal, the kernel line discipline translates this byte into a real SIGINT for the child's foreground process group — just like pressing Ctrl-C in a real terminal.
+
+`signal SIGINT` sends the signal directly via `os.killpg()`, bypassing the terminal driver entirely. Use `signal` when you need to send signals not mapped to terminal keys (e.g. `SIGTERM`, `SIGUSR1`).
 
 ### 3. Hooks
 
@@ -208,6 +243,7 @@ Common actions:
 - `Hook.action_request_stop(force=False)`
 - `Hook.action_send_signal(sig)`
 - `Hook.action_send_input(text)`
+- `Hook.action_send_key(key)`
 - `Hook.action_emit(tag, message)`
 - `Hook.action_set_data(key, value)`
 - `Hook.action_chain(...)`
@@ -620,11 +656,12 @@ It is built with [Textual](https://github.com/Textualize/textual) and requires
 - **JOB DETAIL** — full-page split view for one selected job.
   - Header: current job name, position, status, elapsed time, progress, exit code when available, and detail navigation hints.
   - Left 60%: streaming log output (append-only, no flicker).
-  - Right 40%: four sub-tabs:
+  - Right 40%: five sub-tabs:
     - **INFO** — compact job metadata, including id, status, state, skip flag, and stop policy.
     - **DATA** — key/value table of `job.peek_data()`, updated by upsert. Empty jobs show `(no parsed data)`.
     - **EVENTS** — user-emitted events (`source="user"`) in chronological order.
     - **SYSTEM** — system-emitted events (`source="system"`), e.g. `parser_error`, `hook_error`; parser/hook errors are highlighted in red and include exception details.
+    - **TERMINAL** — append-only PTY output for `PtyJob` jobs. For non-PTY jobs, shows a "not supported" message. This is a fake-terminal view, not a full terminal emulator.
 - **SYSTEM LOG** — session-level events and the output of all command-bar commands.
 - **HELP** — inline keyboard shortcut and command reference.
 
@@ -673,6 +710,9 @@ Additional TUI-only keyboard bindings:
 | `F2` | Switch to JOB DETAIL |
 | `F3` | Switch to SYSTEM LOG |
 | `F4` | Switch to HELP |
+| `F8` | Focus Command Bar and pre-fill `input . ` (TERMINAL tab only) |
+| `F9` | Send Ctrl-C to the current PTY job (TERMINAL tab only) |
+| `F10` | Send Ctrl-D to the current PTY job (TERMINAL tab only) |
 | `:` | Focus Command Bar (Vim style) |
 | `Esc` | Leave Command Bar, return focus to active panel |
 | `Enter` (on DASHBOARD row) | Open JOB DETAIL for selected job |
@@ -757,6 +797,7 @@ inspect results before leaving with `exit`.
   - force-cancel active jobs, then leave the REPL
 
 `<job>` accepts a unique job name, a full job id, or a unique id prefix shown by `status` / `show`.
+In TUI mode, if a JOB DETAIL is open, the special shorthand `.` can be used to target the currently selected job.
 If multiple jobs share the same name, Wave refuses the ambiguous name and asks you to use an id.
 The ambiguous-name message prints each matching job's full id and status, so you can copy an exact id or use an 8+ character unique prefix.
 
@@ -806,29 +847,42 @@ Wave supports per-job stop policy configuration for common interactive cases.
 ```python
 import signal
 
+# CmdJob: use stdin + OS signal
 job.set_stop_policy(
     graceful_input="exit\n",
     graceful_signal=signal.SIGINT,
+    graceful_timeout=5.0,
+)
+
+# PtyJob: use terminal control key (default is ctrl-c)
+pty_job.set_stop_policy(
+    graceful_key="ctrl-c",       # terminal key → kernel SIGINT
     graceful_timeout=5.0,
 )
 ```
 
 Meaning:
 
+- `graceful_key`
+  - terminal control key written to the PTY master (PtyJob only)
+  - e.g. `"ctrl-c"` → `\x03` → kernel SIGINT via line discipline
 - `graceful_input`
-  - text sent to stdin first
+  - text sent to stdin / PTY master
 - `graceful_signal`
   - OS signal sent as part of graceful shutdown
 - `graceful_timeout`
   - if the job is still running after that delay, Wave falls back to force cancel
 
-When both `graceful_input` and `graceful_signal` are configured, Wave applies
-them in this order:
+When multiple steps are configured, Wave applies them in this order:
 
-1. send input
-2. send signal
-3. wait for the graceful timeout
-4. force-cancel if the job is still active
+1. send terminal key (if `graceful_key` is set; PTY jobs only)
+2. send input (if `graceful_input` is set)
+3. send signal (if `graceful_signal` is set)
+4. wait for the graceful timeout
+5. force-cancel if the job is still active
+
+Each step is attempted regardless of whether the previous step succeeded.
+If a step fails (e.g. PTY not available), the failure is logged and the next step is tried.
 
 Behavior by command:
 
@@ -884,7 +938,16 @@ For jobs without graceful stop support:
 | `tags` | Set of tags associated with the job. |
 | `set_progress(value)` | Manually update job progress (0-100). |
 | `retry_count` | Number of retry attempts made so far. |
-| `set_stop_policy(...)` | Configure graceful input/signal stop behavior. |
+| `set_stop_policy(...)` | Configure graceful key/input/signal stop behavior. |
+
+### PtyJob-Specific API
+
+| Property / Method | Description |
+| --- | --- |
+| `supports_pty` | `True` for `PtyJob` / `PtyCmdJob`. Used by TUI to enable the TERMINAL tab. |
+| `send_key(key)` | Send a terminal control key to the PTY (e.g. `"ctrl-c"`, `"ctrl-d"`). |
+| `send_input(text)` | Write text to the PTY master fd (data channel). |
+| `send_signal(signum)` | Send an OS signal to the process group. |
 
 ### CLI
 

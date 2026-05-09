@@ -1,48 +1,62 @@
-﻿"""rpkbin.cfg — Control Flow Graph IR, analysis, and domain-specific tools.
+"""rpkbin.cfg - low-level control-flow modeling and layout helpers.
+
+``rpkbin.cfg`` is a small toolkit for assembly-like flows, FSM state machines,
+MCU branch layouts, and generated low-level code. It gives callers explicit
+blocks, edges, labels, validation, readable text formatting, deterministic
+layout order, optional call-depth checks, and domain recipes.
+
+The package is target-neutral: it does not parse assembly, allocate registers,
+model an ISA, or choose final branch instructions. Frontends and emitters keep
+owning those target-specific decisions.
 
 Public API
 ----------
 
-Core IR::
+Core flow::
 
     from rpkbin.cfg import CFG, BasicBlock
-    from rpkbin.cfg import Assignment, CallRef, OtherInsn, Insn
-    from rpkbin.cfg import NaturalLoop, Program
+    cfg = CFG()
+    cfg.add_block("IDLE", label="IDLE")
+    cfg.add_block("WORK", label="WORK")
+    cfg.add_edge("IDLE", "WORK", cond="go", priority=0)
+    cfg.set_entry("IDLE")
+    print(cfg.format())
+    order = cfg.linearize("trace")
 
-Merging::
+Program calls::
 
-    from rpkbin.cfg import merge_cfgs
+    from rpkbin.cfg import CallRef, Program
+    from rpkbin.cfg.analysis import build_call_graph, check_call_depth
+
+    main.get_block("FETCH").insns.append(CallRef("SUB_CHECK"))
+    program = Program({"main": main, "SUB_CHECK": sub})
+    depth = check_call_depth(program, max_depth=2)
+
+Domain recipes::
+
+    from rpkbin.cfg import fsm, mcu
+    fsm.find_dead_states(program)
+    fsm.find_sink_sccs(program)
+    fsm.check_conditions_complete(program)
+    fsm_layout = fsm.linearize(program)
+
+    mcu.find_dead_loops(program, exit_block="HALT")
+    mcu.dead_code_elimination(program.main)
+    mcu_layout = mcu.linearize(program)
+
+Graph utilities and deeper analysis::
+
+    from rpkbin.cfg import NaturalLoop, merge_cfgs
     from rpkbin.cfg import (
         CFGMergeError, DuplicateLabelError, InsnConflictError,
         EdgeConflictError, MetaConflictError,
     )
-    merged = merge_cfgs(flow1, flow2, flow3)
-    merged.set_entry("IDLE")
-
-Interprocedural analysis::
-
+    from rpkbin.cfg import Assignment, OtherInsn, Insn
     from rpkbin.cfg.analysis import (
-        build_call_graph,
-        check_call_depth,
         interprocedural_liveness,
         FunctionSummary,
         LivenessResult,
     )
-
-FSM tools::
-
-    from rpkbin.cfg import fsm
-    fsm.find_dead_states(program)
-    fsm.find_sink_sccs(program)
-    fsm.check_conditions_complete(program)
-    layout = fsm.linearize(program)          # → FSMLayout
-
-MCU tools::
-
-    from rpkbin.cfg import mcu
-    mcu.find_dead_loops(program, exit_block="HALT")
-    mcu.dead_code_elimination(cfg)
-    layout = mcu.linearize(program)          # → MCULayout
 """
 
 from .block import Assignment, CallRef, Insn, OtherInsn, BasicBlock
@@ -61,25 +75,24 @@ from . import fsm
 from . import mcu
 
 __all__ = [
-    # IR types
+    # Core flow
     "BasicBlock",
-    "Assignment",
+    "CFG",
+    # Program calls and optional instruction annotations
     "CallRef",
+    "Program",
+    "Assignment",
     "OtherInsn",
     "Insn",
-    # CFG
-    "CFG",
+    # Graph utilities
     "NaturalLoop",
-    # Merge
     "merge_cfgs",
     "CFGMergeError",
     "DuplicateLabelError",
     "InsnConflictError",
     "EdgeConflictError",
     "MetaConflictError",
-    # Program container
-    "Program",
-    # Domain-specific sub-modules
+    # Domain recipe modules
     "fsm",
     "mcu",
 ]

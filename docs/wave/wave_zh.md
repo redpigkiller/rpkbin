@@ -37,11 +37,14 @@ wave file (Python)          執行環境
 |---|---|---|
 | 跑一個 shell 指令 | `CmdJob(name, cmd)` | wave file |
 | 跑一個 Python function | `FuncJob(name, fn)` | wave file |
+| 跑一個互動式 CLI 程式 | `PtyJob(name, cmd)` | wave file |
 | 從 log 擷取進度或狀態 | `job.add_parser(fn)` | wave file |
 | 超時自動停止 | `Hook(when=Hook.elapsed_exceeds(s), action=Hook.action_kill())` | wave file |
 | 在特定 log 出現時做事 | `Hook(when=Hook.log_matches(pattern), action=...)` | wave file |
 | 完成時發通知 | `Hook(when=Hook.on_done(), action=Hook.action_emit(...))` | wave file |
-| 溫和關閉互動式程式 | `job.set_stop_policy(graceful_input=..., graceful_signal=...)` | wave file |
+| 對 PTY job 送 Ctrl-C | `key <job> ctrl-c` 或 TUI `F9` | REPL / TUI |
+| 對 job 送 OS signal | `signal <job> SIGTERM` | REPL / TUI |
+| 溫和關閉互動式程式 | `job.set_stop_policy(graceful_key=..., graceful_input=..., graceful_signal=...)` | wave file |
 | 失敗時自動重試 | `CmdJob(name, cmd, max_retries=3)` | wave file |
 | 限制 GPU / license 並行 | `session.configure(resources={"gpu": 2})` + `CmdJob(..., resources={"gpu": 1})` | wave file |
 | 整批跑完後寫報告 | `session.on_finish(callback)` | wave file |
@@ -161,8 +164,15 @@ rpk-wave run path\to\my_wave.py --no-tui   # headless
 Wave 在 job manager job 之上加入了觀測能力。
 
 - `CmdJob` / `WaveCmdJob`
-  - shell command job
+  - shell command job（PIPE-based stdin/stdout）
   - 支援 log parser、log-driven hook、stdin input、OS signal
+  - 預設 stop policy：`graceful_signal=SIGINT`
+- `PtyJob` / `PtyCmdJob`
+  - 在**偽終端 (PTY)** 裡跑 shell command
+  - child process 會看到 `isatty() == True`，適合互動式程式
+  - 支援 log parser、hook、terminal control key (`key`)、stdin input、OS signal
+  - 預設 stop policy：`graceful_key="ctrl-c"`
+  - 僅限 Linux / macOS；Windows 上可以建構物件但執行時會回報清楚的錯誤
 - `FuncJob` / `WaveFuncJob`
   - Python callable job
   - 支援 hook、events、parsed data update
@@ -180,6 +190,31 @@ Wave 額外提供的 job API：
 - `job.tags`
 - `job.set_progress(value)`
 - `job.retry_count`
+
+#### CmdJob vs PtyJob：何時用哪個
+
+| | `CmdJob` | `PtyJob` |
+|---|---|---|
+| Child I/O | PIPE (stdin/stdout) | PTY（偽終端）|
+| `isatty()` | `False` | `True` |
+| 適用場景 | 批次腳本、build、test | 互動式 REPL、`read`-based script |
+| Ctrl-C 行為 | `signal <job> SIGINT`（OS signal）| `key <job> ctrl-c`（terminal key → kernel SIGINT）|
+| 預設 stop | `graceful_signal=SIGINT` | `graceful_key="ctrl-c"` |
+| 平台支援 | 全平台（Windows、Linux、macOS）| 僅 Linux / macOS |
+
+除非程式需要 `isatty() == True` 或 terminal control key 語意，否則請優先使用 `CmdJob`。
+
+#### `input` vs `key` vs `signal`
+
+| 指令 | 做了什麼 | 適用對象 |
+|---|---|---|
+| `input <job> <text>` | 將文字寫入 stdin / PTY master（資料通道）| `CmdJob`、`PtyJob` |
+| `key <job> <key>` | 將 terminal control byte 寫入 PTY master | 僅 `PtyJob` |
+| `signal <job> <sig>` | 對 process group 發送 OS signal | `CmdJob`、`PtyJob` |
+
+`key ctrl-c` 會寫入 `\x03` 到 PTY。因為 `PtyJob` 使用 `pty.fork()` 建立了正確的 controlling terminal，kernel 的 line discipline 會將這個 byte 轉換成對 child foreground process group 的真實 SIGINT，就像在真實終端機按下 Ctrl-C 一樣。
+
+`signal SIGINT` 則是透過 `os.killpg()` 直接發送 signal，完全繞過 terminal driver。當你需要發送非 terminal key 對應的 signal（如 `SIGTERM`、`SIGUSR1`）時，使用 `signal`。
 
 ### 3. Hooks
 
@@ -206,6 +241,7 @@ Hook 由三部分構成：
 - `Hook.action_request_stop(force=False)`
 - `Hook.action_send_signal(sig)`
 - `Hook.action_send_input(text)`
+- `Hook.action_send_key(key)`
 - `Hook.action_emit(tag, message)`
 - `Hook.action_set_data(key, value)`
 - `Hook.action_chain(...)`
@@ -616,11 +652,12 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
 - **JOB DETAIL** — 單一特定 job 的全頁分割畫面。
   - Header：目前 job 名稱、位置、狀態、elapsed time、progress、可用時的 exit code，以及 detail navigation 提示。
   - 左邊 60%：串流 log 輸出（僅 append，不閃爍）。
-  - 右邊 40%：四個子分頁：
+  - 右邊 40%：五個子分頁：
     - **INFO** — job metadata 摘要，包含 id、status、state、skip flag 與 stop policy。
     - **DATA** — `job.peek_data()` 的 key/value 表格，以 upsert 方式更新；沒有資料時會顯示 `(no parsed data)`。
     - **EVENTS** — 使用者發送的事件（`source="user"`），依時間順序顯示。
     - **SYSTEM** — 系統發送的事件（`source="system"`），例如 `parser_error`、`hook_error`；parser/hook 錯誤會以紅色醒目顯示，並包含 exception detail。
+    - **TERMINAL** — `PtyJob` 的 append-only PTY 輸出。非 PTY job 會顯示「不支援」的提示。這是 fake-terminal view，不是完整的 terminal emulator。
 - **SYSTEM LOG** — session 層級的事件，以及所有 Command Bar 指令的輸出結果。
 - **HELP** — 鍵盤快捷鍵與指令說明。
 
@@ -665,6 +702,9 @@ TUI 專屬快捷鍵：
 | `F2` | 切換到 JOB DETAIL |
 | `F3` | 切換到 SYSTEM LOG |
 | `F4` | 切換到 HELP |
+| `F8` | 聚焦 Command Bar 並預填 `input . `（僅限 TERMINAL tab）|
+| `F9` | 透過 PTY 對 job 發送 Ctrl-C（僅限 TERMINAL tab）|
+| `F10` | 透過 PTY 對 job 發送 Ctrl-D（僅限 TERMINAL tab）|
 | `:` | 聚焦 Command Bar（Vim 風格）|
 | `Esc` | 離開 Command Bar，焦點回到目前面板 |
 | `Enter`（在 DASHBOARD row 上）| 開啟該 job 的 JOB DETAIL |
@@ -747,6 +787,7 @@ Headless REPL 是給執行中 batch 用的較佳輸入介面。
   - 強制取消 active jobs，然後離開 REPL
 
 `<job>` 可以是唯一的 job name、完整 job id，或 `status` / `show` 顯示的唯一 id prefix。
+在 TUI 模式中，如果目前已開啟 JOB DETAIL，還可以使用特殊的 `.` 代稱目前選取的 job。
 如果多個 jobs 使用同一個 name，Wave 會拒絕模糊名稱，並要求你改用 id。
 模糊名稱提示會列出每個符合 job 的完整 id 與狀態，因此可以直接複製完整 id，或使用 8 個字元以上的唯一 prefix。
 
@@ -794,28 +835,41 @@ Wave 支援 per-job stop policy，對互動式工具特別有用：
 ```python
 import signal
 
+# CmdJob：用 stdin + OS signal
 job.set_stop_policy(
     graceful_input="exit\n",
     graceful_signal=signal.SIGINT,
+    graceful_timeout=5.0,
+)
+
+# PtyJob：用 terminal control key（預設 ctrl-c）
+pty_job.set_stop_policy(
+    graceful_key="ctrl-c",       # terminal key → kernel SIGINT
     graceful_timeout=5.0,
 )
 ```
 
 意思是：
 
+- `graceful_key`
+  - 寫入 PTY master 的 terminal control key（僅 PtyJob）
+  - 例如 `"ctrl-c"` → `\x03` → 透過 line discipline 產生 kernel SIGINT
 - `graceful_input`
-  - 先送到 stdin 的文字
+  - 送到 stdin / PTY master 的文字
 - `graceful_signal`
   - graceful shutdown 過程中送出的 OS signal
 - `graceful_timeout`
   - 如果過了這段時間 job 還在跑，Wave 就 fallback 到 force cancel
 
-如果同時設定了 `graceful_input` 和 `graceful_signal`，順序是：
+設定了多個步驟時，Wave 會依序執行：
 
-1. 送 input
-2. 送 signal
-3. 等 graceful timeout
-4. 如果 job 還在跑，就 force-cancel
+1. 送 terminal key（如果設定了 `graceful_key`；僅 PTY jobs）
+2. 送 input（如果設定了 `graceful_input`）
+3. 送 signal（如果設定了 `graceful_signal`）
+4. 等 graceful timeout
+5. 如果 job 還在跑，就 force-cancel
+
+每個步驟不管前一個是否成功都會嘗試。如果某個步驟失敗（如 PTY 不可用），會 log 錯誤後繼續下一步。
 
 對應指令行為：
 
@@ -871,7 +925,16 @@ job.set_stop_policy(
 | `tags` | 與 job 關聯的標籤組合。 |
 | `set_progress(value)` | 手動更新 job 進度 (0-100)。 |
 | `retry_count` | 目前已重試的次數。 |
-| `set_stop_policy(...)` | 設定 graceful input / signal stop 行為。 |
+| `set_stop_policy(...)` | 設定 graceful key / input / signal stop 行為。 |
+
+### PtyJob 專屬 API
+
+| 屬性 / 方法 | 說明 |
+| --- | --- |
+| `supports_pty` | `PtyJob` / `PtyCmdJob` 為 `True`。TUI 用此判斷是否啟用 TERMINAL 分頁。 |
+| `send_key(key)` | 對 PTY 送 terminal control key（如 `"ctrl-c"`、`"ctrl-d"`）。 |
+| `send_input(text)` | 將文字寫入 PTY master fd（資料通道）。 |
+| `send_signal(signum)` | 對 process group 發送 OS signal。 |
 
 ### CLI
 
