@@ -22,6 +22,11 @@ import threading
 import time
 from pathlib import Path
 
+try:
+    from prompt_toolkit.completion import Completion
+except ImportError:
+    Completion = None  # type: ignore
+
 from rpkbin.wave.session import session
 from rpkbin.wave._util import job_exit_code as _job_exit_code
 
@@ -46,14 +51,16 @@ _HELP_TEXT = r"""Wave headless commands
   cancel --group <tag>          - force-cancel all active jobs with a tag
   skip <job>                    - skip a pending job (marks as skipped)
   rerun <job>                   - rerun a job (creates a new instance)
-  input <job> <text>            - write text to a running job's stdin (data channel)
-  key <job> <key>               - send a terminal control key to a PTY job
+  action <job> <name> [args...] - run a user-defined job action
+  session_action <name> [args...] - run a user-defined session action
+  send-line <job> <text>        - write text + newline to a running job's stdin
+  send-key  <job> <key>         - send a terminal control key to a PTY job
                                   Supported keys: ctrl-c, ctrl-d, ctrl-z, enter, tab
                                   This writes the control byte to the PTY master.
-                                  For OS signals, use 'signal' instead.
-  signal <job> <sig>            - deliver an OS signal to a running job's process
+                                  For OS signals, use 'send-signal' instead.
+  send-signal <job> <sig>       - deliver an OS signal to a running job's process
                                   This sends a real OS signal (kill -<sig> <pid>).
-                                  For terminal control keys, use 'key' instead.
+                                  For terminal control keys, use 'send-key' instead.
                                   Common signals:
                                     SIGINT   - interrupt (OS-level, not Ctrl+C key)
                                     SIGTERM  - request graceful termination
@@ -79,16 +86,14 @@ class _WaveCompleter:
     """Minimal prompt_toolkit completer for Wave REPL.
 
     Note: the '.' shorthand for the current JOB DETAIL job is TUI-only and
-    is deliberately NOT included here — it has no meaning in headless context.
+    is deliberately NOT included here because it has no meaning in headless context.
     """
 
     def __init__(self, sess) -> None:
         self._sess = sess
 
     def get_completions(self, document, complete_event):  # pragma: no cover - UI glue
-        try:
-            from prompt_toolkit.completion import Completion
-        except Exception:
+        if Completion is None:
             return
 
         text = document.text_before_cursor
@@ -103,7 +108,7 @@ class _WaveCompleter:
         commands = [
             "help", "status", "show", "logs", "data", "events",
             "pause", "resume", "stop", "skip", "cancel", "rerun",
-            "input", "key", "signal", "watch", "exit",
+            "action", "session_action", "send-line", "send-key", "send-signal", "watch", "exit",
         ]
 
         if len(parts) <= 1:
@@ -115,7 +120,7 @@ class _WaveCompleter:
 
         first = parts[0]
         current = parts[-1]
-        job_cmds = {"show", "logs", "data", "events", "stop", "skip", "cancel", "rerun", "input", "key", "signal"}
+        job_cmds = {"show", "logs", "data", "events", "stop", "skip", "cancel", "rerun", "action", "send-line", "send-key", "send-signal"}
 
         if first == "watch" and len(parts) == 2:
             for cmd in ("status", "logs"):
@@ -141,15 +146,27 @@ class _WaveCompleter:
                     yield Completion(flag, start_position=-len(current))
             return
 
-        # key <job> <key-name> — third argument: terminal key names
-        if first == "key" and len(parts) == 3:
+        if first == "action" and len(parts) == 3:
+            for name in getattr(self._sess, "job_action_names", lambda: [])():
+                if name.startswith(current):
+                    yield Completion(name, start_position=-len(current))
+            return
+
+        if first == "session_action" and len(parts) == 2:
+            for name in getattr(self._sess, "session_action_names", lambda: [])():
+                if name.startswith(current):
+                    yield Completion(name, start_position=-len(current))
+            return
+
+        # key <job> <key-name>: third argument is a terminal key name.
+        if first == "send-key" and len(parts) == 3:
             for k in _KEY_COMPLETIONS:
                 if k.startswith(current):
                     yield Completion(k, start_position=-len(current))
             return
 
-        # signal <job> <signal-name> — third argument: signal names
-        if first == "signal" and len(parts) == 3:
+        # signal <job> <signal-name>: third argument is a signal name.
+        if first == "send-signal" and len(parts) == 3:
             for s in _SIGNAL_COMPLETIONS:
                 if s.startswith(current):
                     yield Completion(s, start_position=-len(current))
@@ -171,9 +188,11 @@ def run(
     *,
     no_tui: bool = False,
     workers: int | None = None,
+    perf: bool = False,
 ) -> int:
     """Load *wave_file* and run the batch."""
     session.reset()
+    session.set_perf_enabled(perf)
     _load_wave_file(wave_file)
 
     if workers is not None:
@@ -206,6 +225,7 @@ def _run_headless() -> None:
         # _stop() performs the final wait/cleanup even if the non-interactive
         # path already called session.wait() above.
         session._stop()
+        _print_perf_summary(session)
 
 
 def _run_tui() -> None:
@@ -347,13 +367,19 @@ def _handle_cmd(parts: list[str], sess) -> str:
         elif verb == "rerun":
             _cmd_rerun(parts, sess)
 
-        elif verb == "input":
-            _cmd_input(parts, sess)
+        elif verb == "action":
+            _cmd_action(parts, sess)
 
-        elif verb == "key":
+        elif verb == "session_action":
+            _cmd_session_action(parts, sess)
+
+        elif verb == "send-line":
+            _cmd_send_line(parts, sess)
+
+        elif verb == "send-key":
             _cmd_key(parts, sess)
 
-        elif verb == "signal":
+        elif verb == "send-signal":
             _cmd_signal(parts, sess)
 
         elif verb == "watch":
@@ -473,7 +499,12 @@ def _cmd_show(name: str, sess) -> None:
         print(f"events  = {summary}")
     if hasattr(job, "peek_stop_policy"):
         policy = job.peek_stop_policy()
-        print(f"stop    = input={policy.get('graceful_input')!r}, signal={policy.get('graceful_signal')!r}, timeout={policy.get('graceful_timeout')!r}")
+        print(
+            f"stop    = key={policy.get('graceful_key')!r}, "
+            f"input={policy.get('graceful_input')!r}, "
+            f"signal={policy.get('graceful_signal')!r}, "
+            f"timeout={policy.get('graceful_timeout')!r}"
+        )
 
 
 def _cmd_logs_parts(parts: list[str], sess) -> None:
@@ -743,9 +774,61 @@ def _cmd_rerun(parts: list[str], sess) -> None:
     sess.add(new_job)
     print(f"[Wave] Rerun created: {new_job.name!r}")
 
-def _cmd_input(parts: list[str], sess) -> None:
-    if len(parts) != 3:
-        print("Usage: input <job_name> <text>")
+
+def _cmd_action(parts: list[str], sess) -> None:
+    if len(parts) < 3:
+        print("Usage: action <job> <action_name> [args...]")
+        names = getattr(sess, "job_action_names", lambda: [])()
+        if names:
+            print("Available job actions: " + ", ".join(names))
+        return
+    job = _find_job(parts[1], sess)
+    if job is None:
+        return
+    action_name = parts[2]
+    try:
+        sess.run_job_action(job, action_name, *parts[3:], source="cli")
+    except KeyError as exc:
+        print(f"[Wave] {exc}")
+        names = sorted(
+            set(getattr(sess, "job_action_names", lambda: [])())
+            | set(getattr(job, "action_names", lambda: [])())
+        )
+        if names:
+            print("Available job actions: " + ", ".join(names))
+        return
+    except PermissionError as exc:
+        print(f"[Wave] {exc}")
+        return
+    print(f"[Wave] Action {action_name!r} ran for {parts[1]!r}.")
+
+
+def _cmd_session_action(parts: list[str], sess) -> None:
+    if len(parts) < 2:
+        print("Usage: session_action <action_name> [args...]")
+        names = getattr(sess, "session_action_names", lambda: [])()
+        if names:
+            print("Available session actions: " + ", ".join(names))
+        return
+    action_name = parts[1]
+    try:
+        sess.run_session_action(action_name, *parts[2:], source="cli")
+    except KeyError as exc:
+        print(f"[Wave] {exc}")
+        names = getattr(sess, "session_action_names", lambda: [])()
+        if names:
+            print("Available session actions: " + ", ".join(names))
+        return
+    except PermissionError as exc:
+        print(f"[Wave] {exc}")
+        return
+    print(f"[Wave] Session action {action_name!r} ran.")
+
+
+def _cmd_send_line(parts: list[str], sess) -> None:
+    """send-line <job> <text>: write text + newline to a job's stdin."""
+    if len(parts) < 3:
+        print("Usage: send-line <job_name> <text>")
         return
     job = _find_job(parts[1], sess)
     if job is None:
@@ -753,13 +836,15 @@ def _cmd_input(parts: list[str], sess) -> None:
     if not hasattr(job, "send_input"):
         print(f"[Wave] {parts[1]!r} does not accept stdin input.")
         return
-    text = parts[2].replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+    text = " ".join(parts[2:]).replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+    if not text.endswith("\n"):
+        text += "\n"
     try:
         job.send_input(text)
     except RuntimeError as exc:
         print(f"[Wave] {exc}")
         return
-    print(f"[Wave] Input sent to {parts[1]!r}.")
+    print(f"[Wave] send-line sent to {parts[1]!r}.")
 
 
 def _resolve_signal(value: str) -> int | None:
@@ -776,7 +861,7 @@ def _resolve_signal(value: str) -> int | None:
 
 def _cmd_signal(parts: list[str], sess) -> None:
     if len(parts) != 3:
-        print("Usage: signal <job_name> <signal>")
+        print("Usage: send-signal <job_name> <signal>")
         return
     job = _find_job(parts[1], sess)
     if job is None:
@@ -802,10 +887,10 @@ def _cmd_signal(parts: list[str], sess) -> None:
 
 def _cmd_key(parts: list[str], sess) -> None:
     if len(parts) != 3:
-        print("Usage: key <job_name> <key>")
+        print("Usage: send-key <job_name> <key>")
         print("  Supported keys: ctrl-c, ctrl-d, ctrl-z, enter, tab")
         print("  This sends a terminal control key to a PTY job.")
-        print("  For OS signals, use 'signal' instead.")
+        print("  For OS signals, use 'send-signal' instead.")
         return
     job = _find_job(parts[1], sess)
     if job is None:
@@ -853,6 +938,12 @@ def _print_completion_summary(sess) -> None:
     failed = len(sess.failed(include_skipped=False))
     skipped = len(sess.skipped())
     print(f"[Wave] All jobs are complete. done={done} failed={failed} skipped={skipped}")
+
+
+def _print_perf_summary(sess) -> None:
+    summary = getattr(sess, "perf_summary", lambda: "")()
+    if summary:
+        print(summary)
 
 
 def _cmd_exit(parts: list[str], sess) -> str:

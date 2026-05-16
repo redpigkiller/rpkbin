@@ -246,6 +246,8 @@ Common actions:
 - `Hook.action_send_key(key)`
 - `Hook.action_emit(tag, message)`
 - `Hook.action_set_data(key, value)`
+- `Hook.action_run_action(name, *args)`
+- `Hook.action_run_session_action(name, *args)`
 - `Hook.action_chain(...)`
 
 > [!WARNING]
@@ -262,7 +264,56 @@ Rule of thumb:
 - **Note**: `elapsed_exceeds` with `policy="always"` will trigger repeatedly under timer polling; `policy="once"` is recommended for most use cases.
 - use plain job manager callbacks such as `on_done(...)` / `on_fail(...)` for simple completion/failure notifications
 
-### 4. Job Outcome Semantics
+### 4. User-Defined Actions
+
+Actions are named commands you define in the wave file and trigger later from the TUI, headless REPL, or a guarded hook. They are deliberately general-purpose; Wave does not assume any specific tool or domain.
+
+Job actions target one job:
+
+```python
+def interrupt(job, ctx):
+    job.send_key("ctrl-c")
+
+session.define_job_action("interrupt", interrupt)
+```
+
+Then run it from the TUI / REPL:
+
+```text
+action sim interrupt
+action . interrupt      # TUI-only shorthand for the current JOB DETAIL job
+```
+
+Session actions live in a separate namespace and operate on the whole session:
+
+```python
+def summarize(sess, ctx):
+    sess.emit("summary", str(sess.summary()))
+
+session.define_session_action("summarize", summarize)
+```
+
+Run it explicitly:
+
+```text
+session_action summarize
+```
+
+Hooks can trigger actions, but hook execution is opt-in:
+
+```python
+session.define_job_action("interrupt", interrupt, allow_from_hook=True)
+
+job.add_hook(Hook(
+    when=Hook.log_matches("READY"),
+    action=Hook.action_run_action("interrupt"),
+    policy="once",
+))
+```
+
+By default, hooks cannot run job actions or session-level actions. Enable `allow_from_hook=True` only for lightweight, re-entrant actions that are safe to run from a worker thread.
+
+### 5. Job Outcome Semantics
 
 Wave keeps a small distinction between "failed" and "intentionally skipped":
 
@@ -781,6 +832,10 @@ inspect results before leaving with `exit`.
   - force-cancel all active jobs carrying `tag`
 - `skip <job>`
   - skip a pending Wave job
+- `action <job> <name> [args...]`
+  - run a user-defined job action
+- `session_action <name> [args...]`
+  - run a user-defined session-level action
 - `input <job> <text>`
   - send stdin text to a running job (supports `\n`, `\r`, `\t` escape sequences)
 - `signal <job> <sig>`
@@ -932,6 +987,7 @@ For jobs without graceful stop support:
 | `events` / `peek_events()` | Emitted event history. |
 | `add_parser(fn)` | Register a parser called for each log line. |
 | `add_hook(hook)` | Register a Wave hook. |
+| `add_action(name, fn, allow_from_hook=False)` | Register a per-job action override. The callable receives `(job, ctx)` and can be run with `action <job> <name>`. |
 | `emit(tag, message, source="user")` | Append a named event to the job event stream. `source` defaults to `"user"` for events created by application code; Wave uses `"system"` for internal error events such as `parser_error` and `hook_error`. Visible in the TUI JOB DETAIL Events / System tabs. |
 | `skip()` | Skip a pending Wave job. |
 | `is_skipped` | Whether the job was intentionally skipped. |
@@ -939,6 +995,17 @@ For jobs without graceful stop support:
 | `set_progress(value)` | Manually update job progress (0-100). |
 | `retry_count` | Number of retry attempts made so far. |
 | `set_stop_policy(...)` | Configure graceful key/input/signal stop behavior. |
+
+### Session Actions
+
+| Method | Description |
+| --- | --- |
+| `session.define_job_action(name, fn, allow_from_hook=False)` | Register a reusable job action. `fn(job, ctx)` receives `ctx["args"]`, `ctx["source"]`, `ctx["job"]`, and `ctx["session"]`. |
+| `session.define_session_action(name, fn, allow_from_hook=False)` | Register a session-level action in a separate namespace. `fn(session, ctx)` receives `ctx["args"]` and `ctx["source"]`. |
+| `session.job_action_names()` | Return registered job action names. |
+| `session.session_action_names()` | Return registered session action names. |
+| `session.run_job_action(job, name, *args, source="api")` | Programmatically run a registered job action. |
+| `session.run_session_action(name, *args, source="api")` | Programmatically run a registered session action. |
 
 ### PtyJob-Specific API
 
@@ -956,6 +1023,7 @@ For jobs without graceful stop support:
 | `rpk-wave run <wave_file>` | Run a wave file with the TUI (default when terminal is interactive). |
 | `rpk-wave run <wave_file> --no-tui` | Run headless; open REPL when stdin is interactive. |
 | `rpk-wave run <wave_file> --workers N` | Override `max_workers` from the wave file. |
+| `rpk-wave run <wave_file> --perf` | Enable lightweight perf/debug counters and print a summary. |
 
 ---
 

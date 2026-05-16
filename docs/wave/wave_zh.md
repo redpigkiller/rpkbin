@@ -244,6 +244,8 @@ Hook 由三部分構成：
 - `Hook.action_send_key(key)`
 - `Hook.action_emit(tag, message)`
 - `Hook.action_set_data(key, value)`
+- `Hook.action_run_action(name, *args)`
+- `Hook.action_run_session_action(name, *args)`
 - `Hook.action_chain(...)`
 
 > [!WARNING]
@@ -260,7 +262,56 @@ Hook 由三部分構成：
 - **注意**：在 timer polling 機制下，`elapsed_exceeds` 若搭配 `policy="always"` 會重複觸發；多數場景建議使用 `policy="once"`。
 - 如果你只是想在完成或失敗時收到簡單通知，用 job manager 原生 callback `on_done(...)` / `on_fail(...)`
 
-### 4. Job 結果語意
+### 4. 使用者自訂 Actions
+
+Actions 是你在 wave file 裡定義的具名操作，之後可以從 TUI、Headless REPL 或受保護的 hook 觸發。它們是 general-purpose 機制，不假設任何特定工具或領域。
+
+Job action 針對單一 job：
+
+```python
+def interrupt(job, ctx):
+    job.send_key("ctrl-c")
+
+session.define_job_action("interrupt", interrupt)
+```
+
+在 TUI / REPL 執行：
+
+```text
+action sim interrupt
+action . interrupt      # TUI 專用：目前 JOB DETAIL 的 job
+```
+
+Session action 使用獨立 namespace，適合操作整個 session：
+
+```python
+def summarize(sess, ctx):
+    sess.emit("summary", str(sess.summary()))
+
+session.define_session_action("summarize", summarize)
+```
+
+明確執行：
+
+```text
+session_action summarize
+```
+
+Hook 可以觸發 action，但必須明確允許：
+
+```python
+session.define_job_action("interrupt", interrupt, allow_from_hook=True)
+
+job.add_hook(Hook(
+    when=Hook.log_matches("READY"),
+    action=Hook.action_run_action("interrupt"),
+    policy="once",
+))
+```
+
+預設情況下，hook 不能執行 job action 或 session-level action。只有輕量、可重入、適合在 worker thread 中執行的 action，才建議設定 `allow_from_hook=True`。
+
+### 5. Job 結果語意
 
 Wave 會保留「失敗」與「刻意跳過」之間的小差異：
 
@@ -771,6 +822,10 @@ Headless REPL 是給執行中 batch 用的較佳輸入介面。
   - 立即 force-cancel 帶有 `tag` 的 active jobs
 - `skip <job>`
   - 跳過 pending 的 Wave job
+- `action <job> <name> [args...]`
+  - 執行使用者自訂的 job action
+- `session_action <name> [args...]`
+  - 執行使用者自訂的 session-level action
 - `input <job> <text>`
   - 對 running job 寫入 stdin（支援 `\n`, `\r`, `\t` 等 escape sequences）
 - `signal <job> <sig>`
@@ -919,6 +974,7 @@ pty_job.set_stop_policy(
 | `events` / `peek_events()` | job 事件歷史。 |
 | `add_parser(fn)` | 註冊每行 log 都會呼叫的 parser。 |
 | `add_hook(hook)` | 註冊 Wave hook。 |
+| `add_action(name, fn, allow_from_hook=False)` | 註冊 per-job action override。`fn(job, ctx)` 可透過 `action <job> <name>` 執行。 |
 | `emit(tag, message, source="user")` | 在 job event stream 中加入事件。`source` 預設為 `"user"`，表示應用程式程式碼發送的事件；Wave 內部在 parser 或 hook 失敗時會以 `source="system"` 發送 `parser_error` / `hook_error`。在 TUI JOB DETAIL 的 Events / System 子分頁中可見。 |
 | `skip()` | 跳過 pending 的 Wave job。 |
 | `is_skipped` | 這個 job 是否為刻意 skip。 |
@@ -926,6 +982,17 @@ pty_job.set_stop_policy(
 | `set_progress(value)` | 手動更新 job 進度 (0-100)。 |
 | `retry_count` | 目前已重試的次數。 |
 | `set_stop_policy(...)` | 設定 graceful key / input / signal stop 行為。 |
+
+### Session Actions
+
+| 方法 | 說明 |
+| --- | --- |
+| `session.define_job_action(name, fn, allow_from_hook=False)` | 註冊可重用的 job action。`fn(job, ctx)` 會收到 `ctx["args"]`、`ctx["source"]`、`ctx["job"]` 與 `ctx["session"]`。 |
+| `session.define_session_action(name, fn, allow_from_hook=False)` | 在獨立 namespace 中註冊 session-level action。`fn(session, ctx)` 會收到 `ctx["args"]` 與 `ctx["source"]`。 |
+| `session.job_action_names()` | 回傳已註冊的 job action names。 |
+| `session.session_action_names()` | 回傳已註冊的 session action names。 |
+| `session.run_job_action(job, name, *args, source="api")` | 程式化執行已註冊的 job action。 |
+| `session.run_session_action(name, *args, source="api")` | 程式化執行已註冊的 session action。 |
 
 ### PtyJob 專屬 API
 
@@ -943,6 +1010,7 @@ pty_job.set_stop_policy(
 | `rpk-wave run <wave_file>` | 以 TUI 執行 wave file（互動式 terminal 下的預設行為）。 |
 | `rpk-wave run <wave_file> --no-tui` | 用 headless 模式執行；若 stdin 是互動式的就開 REPL。 |
 | `rpk-wave run <wave_file> --workers N` | 覆寫 wave file 內的 `max_workers`。 |
+| `rpk-wave run <wave_file> --perf` | 啟用輕量 perf/debug counters，並輸出 summary。 |
 
 ---
 

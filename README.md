@@ -3,7 +3,18 @@
 [![English](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
 [![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](README_zh.md)
 
-`rpkbin` is a comprehensive toolkit providing essential data types and utilities for hardware design and verification flows.
+`rpkbin` is a practical toolbox for hardware design and verification work. It includes small, focused utilities for bit-true modeling, spreadsheet extraction, control-flow modeling, and long-running batch workflows.
+
+If you are new here, start with the task you want to solve:
+
+| I want to... | Start with |
+| --- | --- |
+| Run many shell/Python jobs and watch them live | [Wave](docs/wave/wave.md) |
+| Run commands/functions in parallel from Python | [Job Manager](docs/job_manager/job_manager.md) |
+| Model registers and bit fields | [MapBV](docs/mapbv/mapbv.md) |
+| Simulate fixed-point arithmetic | [NumBV](docs/numbv/numbv.md) |
+| Extract structured data from Excel files | [Excel Extractor](docs/excel_extractor/excel_extractor.md) |
+| Sketch or validate low-level control flow | [CFG](docs/cfg/cfg.md) |
 
 ## Core Features
 
@@ -51,16 +62,54 @@ A practical, cross-platform job manager for running shell commands and Python ca
 ### 6. Wave — Batch Workflow Orchestration with Live TUI
 A workflow layer built on top of Job Manager for declaring and observing long-running batch flows.
 
-- **Wave File Pattern**: Declare jobs, parsers, and hooks in a plain Python file. Run it with `rpk-wave run`.
-- **Live TUI**: A full-screen Textual interface with a job dashboard, per-job log/data/event panels, and a built-in command bar.
-- **Headless REPL**: For CI or terminal sessions where a TUI isn't wanted — full inspection and control commands via stdin.
-- **Hooks & Parsers**: React to log output, structured parsed data, elapsed time, or lifecycle events automatically.
-- **Job Events with Source Tracking**: `job.emit()` records named events; `source="system"` marks internal errors (parser/hook failures) for easy filtering in the TUI.
-- **Operational Control**: Pause/resume dispatch, gracefully stop jobs, force-cancel jobs, or target active jobs by tag from either the TUI command bar or headless REPL.
-- **Fast Job Inspection**: Open `show`, `logs`, `data`, or `events <job>` directly in JOB DETAIL, then switch between jobs with `[` / `]` or between running jobs with `{` / `}`.
-- **Intentional Cancellation Semantics**: User-cancelled jobs are reported as `cancelled` without turning the whole Wave run into a failed exit; real job failures and session timeouts still return a non-zero exit code.
+- **Plain Python wave files**: declare jobs, parsers, hooks, and actions in a normal `.py` file.
+- **Live TUI by default**: dashboard, per-job logs, parsed data, events, system messages, and a command bar.
+- **Headless mode when needed**: use `--no-tui` for CI or script-only environments.
+- **Operational controls**: rerun jobs, stop/cancel by job or tag, send stdin, send OS signals, or send PTY terminal keys.
+- **Automation hooks**: react to log patterns, parsed data, elapsed time, lifecycle events, or user-defined actions.
 
 [Wave Documentation](docs/wave/wave.md)
+
+## Quick Start: Wave
+
+Install Wave support:
+
+```bash
+pip install -e .[wave]
+```
+
+Create `hello.wave.py`:
+
+```python
+from rpkbin.wave import session, CmdJob
+
+session.configure(max_workers=2)
+
+session.add(CmdJob("hello", "python -c \"print('hello from wave')\""))
+session.add(CmdJob("list", "python -c \"import os; print(os.getcwd())\""))
+```
+
+Run it:
+
+```bash
+rpk-wave run hello.wave.py
+```
+
+Useful TUI commands:
+
+```text
+status
+logs hello
+show hello
+rerun hello
+stop hello
+```
+
+For CI or plain terminal output:
+
+```bash
+rpk-wave run hello.wave.py --no-tui
+```
 
 ## Installation
 

@@ -174,16 +174,23 @@ class Hook:
                 return
 
         try:
-            t0 = time.perf_counter()
-            self.action(job, ctx)  # type: ignore[arg-type]
-            dt = time.perf_counter() - t0
-            if dt > SLOW_HOOK_ACTION_WARNING_S:
-                logger.warning(
-                    "Slow hook action detected for hook type=%s (took %.2fs). "
-                    "Avoid blocking work inside hook actions.",
-                    self.when.type,
-                    dt,
-                )
+            perf_enabled = bool(getattr(job, "_wave_perf_enabled", False))
+            if perf_enabled:
+                t0 = time.perf_counter()
+                self.action(job, ctx)  # type: ignore[arg-type]
+                dt = time.perf_counter() - t0
+                if hasattr(job, "_perf_hook_calls"):
+                    job._perf_hook_calls += 1
+                    job._perf_hook_elapsed_s += dt
+                if dt > SLOW_HOOK_ACTION_WARNING_S:
+                    logger.warning(
+                        "Slow hook action detected for hook type=%s (took %.2fs). "
+                        "Avoid blocking work inside hook actions.",
+                        self.when.type,
+                        dt,
+                    )
+            else:
+                self.action(job, ctx)  # type: ignore[arg-type]
         except Exception as exc:
             logger.exception(
                 "Hook action raised an exception (ignored). "
@@ -419,6 +426,59 @@ class Hook:
                 logger.warning(
                     "Hook.action_set_data ignored: job %r does not support update_parsed_data().",
                     getattr(job, "name", job),
+                )
+        return _action
+
+    @staticmethod
+    def action_run_action(name: str, *args: str) -> HookAction:
+        """Run a registered job action from a hook.
+
+        The target action must have been registered with
+        ``allow_from_hook=True``.  This keeps hook-triggered automation
+        job-local by default and avoids surprising session-wide side effects.
+        """
+        def _action(job, ctx):
+            sess = getattr(job, "_wave_session", None)
+            if sess is None:
+                logger.warning(
+                    "Hook.action_run_action ignored: job %r is not attached to a Wave session.",
+                    getattr(job, "name", job),
+                )
+                return
+            try:
+                sess.run_job_action(job, name, *args, source="hook")
+            except (KeyError, PermissionError, ValueError) as exc:
+                logger.warning(
+                    "Hook.action_run_action failed for job %r action %r: %s",
+                    getattr(job, "name", job),
+                    name,
+                    exc,
+                )
+        return _action
+
+    @staticmethod
+    def action_run_session_action(name: str, *args: str) -> HookAction:
+        """Run a registered session-level action from a hook.
+
+        Session-level hook execution is intentionally guarded by
+        ``allow_from_hook=True`` on the registered action.
+        """
+        def _action(job, ctx):
+            sess = getattr(job, "_wave_session", None)
+            if sess is None:
+                logger.warning(
+                    "Hook.action_run_session_action ignored: job %r is not attached to a Wave session.",
+                    getattr(job, "name", job),
+                )
+                return
+            try:
+                sess.run_session_action(name, *args, source="hook")
+            except (KeyError, PermissionError, ValueError) as exc:
+                logger.warning(
+                    "Hook.action_run_session_action failed for job %r action %r: %s",
+                    getattr(job, "name", job),
+                    name,
+                    exc,
                 )
         return _action
 

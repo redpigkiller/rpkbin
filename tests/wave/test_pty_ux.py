@@ -55,19 +55,19 @@ class TestExpandDotInParts:
     # ---- happy-path expansion ----
 
     def test_key_dot_expanded(self):
-        expanded, err = self._expand(["key", ".", "ctrl-c"], "uuid-1234")
+        expanded, err = self._expand(["send-key", ".", "ctrl-c"], "uuid-1234")
         assert err is None
-        assert expanded == ["key", "uuid-1234", "ctrl-c"]
+        assert expanded == ["send-key", "uuid-1234", "ctrl-c"]
 
     def test_signal_dot_expanded(self):
-        expanded, err = self._expand(["signal", ".", "SIGTERM"], "uuid-1234")
+        expanded, err = self._expand(["send-signal", ".", "SIGTERM"], "uuid-1234")
         assert err is None
-        assert expanded == ["signal", "uuid-1234", "SIGTERM"]
+        assert expanded == ["send-signal", "uuid-1234", "SIGTERM"]
 
     def test_input_dot_expanded(self):
-        expanded, err = self._expand(["input", ".", "hello"], "uuid-1234")
+        expanded, err = self._expand(["send-line", ".", "hello"], "uuid-1234")
         assert err is None
-        assert expanded == ["input", "uuid-1234", "hello"]
+        assert expanded == ["send-line", "uuid-1234", "hello"]
 
     def test_show_dot_expanded(self):
         expanded, err = self._expand(["show", "."], "uuid-1234")
@@ -145,20 +145,20 @@ class TestExpandDotInParts:
     # ---- error: dot without open detail job ----
 
     def test_dot_no_detail_job_returns_error(self):
-        expanded, err = self._expand(["key", ".", "ctrl-c"], None)
+        expanded, err = self._expand(["send-key", ".", "ctrl-c"], None)
         assert expanded is None
         assert err is not None
         assert "open a job detail first" in err
 
     def test_signal_dot_no_detail_job_returns_error(self):
-        expanded, err = self._expand(["signal", ".", "SIGTERM"], None)
+        expanded, err = self._expand(["send-signal", ".", "SIGTERM"], None)
         assert expanded is None
         assert "'.' means the current JOB DETAIL job" in err
 
     # ---- no-op: no dot present ----
 
     def test_no_dot_returns_unchanged(self):
-        parts = ["key", "sim", "ctrl-c"]
+        parts = ["send-key", "sim", "ctrl-c"]
         expanded, err = self._expand(parts, "uuid-1234")
         assert err is None
         assert expanded == parts
@@ -243,7 +243,9 @@ class TestTerminalShortcutContext:
         assert self._check(tab="tab-dashboard") is False
 
     def test_wrong_sub_tab(self):
-        assert self._check(sub_tab="detail-info") is False
+        """Sub-tab no longer affects terminal shortcut context (F9/F10 work from any sub-tab)."""
+        # F9/F10 now work when JOB DETAIL is open + PTY job selected, regardless of sub-tab
+        assert self._check(sub_tab="detail-info") is True
 
     def test_no_detail_job(self):
         assert self._check(detail_job=None) is False
@@ -252,8 +254,9 @@ class TestTerminalShortcutContext:
         assert self._check(focused_id="cmd-input") is False
 
     def test_detail_tabs_raises(self):
-        """If detail-tabs widget is unavailable, guard returns False."""
-        assert self._check(raises=True) is False
+        """detail-tabs widget availability no longer affects terminal shortcut context."""
+        # guard now only checks main tab + job + focus, not sub-tab
+        assert self._check(raises=True) is True
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +290,9 @@ class TestTuiAutocomplete:
         inp._history = []
         inp._history_index = -1
         inp._draft = ""
+        inp._cycle_matches = []
+        inp._cycle_index = -1
+        inp._cycle_before = ""
         return inp
 
     def _completions(self, inp, text: str) -> list[str]:
@@ -323,9 +329,9 @@ class TestTuiAutocomplete:
         elif len(parts) == 3:
             verb = parts[0].lower()
             current = parts[2]
-            if verb == "key":
+            if verb == "send-key":
                 candidates = [k for k in _KEY_COMPLETIONS if k.startswith(current)]
-            elif verb == "signal":
+            elif verb == "send-signal":
                 candidates = [s for s in _SIGNAL_COMPLETIONS if s.startswith(current)]
 
         return candidates
@@ -338,7 +344,7 @@ class TestTuiAutocomplete:
         jobs[1].name = "beta"
         detail_job = MagicMock()
         inp = self._make_cmd_input(session_jobs=jobs, detail_job=detail_job)
-        candidates = self._completions(inp, "key ")
+        candidates = self._completions(inp, "send-key ")
         assert "." in candidates
         assert "alpha" in candidates
 
@@ -346,14 +352,14 @@ class TestTuiAutocomplete:
         jobs = [MagicMock()]
         jobs[0].name = "alpha"
         inp = self._make_cmd_input(session_jobs=jobs, detail_job=None)
-        candidates = self._completions(inp, "key ")
+        candidates = self._completions(inp, "send-key ")
         assert "." not in candidates
 
     def test_dot_matches_literal_dot_prefix(self):
         """When user types 'key .' the '.' candidate still appears."""
         detail_job = MagicMock()
         inp = self._make_cmd_input(detail_job=detail_job)
-        candidates = self._completions(inp, "key .")
+        candidates = self._completions(inp, "send-key .")
         assert "." in candidates
 
     def test_dot_in_all_job_commands(self):
@@ -368,61 +374,61 @@ class TestTuiAutocomplete:
 
     def test_key_ctrl_c_completion(self):
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "key sim ctrl")
+        candidates = self._completions(inp, "send-key sim ctrl")
         assert "ctrl-c" in candidates
         assert "ctrl-d" in candidates
         assert "ctrl-z" in candidates
 
     def test_key_enter_completion(self):
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "key sim e")
+        candidates = self._completions(inp, "send-key sim e")
         assert "enter" in candidates
 
     def test_key_quoted_job_name_preserved(self):
         """Ensure that 3rd-arg completion quotes job names containing spaces."""
         inp = self._make_cmd_input()
         # Mocking what the _handle_autocomplete method would do manually
-        inp.value = 'key "my job" ctrl-c'
-        inp._handle_autocomplete()
+        inp.value = 'send-key "my job" ctrl-c'
+        inp.action_autocomplete()
         # Verify that the value has the quotes
-        assert inp.value == 'key "my job" ctrl-c '
+        assert inp.value == 'send-key "my job" ctrl-c '
 
     def test_key_tab_completion(self):
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "key sim t")
+        candidates = self._completions(inp, "send-key sim t")
         assert "tab" in candidates
 
     def test_key_completions_empty_prefix(self):
         from rpkbin.wave.tui.app import _KEY_COMPLETIONS
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "key sim ")
+        candidates = self._completions(inp, "send-key sim ")
         assert set(candidates) == set(_KEY_COMPLETIONS)
 
     # ---- signal third-arg completion ----
 
     def test_signal_sig_prefix(self):
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "signal sim SIG")
+        candidates = self._completions(inp, "send-signal sim SIG")
         assert "SIGINT" in candidates
         assert "SIGTERM" in candidates
         assert "SIGKILL" in candidates
 
     def test_signal_sigterm_completion(self):
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "signal sim SIGTERM")
+        candidates = self._completions(inp, "send-signal sim SIGTERM")
         assert "SIGTERM" in candidates
 
     def test_signal_quoted_job_name_preserved(self):
         """Ensure that 3rd-arg completion quotes job names containing spaces."""
         inp = self._make_cmd_input()
-        inp.value = 'signal "my job" SIGT'
-        inp._handle_autocomplete()
-        assert inp.value == 'signal "my job" SIGTERM '
+        inp.value = 'send-signal "my job" SIGT'
+        inp.action_autocomplete()
+        assert inp.value == 'send-signal "my job" SIGTERM '
 
     def test_signal_completions_empty_prefix(self):
         from rpkbin.wave.tui.app import _SIGNAL_COMPLETIONS
         inp = self._make_cmd_input()
-        candidates = self._completions(inp, "signal sim ")
+        candidates = self._completions(inp, "send-signal sim ")
         assert set(candidates) == set(_SIGNAL_COMPLETIONS)
 
     # ---- existing job-name completion not regressed ----
@@ -474,30 +480,30 @@ class TestRunnerCompleterKeySignal:
         return [comp.text for comp in (c.get_completions(doc, None) or [])]
 
     def test_key_ctrl_completions(self):
-        results = self._completions("key sim ctrl")
+        results = self._completions("send-key sim ctrl")
         assert "ctrl-c" in results
         assert "ctrl-d" in results
 
     def test_key_empty_prefix(self):
-        results = self._completions("key sim ")
+        results = self._completions("send-key sim ")
         assert set(results) == set(self.key_comps)
 
     def test_signal_sig_completions(self):
-        results = self._completions("signal sim SIG")
+        results = self._completions("send-signal sim SIG")
         assert "SIGINT" in results
         assert "SIGTERM" in results
 
     def test_signal_empty_prefix(self):
-        results = self._completions("signal sim ")
+        results = self._completions("send-signal sim ")
         assert set(results) == set(self.sig_comps)
 
     def test_dot_not_in_headless_completions(self):
         """'.' must NOT appear in headless job-name completions."""
-        results = self._completions("key ")
+        results = self._completions("send-key ")
         assert "." not in results
 
     def test_dot_not_in_signal_completions(self):
-        results = self._completions("signal ")
+        results = self._completions("send-signal ")
         assert "." not in results
 
 

@@ -1136,6 +1136,120 @@ class TestSession:
         assert "ok" in summary["done_names"]
         assert summary["duration_s"] is not None
 
+    def test_perf_disabled_returns_disabled_snapshot_and_empty_summary(self):
+        sess = Session()
+        job = WaveFuncJob("ok", lambda: None)
+        job.add_parser(lambda line: {"state": line})
+        job.add_hook(Hook(when=Hook.on_done(), action=lambda j, ctx: None))
+        job._handle_log(job, "READY")
+        assert sess.perf_snapshot() == {"enabled": False}
+        assert sess.perf_summary() == ""
+
+    def test_perf_enabled_accumulates_parser_and_hook_timing(self, monkeypatch):
+        sess = Session()
+        sess.set_perf_enabled(True)
+        job = WaveFuncJob("ok", lambda: None)
+        sess.add(job)
+        job._wave_perf_enabled = True
+        job.add_parser(lambda line: {"state": line})
+        job.add_hook(Hook(when=Hook.log_matches(r"READY"), action=lambda j, ctx: None, policy="always"))
+
+        times = iter([10.0, 10.25, 20.0, 20.5])
+        monkeypatch.setattr("rpkbin.wave.job.time.perf_counter", lambda: next(times))
+        monkeypatch.setattr("rpkbin.wave.hook.time.perf_counter", lambda: next(times))
+
+        job._handle_log(job, "READY")
+        snapshot = sess.perf_snapshot()
+
+        assert snapshot["enabled"] is True
+        assert snapshot["totals"]["parser_calls"] == 1
+        assert snapshot["totals"]["hook_calls"] == 1
+        assert snapshot["totals"]["parser_elapsed_s"] == pytest.approx(0.25)
+        assert snapshot["totals"]["hook_elapsed_s"] == pytest.approx(0.5)
+
+    def test_session_job_action_runs_with_context(self):
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+
+        sess.define_job_action(
+            "mark",
+            lambda target, ctx: calls.append((target, ctx["source"], ctx["args"])),
+        )
+
+        sess.run_job_action(job, "mark", "a", "b", source="cli")
+
+        assert calls == [(job, "cli", ("a", "b"))]
+
+    def test_job_action_override_takes_precedence(self):
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+        sess.define_job_action("mark", lambda target, ctx: calls.append("session"))
+        job.add_action("mark", lambda target, ctx: calls.append("job"))
+
+        sess.run_job_action(job, "mark", source="cli")
+
+        assert calls == ["job"]
+
+    def test_session_action_runs_in_separate_namespace(self):
+        sess = Session()
+        calls = []
+        sess.define_session_action(
+            "summary",
+            lambda current_session, ctx: calls.append((current_session, ctx["args"])),
+        )
+
+        sess.run_session_action("summary", "now", source="cli")
+
+        assert calls == [(sess, ("now",))]
+
+    def test_hook_action_run_action_requires_explicit_allow(self, caplog):
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+        sess.define_job_action("mark", lambda target, ctx: calls.append(ctx["source"]))
+        sess._inject_notify(job)
+
+        with caplog.at_level(logging.WARNING):
+            Hook.action_run_action("mark")(job, {})
+
+        assert calls == []
+        assert "not allowed from hooks" in caplog.text
+
+    def test_hook_action_run_action_allowed(self):
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+        sess.define_job_action(
+            "mark",
+            lambda target, ctx: calls.append((target, ctx["source"])),
+            allow_from_hook=True,
+        )
+        sess._inject_notify(job)
+
+        Hook.action_run_action("mark")(job, {})
+
+        assert calls == [(job, "hook")]
+
+    def test_hook_session_action_guarded_by_default(self, caplog):
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+        sess.define_session_action("danger", lambda current_session, ctx: calls.append("ran"))
+        sess._inject_notify(job)
+
+        with caplog.at_level(logging.WARNING):
+            Hook.action_run_session_action("danger")(job, {})
+
+        assert calls == []
+        assert "not allowed from hooks" in caplog.text
+
     def test_session_summary_excludes_skipped_from_failure(self):
         sess = Session()
         job = WaveFuncJob("skipme", lambda: None)
@@ -1387,6 +1501,19 @@ session.add(job)
         from rpkbin.wave.runner import run
         assert run(wave, no_tui=True) == 0
 
+    def test_perf_summary_printed_in_headless_run(self, tmp_path, capsys):
+        wave = tmp_path / "perf.wave.py"
+        self._write_wave(wave, """
+from rpkbin.wave import session, CmdJob
+session.add(CmdJob("echo", "echo perf_ok"))
+""")
+        from rpkbin.wave.runner import run
+
+        assert run(wave, no_tui=True, perf=True) == 0
+        out = capsys.readouterr().out
+        assert "[Wave][perf] summary" in out
+        assert "job echo:" in out
+
 
 # ---------------------------------------------------------------------------
 # CLI integration tests (Click CliRunner)
@@ -1409,6 +1536,24 @@ class TestCLI:
         assert result.exit_code == 0
         assert "--no-tui" in result.output
         assert "--workers" in result.output
+        assert "--perf" in result.output
+
+    def test_run_perf_flag(self, monkeypatch):
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main
+        called = {}
+
+        def fake_run(path, **kwargs):
+            called["path"] = path
+            called.update(kwargs)
+            return 0
+
+        monkeypatch.setattr("rpkbin.wave.cli.run", fake_run)
+        result = CliRunner().invoke(main, ["run", __file__, "--no-tui", "--perf"])
+
+        assert result.exit_code == 0
+        assert called["no_tui"] is True
+        assert called["perf"] is True
 
     def test_run_no_tui(self, tmp_path):
         from click.testing import CliRunner
@@ -1531,6 +1676,38 @@ class TestHeadlessCommandParsing:
         _handle_cmd(["logs", "my job"], sess)
         out = capsys.readouterr().out
         assert "No log output" in out
+
+    def test_action_command_runs_registered_job_action(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        calls = []
+        sess.define_job_action(
+            "mark",
+            lambda target, ctx: calls.append((target, ctx["args"], ctx["source"])),
+        )
+
+        _handle_cmd(["action", "job", "mark", "x"], sess)
+
+        assert calls == [(job, ("x",), "cli")]
+        assert "Action 'mark' ran" in capsys.readouterr().out
+
+    def test_session_action_command_runs_registered_action(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        calls = []
+        sess.define_session_action(
+            "summarize",
+            lambda current_session, ctx: calls.append((current_session, ctx["args"])),
+        )
+
+        _handle_cmd(["session_action", "summarize", "now"], sess)
+
+        assert calls == [(sess, ("now",))]
+        assert "Session action 'summarize' ran" in capsys.readouterr().out
 
     def test_duplicate_names_are_ambiguous_for_commands(self, capsys):
         from rpkbin.wave.runner import _handle_cmd
@@ -1782,6 +1959,34 @@ class TestHeadlessCommandParsing:
         out = capsys.readouterr().out
         assert "no graceful stop policy" in out
 
+    def test_send_line_accepts_unquoted_multi_word_text(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveFuncJob("io", lambda: None)
+        calls = []
+        job.send_input = lambda text: calls.append(text)
+        sess.add(job)
+
+        _handle_cmd(["send-line", "io", "hello", "world"], sess)
+
+        assert calls == ["hello world\n"]
+        assert "send-line sent" in capsys.readouterr().out
+
+    def test_send_line_appends_missing_newline(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveFuncJob("io", lambda: None)
+        calls = []
+        job.send_input = lambda text: calls.append(text)
+        sess.add(job)
+
+        _handle_cmd(["send-line", "io", "hello", "world"], sess)
+
+        assert calls == ["hello world\n"]
+        assert "send-line sent" in capsys.readouterr().out
+
 
 class TestFuncJobCancelWarning:
     def test_cancel_logs_warning_for_funcjob(self, caplog):
@@ -1894,6 +2099,26 @@ class TestWaveTuiNavigation:
         assert app._dirty_jobs == {}
         assert app._dirty_flush_pending is False
 
+    def test_dirty_flush_records_perf_counter(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        sess.set_perf_enabled(True)
+        job = WaveFuncJob("job1", lambda: None)
+        app = WaveApp(sess)
+
+        app._refresh_job_row = lambda job, **kwargs: None  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
+
+        with app._dirty_lock:
+            app._dirty_jobs = {app._job_row_key(job): job}
+            app._dirty_flush_pending = True
+
+        app._flush_dirty_job_rows()
+
+        assert sess.perf_snapshot()["tui"]["dirty_flush_count"] == 1
+        assert sess.perf_snapshot()["tui"]["dirty_flush_jobs"] == 1
+
     def test_tick_skips_detail_panels_when_detail_tab_hidden(self):
         from rpkbin.wave.tui.app import WaveApp
 
@@ -1908,7 +2133,7 @@ class TestWaveTuiNavigation:
 
         app._detail_job = job
         app._refresh_job_row = lambda selected, **kwargs: None  # type: ignore[method-assign]
-        app._refresh_right_panels = lambda selected: refreshed.append(selected)  # type: ignore[method-assign]
+        app._refresh_right_panels = lambda selected, **kwargs: refreshed.append(selected)  # type: ignore[method-assign]
         app._refresh_dashboard_preview = lambda *args, **kwargs: None  # type: ignore[method-assign]
         app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
         app.query_one = lambda *args, **kwargs: _Tabs()  # type: ignore[method-assign]
@@ -1916,6 +2141,94 @@ class TestWaveTuiNavigation:
         app._tick()
 
         assert refreshed == []
+
+    def test_tick_and_log_sync_record_perf_counters(self, monkeypatch):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Tabs:
+            active = "tab-dashboard"
+
+        class _RichLog:
+            scroll_y = 0
+            max_scroll_y = 0
+            auto_scroll = False
+
+            def write(self, text):
+                self.last = text
+
+        sess = Session()
+        sess.set_perf_enabled(True)
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        app = WaveApp(sess)
+        rich_log = _RichLog()
+
+        job._total_log_lines = 2
+        job.log_snapshot_since = lambda last_total: (2, ["a", "b"])  # type: ignore[method-assign]
+        app._refresh_job_row = lambda selected, **kwargs: None  # type: ignore[method-assign]
+        app._refresh_right_panels = lambda selected, **kwargs: None  # type: ignore[method-assign]
+        app._refresh_dashboard_preview = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
+        app.query_one = lambda *args, **kwargs: _Tabs() if args[0] == "#main-tabs" else rich_log  # type: ignore[method-assign]
+
+        times = iter([1.0, 1.4])
+        monkeypatch.setattr("rpkbin.wave.tui.app.time.perf_counter", lambda: next(times))
+
+        app._sync_job_log(job, type("L", (), {
+            "set_auto_scroll_for_append": lambda self: None,
+            "write_lines": lambda self, lines, **kwargs: None,
+            "write": lambda self, text: None,
+        })(), 0)
+        app._tick()
+
+        snapshot = sess.perf_snapshot()
+        assert snapshot["tui"]["log_append_lines"] == 2
+        assert snapshot["tui"]["tick_count"] == 1
+        assert snapshot["tui"]["tick_elapsed_s"] == pytest.approx(0.4)
+
+    def test_log_adapter_scrolls_to_end_when_already_at_bottom(self):
+        from rpkbin.wave.tui.refresh import _LogViewAdapter
+
+        class _Widget:
+            scroll_y = 8
+            max_scroll_y = 10
+
+            def __init__(self):
+                self.lines = []
+                self.auto_scroll = False
+
+            def write(self, text):
+                self.lines.append(text)
+
+        widget = _Widget()
+        log = _LogViewAdapter(widget)
+
+        log.write_lines(["new"])
+
+        # scroll_y (8) >= max_scroll_y (10) - 2 -> auto-scrolls
+        assert widget.auto_scroll is True
+
+    def test_log_adapter_does_not_follow_when_user_scrolled_up(self):
+        from rpkbin.wave.tui.refresh import _LogViewAdapter
+
+        class _Widget:
+            scroll_y = 1
+            max_scroll_y = 10
+
+            def __init__(self):
+                self.lines = []
+                self.auto_scroll = True
+
+            def write(self, text):
+                self.lines.append(text)
+
+        widget = _Widget()
+        log = _LogViewAdapter(widget)
+
+        log.write_lines(["new"])
+
+        # scroll_y (1) < max_scroll_y (10) - 2 -> does not scroll
+        assert widget.auto_scroll is False
 
     def test_switching_to_detail_tab_refreshes_detail_panels_once(self):
         from rpkbin.wave.tui.app import WaveApp
@@ -1938,12 +2251,12 @@ class TestWaveTuiNavigation:
             return _Focusable()
 
         app._detail_job = job
-        app._refresh_right_panels = lambda selected: refreshed.append(selected)  # type: ignore[method-assign]
+        app._refresh_right_panels = lambda selected, **kwargs: refreshed.append((selected, kwargs))  # type: ignore[method-assign]
         app.query_one = _query  # type: ignore[method-assign]
 
         app.on_tabbed_content_tab_activated(object())
 
-        assert refreshed == [job]
+        assert refreshed == [(job, {"force": True})]
 
     def test_dangerous_quick_actions_are_not_bound(self):
         from rpkbin.wave.tui.app import WaveApp, _HELP_TEXT, _WAVE_COMMANDS
@@ -2052,13 +2365,267 @@ class TestWaveTuiNavigation:
         synced = []
         app._update_detail_header = lambda selected: None
         app._sync_dashboard_selection = lambda selected: synced.append(selected)
-        app._refresh_right_panels = lambda selected: None
+        app._refresh_right_panels = lambda selected, **kwargs: None
         app.query_one = lambda *args, **kwargs: _FakeWidget()
 
         app._open_detail_for(job)
 
         assert app._detail_job is job
         assert synced == [job]
+
+    def test_dashboard_preview_reset_loads_tail_only(self):
+        from rpkbin.wave.tui.app import WaveApp, _DASHBOARD_PREVIEW_TAIL_LINES
+
+        class _FakeLog:
+            def __init__(self):
+                self.cleared = 0
+                self.writes = []
+                self.appended = []
+
+            def clear(self):
+                self.cleared += 1
+
+            def write(self, text):
+                self.writes.append(text)
+
+            def write_lines(self, lines, **kwargs):
+                self.appended.append(list(lines))
+
+            def set_auto_scroll_for_append(self):
+                pass
+
+        class _FakeJob:
+            name = "job"
+            id = "abcd1234-0000-0000-0000-000000000000"
+            _total_log_lines = 1500
+
+            def log_snapshot_since(self, sync_count):
+                self.last_sync_count = sync_count
+                return self._total_log_lines, [f"line {idx}" for idx in range(sync_count, self._total_log_lines)]
+
+        app = WaveApp(Session())
+        fake_log = _FakeLog()
+        job = _FakeJob()
+        app._plain_log = lambda selector: fake_log  # type: ignore[method-assign]
+
+        app._refresh_dashboard_preview(job, reset=True)
+
+        assert fake_log.cleared == 1
+        assert fake_log.writes == [f"{job.name}  [{job.id[:8]}]"]
+        assert job.last_sync_count == 1500 - _DASHBOARD_PREVIEW_TAIL_LINES
+        assert fake_log.appended == [[f"line {idx}" for idx in range(500, 1500)]]
+        assert app._dashboard_preview_log_count == 1500
+
+    def test_show_command_displays_graceful_key(self, capsys):
+        from rpkbin.wave.runner import _handle_cmd
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        job.set_stop_policy(graceful_key="ctrl-c", graceful_timeout=3.0)
+        sess.add(job)
+
+        _handle_cmd(["show", "job"], sess)
+
+        out = capsys.readouterr().out
+        assert "stop    = key='ctrl-c', input=None, signal=None, timeout=3.0" in out
+
+    def test_open_detail_initial_log_sync_starts_from_tail(self):
+        from rpkbin.wave.tui.app import WaveApp, _DETAIL_INITIAL_TAIL_LINES
+
+        class _FakeWidget:
+            active = None
+
+            def clear(self):
+                pass
+
+            def update(self, _value):
+                pass
+
+            def write(self, _value):
+                pass
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+
+        app = WaveApp(sess)
+        calls = []
+        app._update_detail_header = lambda selected: None  # type: ignore[method-assign]
+        app._sync_dashboard_selection = lambda selected: None  # type: ignore[method-assign]
+        app._tail_sync_start = lambda selected, limit: calls.append((selected, limit)) or 321  # type: ignore[method-assign]
+        app._refresh_right_panels = lambda selected, **kwargs: None  # type: ignore[method-assign]
+        app.query_one = lambda *args, **kwargs: _FakeWidget()  # type: ignore[method-assign]
+
+        app._open_detail_for(job)
+
+        assert calls == [
+            (job, _DETAIL_INITIAL_TAIL_LINES),
+        ]
+        assert app._log_total_sync_count == 321
+
+    def test_tick_skips_dashboard_preview_when_dashboard_hidden(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Tabs:
+            active = "tab-detail"
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        app = WaveApp(sess)
+        previews = []
+
+        app._detail_job = None
+        app._refresh_job_row = lambda selected, **kwargs: None  # type: ignore[method-assign]
+        app._refresh_dashboard_preview = lambda *args, **kwargs: previews.append((args, kwargs))  # type: ignore[method-assign]
+        app._update_subtitle = lambda **kwargs: None  # type: ignore[method-assign]
+        app.query_one = lambda *args, **kwargs: _Tabs()  # type: ignore[method-assign]
+
+        app._tick()
+
+        assert previews == []
+
+    def test_visible_log_refresh_syncs_detail_log_without_panel_refresh(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        sess.add(job)
+        app = WaveApp(sess)
+        app._detail_job = job
+        app._log_total_sync_count = 7
+        calls = []
+
+        app._is_dashboard_tab_active = lambda: False  # type: ignore[method-assign]
+        app._is_detail_tab_active = lambda: True  # type: ignore[method-assign]
+        app._active_detail_panel_id = lambda: "detail-info"  # type: ignore[method-assign]
+        app._plain_log = lambda selector: selector  # type: ignore[method-assign]
+        app._sync_job_log = lambda selected, log_view, sync_count, **kwargs: calls.append((selected, log_view, sync_count)) or 11  # type: ignore[method-assign]
+        app._refresh_active_detail_panel = lambda selected, **kwargs: calls.append(("panel", selected, kwargs))  # type: ignore[method-assign]
+
+        app._refresh_visible_logs()
+
+        assert calls == [(job, "#log-view", 7)]
+        assert app._log_total_sync_count == 11
+
+    def test_refresh_right_panels_only_updates_active_subtab(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        app = WaveApp(sess)
+        calls = []
+
+        app._update_detail_header = lambda selected: calls.append(("header", selected))  # type: ignore[method-assign]
+        app._plain_log = lambda selector: object()  # type: ignore[method-assign]
+        app._sync_job_log = lambda selected, log_view, sync_count, **kwargs: calls.append(("log", selected, sync_count)) or sync_count  # type: ignore[method-assign]
+        app._active_detail_panel_id = lambda: "detail-data"  # type: ignore[method-assign]
+        app._refresh_data_panel = lambda selected: calls.append(("data", selected))  # type: ignore[method-assign]
+        app._refresh_events_panels = lambda selected: calls.append(("events", selected))  # type: ignore[method-assign]
+        app._refresh_terminal_panel = lambda selected, **kwargs: calls.append(("terminal", selected, kwargs))  # type: ignore[method-assign]
+
+        app._refresh_right_panels(job)
+
+        assert calls == [
+            ("header", job),
+            ("log", job, 0),
+            ("data", job),
+        ]
+
+    def test_inactive_event_panel_keeps_counter_until_activated(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Tabs:
+            def __init__(self, active):
+                self.active = active
+                self.id = "detail-tabs"
+
+        class _FakeRichLog:
+            def __init__(self):
+                self.scroll_y = 0
+                self.max_scroll_y = 0
+                self.auto_scroll = True
+                self.messages = []
+
+            def write(self, text):
+                self.messages.append(text)
+
+            def scroll_end(self, *, animate=False):
+                pass
+
+        class _FakeStatic:
+            def update(self, _text):
+                pass
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        job.emit("user-note", "hello")
+        app = WaveApp(sess)
+        app._detail_job = job
+
+        detail_tabs = _Tabs("detail-info")
+        events_log = _FakeRichLog()
+        system_log = _FakeRichLog()
+        info_panel = _FakeStatic()
+
+        def _query(selector, *args, **kwargs):
+            if selector == "#detail-tabs":
+                return detail_tabs
+            if selector == "#info-panel":
+                return info_panel
+            if selector == "#events-log":
+                return events_log
+            if selector == "#system-job-log":
+                return system_log
+            raise AssertionError(selector)
+
+        app.query_one = _query  # type: ignore[method-assign]
+
+        app._refresh_active_detail_panel(job)
+        assert app._events_sync_count == 0
+        assert events_log.messages == []
+        assert system_log.messages == []
+
+        detail_tabs.active = "detail-events"
+        app._refresh_active_detail_panel(job, force=True)
+        assert app._events_sync_count == 1
+        assert len(events_log.messages) == 1
+
+    def test_detail_subtab_activation_forces_immediate_refresh(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Event:
+            def __init__(self):
+                self.control = type("Control", (), {"id": "detail-tabs"})()
+
+        sess = Session()
+        job = WaveFuncJob("job", lambda: None)
+        app = WaveApp(sess)
+        app._detail_job = job
+        app._focus_active_panel = lambda: None  # type: ignore[method-assign]
+        refreshed = []
+        app._refresh_active_detail_panel = lambda selected, **kwargs: refreshed.append((selected, kwargs))  # type: ignore[method-assign]
+
+        app.on_tabbed_content_tab_activated(_Event())
+
+        assert refreshed == [(job, {"force": True})]
+
+    def test_log_view_adapter_uses_widget_specific_append_api(self):
+        from rpkbin.wave.tui.app import _LogViewAdapter
+        from textual.widgets import Log, RichLog
+
+        log_widget = Log()
+        rich_widget = RichLog()
+        log_calls = []
+        rich_calls = []
+        log_widget.write_lines = lambda lines: log_calls.append(list(lines))  # type: ignore[method-assign]
+        rich_widget.write = lambda text: rich_calls.append(text)  # type: ignore[method-assign]
+
+        _LogViewAdapter(log_widget).write_lines(["a", "b"])
+        _LogViewAdapter(rich_widget).write_lines(["a", "b"])
+
+        assert log_calls == [["a", "b"]]
+        assert rich_calls == ["a\nb"]
 
     def test_detail_navigation_bindings_work_in_textual(self):
         from rpkbin.wave.tui.app import WaveApp
@@ -2123,6 +2690,7 @@ class TestWaveTuiNavigation:
         class _Event:
             def __init__(self, value):
                 self.value = value
+                self.control = type("C", (), {"id": "cmd-input"})()
 
         async def _smoke():
             sess = Session()

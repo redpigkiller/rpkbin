@@ -18,9 +18,10 @@ forwarded to the Textual main thread via self.call_from_thread().
 
 Detail panel refresh strategy
 ------------------------------
-_on_job_updated  → updates Dashboard row cells only (status, progress, etc.)
-_tick (1s)       → drives log / DATA / EVENTS panel sync for the selected job
-                   and refreshes elapsed for all running jobs
+_on_job_updated  -> updates Dashboard row cells only (status, progress, etc.)
+_tick (1s)       -> drives Dashboard rows, DATA / EVENTS panel sync, session
+                   events, and elapsed refreshes
+visible log tick -> syncs only the log widgets currently visible to the user
 
 This separation prevents the detail panel from being flooded with full buffer
 copies on every parser callback, which was the main source of UI lag.
@@ -37,21 +38,50 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape as _escape_markup
 
-from rpkbin.wave._util import (
-    DASHBOARD_BUILTIN_LABELS as _DASHBOARD_BUILTIN_LABELS,
-    job_exit_code as _job_exit_code,
+from rpkbin.wave._util import job_exit_code as _job_exit_code
+from rpkbin.wave.tui.commands import (
+    CommandInput,
+    _HELP_TEXT,
+    _KEY_COMPLETIONS,
+    _SIGNAL_COMPLETIONS,
+    _WAVE_COMMANDS,
+    _WAVE_JOB_COMMANDS,
+    _expand_dot_in_parts,
 )
+from rpkbin.wave.tui.formatting import (
+    _STATUS_COLOR,
+    _fmt_elapsed,
+    _format_system_event_line,
+    _job_elapsed_s,
+)
+from rpkbin.wave.tui.refresh import (
+    _LogViewAdapter,
+    sync_job_log as _sync_job_log_model,
+    tail_sync_start as _tail_sync_start_model,
+)
+from rpkbin.wave.tui.view_models import (
+    _DEFAULT_DASHBOARD_COLUMNS,
+    _DATA_SNAPSHOT_FAILED,
+    build_info_text as _build_info_text_model,
+    build_row_cells as _build_row_cells_model,
+    command_identifier_for_job as _command_identifier_for_job_model,
+    dashboard_cell as _dashboard_cell_model,
+    dashboard_column_labels as _dashboard_column_labels_model,
+    builtin_dashboard_cell as _builtin_dashboard_cell_model,
+    resolve_dashboard_columns as _resolve_dashboard_columns_model,
+)
+from rpkbin.wave.runner import _handle_cmd, _parse_repl_line, _active_jobs, _find_job
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Key
 from textual.widgets import (
     DataTable,
     Footer,
     Header,
     Input,
+    Log,
     RichLog,
     Static,
     TabbedContent,
@@ -65,336 +95,20 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# CommandInput - Input subclass with Up/Down command history
-# ---------------------------------------------------------------------------
-
-class CommandInput(Input):
-    """An Input widget that supports Up/Down arrow key command history.
-
-    History navigation is handled entirely within this widget and does not
-    interfere with any other focusable widget (e.g. DataTable) because
-    key events reaching this handler only fire when this widget is focused.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:  # noqa: D107
-        super().__init__(*args, **kwargs)
-        self._history: list[str] = []
-        self._history_index: int = -1   # -1 = not browsing history
-        self._draft: str = ""           # saved draft while browsing
-
-    def record(self, line: str) -> None:
-        """Append *line* to history (dedup consecutive duplicates)."""
-        if line and (not self._history or self._history[-1] != line):
-            self._history.append(line)
-        self._history_index = -1
-        self._draft = ""
-
-    def on_key(self, event: Key) -> None:  # noqa: D102
-        if not self._history:
-            return
-        if event.key == "up":
-            event.stop()   # prevent propagation to TabbedContent / DataTable
-            if self._history_index == -1:
-                self._draft = self.value          # save current input as draft
-                self._history_index = len(self._history) - 1
-            elif self._history_index > 0:
-                self._history_index -= 1
-            self.value = self._history[self._history_index]
-            self.cursor_position = len(self.value)
-        elif event.key == "down":
-            event.stop()
-            if self._history_index == -1:
-                return
-            if self._history_index < len(self._history) - 1:
-                self._history_index += 1
-                self.value = self._history[self._history_index]
-            else:
-                self._history_index = -1
-                self.value = self._draft
-            self.cursor_position = len(self.value)
-        elif event.key == "tab":
-            event.stop()  # Prevent Textual from changing focus
-            self._handle_autocomplete()
-
-    def _handle_autocomplete(self) -> None:
-        """Autocompletion for commands and job names."""
-        import shlex
-        val = self.value
-        if not val:
-            return
-
-        try:
-            parts = shlex.split(val, posix=True)
-        except ValueError:
-            parts = val.split()
-
-        if val.endswith(" "):
-            parts.append("")
-        
-        def find_common_prefix(strings: list[str]) -> str:
-            if not strings:
-                return ""
-            m1, m2 = min(strings), max(strings)
-            for i, c in enumerate(m1):
-                if c != m2[i]:
-                    return m1[:i]
-            return m1
-
-        if len(parts) <= 1:
-            prefix = parts[0] if parts else ""
-            matches = [c for c in _WAVE_COMMANDS if c.startswith(prefix)]
-            if len(matches) == 1:
-                self.value = matches[0] + " "
-                self.cursor_position = len(self.value)
-            elif len(matches) > 1:
-                cp = find_common_prefix(matches)
-                if cp and cp != prefix:
-                    self.value = cp
-                    self.cursor_position = len(self.value)
-        elif len(parts) == 2:
-            verb = parts[0].lower()
-            if verb in _WAVE_JOB_COMMANDS and hasattr(self.app, "_session"):
-                prefix = parts[1]
-                job_names = [j.name for j in self.app._session.jobs()]
-                candidates = list(job_names)
-                # Include '.' as current-detail-job shorthand when in JOB DETAIL context
-                if (
-                    hasattr(self.app, "_detail_job")
-                    and self.app._detail_job is not None
-                    and ".".startswith(prefix)
-                ):
-                    candidates.insert(0, ".")
-                matches = [n for n in candidates if n.startswith(prefix)]
-                if len(matches) == 1:
-                    name = matches[0]
-                    quoted = f'"{name}"' if " " in name else name
-                    self.value = f"{verb} {quoted} "
-                    self.cursor_position = len(self.value)
-                elif len(matches) > 1:
-                    cp = find_common_prefix(matches)
-                    if cp and cp != prefix:
-                        quoted = f'"{cp}"' if " " in cp else cp
-                        self.value = f"{verb} {quoted}"
-                        self.cursor_position = len(self.value)
-        elif len(parts) == 3:
-            verb = parts[0].lower()
-            current = parts[2]
-            job_name = parts[1]
-            quoted_job = f'"{job_name}"' if " " in job_name else job_name
-            # key <job> <key-name> — complete terminal key names
-            if verb == "key":
-                matches = [k for k in _KEY_COMPLETIONS if k.startswith(current)]
-                if len(matches) == 1:
-                    self.value = f"{verb} {quoted_job} {matches[0]} "
-                    self.cursor_position = len(self.value)
-                elif len(matches) > 1:
-                    cp = find_common_prefix(matches)
-                    if cp and cp != current:
-                        self.value = f"{verb} {quoted_job} {cp}"
-                        self.cursor_position = len(self.value)
-            # signal <job> <signal-name> — complete signal names
-            elif verb == "signal":
-                matches = [s for s in _SIGNAL_COMPLETIONS if s.startswith(current)]
-                if len(matches) == 1:
-                    self.value = f"{verb} {quoted_job} {matches[0]} "
-                    self.cursor_position = len(self.value)
-                elif len(matches) > 1:
-                    cp = find_common_prefix(matches)
-                    if cp and cp != current:
-                        self.value = f"{verb} {quoted_job} {cp}"
-                        self.cursor_position = len(self.value)
-
-
-# ---------------------------------------------------------------------------
-# Help text
-# ---------------------------------------------------------------------------
-
-_HELP_TEXT = """\
-[bold green]TUI Navigation[/bold green]
-  [cyan]F1 / F2 / F3 / F4[/cyan]  Switch tabs (Dashboard / Job Detail / System Log / Help)
-  [cyan]:[/cyan]                Focus Command Bar (Vim style)
-  [cyan]Esc[/cyan]              Exit Command Bar, return focus to active panel
-  [cyan]UP / DOWN[/cyan]            Navigate jobs in Dashboard; scroll in log / info views
-  [cyan]Enter[/cyan]            Open selected job in Job Detail
-  [cyan][ ][/cyan]              Previous / next job in Job Detail
-  [cyan]{ }[/cyan]              Previous / next running job in Job Detail
-  [cyan]UP / DOWN[/cyan] (in CMD) Browse command history
-  [cyan]Tab[/cyan]   (in CMD) Auto-complete commands, job names, key/signal args
-  [cyan]Shift + Drag[/cyan]     Select text (Right-click or Ctrl+Shift+C to copy, NEVER Ctrl+C)
-  [cyan]Ctrl+C[/cyan]           Quit (Safe: warns if jobs are active. Double-tap to force quit)
-
-[bold green]Terminal Shortcuts (TERMINAL sub-tab, PTY jobs only)[/bold green]
-  [cyan]F8[/cyan]               Focus Command Bar and pre-fill [dim]input . [/dim]
-  [cyan]F9[/cyan]               Send Ctrl-C (\\x03) to the current PTY job via terminal
-  [cyan]F10[/cyan]              Send Ctrl-D (\\x04) to the current PTY job via terminal
-  [dim]Note: F9/F10 only activate when JOB DETAIL → TERMINAL tab is open.[/dim]
-  [dim]For OS signals, use: signal . SIGTERM[/dim]
-
-[bold green]Command Bar (wave>)[/bold green]
-  [cyan]help[/cyan]                    Show this reference
-  [cyan]status[/cyan]                  List all jobs
-  [cyan]show   <job>[/cyan]            Compact summary for one job
-  [cyan]logs   <job> [n][/cyan]        Last [i]n[/i] log lines (default 50)
-  [cyan]data   <job>[/cyan]            Parsed data output for a job
-  [cyan]events <job>[/cyan]            User event history for a job
-  [cyan]pause[/cyan]                   Pause dispatch of pending jobs
-  [cyan]resume[/cyan]                  Resume dispatch of pending jobs
-  [cyan]stop   <job>[/cyan]            Graceful stop, fallback to force stop
-  [cyan]stop   -g <job>[/cyan]         Graceful only (no force fallback)
-  [cyan]stop   --all[/cyan]            Graceful stop all active jobs
-  [cyan]stop   --group <tag>[/cyan]    Graceful stop all active jobs with a tag
-  [cyan]cancel <job>[/cyan]            Force-cancel a job immediately
-  [cyan]cancel --all[/cyan]            Force-cancel all active jobs
-  [cyan]cancel --group <tag>[/cyan]    Force-cancel all active jobs with a tag
-  [cyan]skip   <job>[/cyan]            Skip a pending job
-  [cyan]rerun  <job>[/cyan]            Rerun a job (creates a new instance)
-  [cyan]input  <job> <text>[/cyan]     Write text to a running job's stdin (data channel)
-  [cyan]key    <job> <key>[/cyan]      Send terminal control key to a PTY job
-                              [dim]ctrl-c[/dim]  terminal interrupt byte (\\x03)
-                              [dim]ctrl-d[/dim]  EOF byte (\\x04)
-                              [dim]ctrl-z[/dim]  suspend byte (\\x1a)
-                              [dim]enter[/dim]   carriage return
-                              [dim]tab[/dim]     tab character
-                              For OS signals, use [cyan]signal[/cyan] instead.
-  [cyan]signal <job> <sig>[/cyan]      Deliver an OS signal to a running job's process
-                              This is a real OS signal (not a terminal key).
-                              For terminal control keys, use [cyan]key[/cyan] instead.
-                              [dim]SIGINT[/dim]  OS-level interrupt
-                              [dim]SIGTERM[/dim] request graceful termination
-                              [dim]SIGKILL[/dim] force kill (cannot be caught)
-                              [dim]SIGUSR1[/dim] user-defined signal 1
-                              [dim]SIGUSR2[/dim] user-defined signal 2
-  [cyan]exit[/cyan]                    Leave TUI when no active jobs remain
-  [cyan]exit   --stop[/cyan]           Stop active jobs gracefully, then leave
-  [cyan]exit   --force[/cyan]          Force-kill active jobs, then leave
-
-[dim]Note: <job> may be a unique name, job id, or the special shorthand [bold cyan].[/bold cyan] which
-refers to the job currently open in JOB DETAIL (TUI only).
-Names with spaces must be quoted, e.g. logs "my job".[/dim]
-"""
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-_STATUS_COLOR: dict[str, str] = {
-    "running":   "green",
-    "done":      "cyan",
-    "pending":   "yellow",
-    "failed":    "red",
-    "cancelled": "grey50",
-}
 
 # Operational commands produce a brief confirmation message; the user stays on
 # the current tab and sees a Toast.  All other commands (display-oriented like
 # 'logs', 'status', or unknown verbs whose error we want the user to read)
 # fall through to System Log so the output is clearly visible.
-_OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", "cancel", "rerun", "input", "key", "signal"})
+_OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", "cancel", "rerun", "action", "session_action", "send-line", "send-key", "send-signal"})
 
-_WAVE_COMMANDS: list[str] = ["help", "status", "show", "logs", "data", "events", "pause", "resume", "stop", "skip", "cancel", "rerun", "input", "key", "signal", "watch", "exit"]
-_WAVE_JOB_COMMANDS: set[str] = {"show", "logs", "data", "events", "stop", "skip", "cancel", "rerun", "input", "key", "signal"}
-
-# Dot-expandable commands: verbs that take a job identifier at parts[1]
-# (after optional leading flags). Used by _expand_dot_in_parts.
-_DOT_JOB_CMDS: frozenset[str] = frozenset(_WAVE_JOB_COMMANDS)
-
-# Key / signal completion lists (shared with runner._WaveCompleter via runner module)
-_KEY_COMPLETIONS: list[str] = ["ctrl-c", "ctrl-d", "ctrl-z", "ctrl-\\", "enter", "tab"]
-_SIGNAL_COMPLETIONS: list[str] = ["SIGINT", "SIGTERM", "SIGKILL", "SIGUSR1", "SIGUSR2"]
-
-_DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
-    {"type": "builtin", "key": "name"},
-    {"type": "builtin", "key": "id"},
-    {"type": "builtin", "key": "status"},
-    {"type": "builtin", "key": "elapsed"},
-    {"type": "builtin", "key": "progress"},
-    {"type": "builtin", "key": "retries"},
-    {"type": "builtin", "key": "exit_code"},
-    {"type": "builtin", "key": "tags"},
-)
-
-_DATA_SNAPSHOT_FAILED = object()
 _DATA_EMPTY_ROW_KEY = "__wave_empty_data__"
-
-
-def _expand_dot_in_parts(
-    parts: list[str],
-    detail_job_id: str | None,
-) -> tuple[list[str] | None, str | None]:
-    """Expand '.' to the current JOB DETAIL job id in *parts*.
-
-    Only meaningful in TUI context.  Headless REPL never calls this.
-
-    Returns
-    -------
-    (expanded_parts, None)
-        When '.' is found and successfully expanded, OR when '.' is absent
-        (parts returned unchanged).
-    (None, error_message)
-        When '.' is found but *detail_job_id* is None (no job open).
-    """
-    if not parts:
-        return parts, None
-
-    verb = parts[0].lower()
-    if verb not in _DOT_JOB_CMDS:
-        return parts, None  # verb doesn't take a job identifier
-
-    # Determine the job-identifier position for this verb.
-    # Most verbs: parts[1].
-    # 'stop' with leading flags (-g, -f, --graceful, --force): parts[2].
-    job_idx: int
-    if verb in ("stop", "cancel") and len(parts) >= 2 and parts[1].startswith("-"):
-        if parts[1] in ("--all", "--group"):
-            return parts, None  # these flags do not take a job identifier
-        job_idx = 2  # e.g. stop -g <job>
-    else:
-        job_idx = 1  # all other job commands
-
-    if job_idx >= len(parts):
-        return parts, None  # not enough args to have a job identifier yet
-
-    if parts[job_idx] != ".":
-        return parts, None  # no dot to expand
-
-    if detail_job_id is None:
-        return None, (
-            "[Wave] '.' means the current JOB DETAIL job; "
-            "open a job detail first."
-        )
-
-    new_parts = list(parts)
-    new_parts[job_idx] = detail_job_id
-    return new_parts, None
-
-
-def _fmt_elapsed(seconds: float | None) -> str:
-    if seconds is None or seconds < 0:
-        return ""
-    s = int(seconds)
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{sec:02d}"
-
-
-def _job_elapsed_s(job) -> float | None:
-    started = getattr(job, "start_time", None)
-    if started is None:
-        return None
-    finished = getattr(job, "end_time", None)
-    end = finished if finished is not None else time.monotonic()
-    return max(0.0, end - started)
-
-
-def _format_system_event_line(event: dict) -> str:
-    tag_raw = str(event.get("tag", ""))
-    tag = _escape_markup(tag_raw)
-    msg = _escape_markup(str(event.get("message", "")))
-    time_str = _escape_markup(str(event.get("time", "?")))
-    if tag_raw in {"parser_error", "hook_error"}:
-        return f"[grey50]{time_str}[/grey50] [bold red]{tag}[/bold red] - [red]{msg}[/red]"
-    return f"[grey50]{time_str}[/grey50] [bold]{tag}[/bold] - {msg}"
+_DASHBOARD_PREVIEW_TAIL_LINES = 1000
+_DETAIL_INITIAL_TAIL_LINES = 5000
+_DIRTY_FLUSH_DELAY_S = 0.05
+_VISIBLE_LOG_REFRESH_INTERVAL_S = 0.2
 
 
 # ---------------------------------------------------------------------------
@@ -451,9 +165,19 @@ TabbedContent { height: 1fr; }
     background: $surface;
 }
 
+#help-text {
+    height: auto;
+    padding: 1 2;
+}
+
 #info-panel {
     height: 1fr;
     padding: 1 2;
+}
+
+#job-input-bar {
+    dock: bottom;
+    border-top: solid $primary-darken-2;
 }
 
 #cmd-input {
@@ -491,11 +215,16 @@ class WaveApp(App):
         Binding("f2", "goto_tab('tab-detail')", "Job Detail", show=True),
         Binding("f3", "goto_tab('tab-system')", "System Log", show=True),
         Binding("f4", "goto_tab('tab-help')", "Help", show=True),
-        Binding("f8", "terminal_focus_input", "Terminal Input", show=False),
-        Binding("f9", "terminal_send_ctrl_c", "Ctrl-C", show=False),
-        Binding("f10", "terminal_send_ctrl_d", "Ctrl-D", show=False),
+        # F8 retired — job input bar (i key) replaces the old pre-fill shortcut.
+        Binding("f9", "terminal_send_ctrl_c", "Send Ctrl-C", show=False),
+        Binding("f10", "terminal_send_ctrl_d", "Send Ctrl-D", show=False),
+        Binding("i", "focus_job_input", "Job Input", show=False),
+        Binding("1", "detail_panel('detail-info')", "INFO tab", show=False),
+        Binding("2", "detail_panel('detail-data')", "DATA tab", show=False),
+        Binding("3", "detail_panel('detail-events')", "EVENTS tab", show=False),
+        Binding("4", "detail_panel('detail-system')", "SYSTEM tab", show=False),
         Binding(":", "focus_cmd", "Command", show=False),
-        Binding("escape", "unfocus_cmd", "Exit Command", show=False),
+        Binding("escape", "unfocus_input", "Back", show=False),
         Binding("left_square_bracket", "previous_detail_job", "Previous Job", show=False),
         Binding("right_square_bracket", "next_detail_job", "Next Job", show=False),
         Binding("left_curly_bracket", "previous_running_detail_job", "Previous Running Job", show=False),
@@ -529,13 +258,11 @@ class WaveApp(App):
         # All three are declared here to ensure they are always defined before
         # any callback path can read them.
         self._log_total_sync_count: int = 0
+        self._detail_job_needs_scroll: bool = False  # force scroll on first refresh after job switch
         self._session_event_count: int = 0
         self._events_sync_count: int = 0
 
-        # Terminal tab sync counter (separate from log view)
-        self._terminal_sync_count: int = 0
-        # Guard: whether the TERMINAL tab empty/unsupported message has been shown
-        self._terminal_empty_shown: bool = False
+        self._quitting: bool = False
 
         # Double-tap quit tracking
         self._last_ctrl_c: float = 0.0
@@ -557,6 +284,7 @@ class WaveApp(App):
         # Worker count is static for a Wave TUI run. Cache it so the subtitle
         # path does not call the heavier Session.stats() snapshot every second.
         self._worker_total_label: str | None = None
+        self._perf_summary_written: bool = False
 
     # ------------------------------------------------------------------
     # Layout
@@ -572,7 +300,7 @@ class WaveApp(App):
                     with Vertical(id="dashboard-left"):
                         yield DataTable(id="jobs-table", cursor_type="row")
                     with Vertical(id="dashboard-preview"):
-                        yield RichLog(id="dashboard-log", markup=False, highlight=False, max_lines=2000)
+                        yield Log(id="dashboard-log", highlight=False, max_lines=2000)
 
             # -- Tab 2: JOB DETAIL -------------------------------------
             with TabPane("JOB DETAIL", id="tab-detail"):
@@ -580,7 +308,13 @@ class WaveApp(App):
                     yield Static("", id="detail-header", markup=True)
                     with Horizontal(id="detail-container"):
                         with Vertical(id="left-panel"):
-                            yield RichLog(id="log-view", markup=False, highlight=False, max_lines=5000)
+                            yield Log(id="log-view", highlight=False, max_lines=5000)
+                            # Job Input Bar: docked at bottom of left panel.
+                            # Press 'i' to focus, Enter to send, Esc to return.
+                            yield Input(
+                                placeholder="No job selected",
+                                id="job-input-bar",
+            )
 
                         with Vertical(id="right-panel"):
                             with TabbedContent(id="detail-tabs"):
@@ -592,10 +326,6 @@ class WaveApp(App):
                                     yield RichLog(id="events-log", markup=True, max_lines=2000)
                                 with TabPane("SYSTEM", id="detail-system"):
                                     yield RichLog(id="system-job-log", markup=True, max_lines=2000)
-                                with TabPane("TERMINAL", id="detail-terminal"):
-                                    with Vertical(id="terminal-container"):
-                                        yield RichLog(id="terminal-view", markup=False, highlight=False, max_lines=5000)
-                                        yield Static("", id="terminal-hint", markup=True)
 
             # -- Tab 3: SYSTEM LOG (session-level events + command output)
             with TabPane("SYSTEM LOG", id="tab-system"):
@@ -603,9 +333,10 @@ class WaveApp(App):
 
             # -- Tab 4: HELP -------------------------------------------
             with TabPane("HELP", id="tab-help"):
-                help_widget = Static(_HELP_TEXT, markup=True, id="help-text")
-                help_widget.can_focus = True
-                yield help_widget
+                with VerticalScroll(id="help-scroll"):
+                    help_widget = Static(_HELP_TEXT, markup=True, id="help-text")
+                    help_widget.can_focus = True
+                    yield help_widget
 
         yield CommandInput(placeholder="Press ':' to type commands (UP / DOWN for history)", id="cmd-input")
         yield Footer()
@@ -631,7 +362,7 @@ class WaveApp(App):
 
         # Initial hint for JOB DETAIL if they switch without selecting
         self._update_detail_header(None)
-        self.query_one("#log-view", RichLog).write(
+        self._plain_log("#log-view").write(
             "No job selected.\n"
             "Press F1 to go to the Dashboard, "
             "then highlight a job and press Enter to open it here.\n"
@@ -640,14 +371,21 @@ class WaveApp(App):
 
         # Periodic timer: elapsed refresh + detail panel sync + session-event drain
         self.set_interval(1.0, self._tick)
+        # Visible logs get a faster path so output feels live without making
+        # all detail/dashboard bookkeeping run at log-line frequency.
+        self.set_interval(_VISIBLE_LOG_REFRESH_INTERVAL_S, self._refresh_visible_logs)
 
         self._update_subtitle(jobs=initial_jobs)
         self.query_one("#jobs-table", DataTable).focus()
 
-        self.query_one("#dashboard-log", RichLog).write(
+        self._plain_log("#dashboard-log").write(
             "No job selected.\n"
             "Highlight a job in the Dashboard to preview its log here."
         )
+
+    def _plain_log(self, selector: str) -> _LogViewAdapter:
+        """Return a thin adapter for a plain-text log widget."""
+        return _LogViewAdapter(self.query_one(selector))
 
     # ------------------------------------------------------------------
     # Worker-thread callbacks (called by Session via tui_notify /
@@ -692,7 +430,7 @@ class WaveApp(App):
 
     def _schedule_dirty_flush_on_main(self) -> None:
         """Debounce dirty job row updates on the Textual main thread."""
-        self.set_timer(0.05, self._flush_dirty_job_rows)
+        self.set_timer(_DIRTY_FLUSH_DELAY_S, self._flush_dirty_job_rows)
 
     def _flush_dirty_job_rows(self) -> None:
         """Refresh all coalesced dirty rows on the Textual main thread."""
@@ -700,6 +438,9 @@ class WaveApp(App):
             dirty_jobs = list(self._dirty_jobs.values())
             self._dirty_jobs.clear()
             self._dirty_flush_pending = False
+
+        if dirty_jobs:
+            self._session.perf_record_tui_dirty_flush(len(dirty_jobs))
 
         for job in dirty_jobs:
             self._refresh_job_row(job, update_subtitle=False)
@@ -718,69 +459,14 @@ class WaveApp(App):
     # ------------------------------------------------------------------
 
     def _build_row_cells(self, job) -> tuple[str, ...]:
-        """Return one cell value per configured dashboard column.
-
-        Parsed-data columns share a single ``peek_data()`` snapshot so that
-        dashboards with many data columns do not make redundant dict copies.
-        """
-        has_data_cols = any(c["type"] == "parsed_data" for c in self._dashboard_columns)
-        data_snapshot = None
-        if has_data_cols:
-            try:
-                data_snapshot = getattr(job, "peek_data", lambda: {})()
-            except Exception:
-                logger.warning(
-                    "Failed to read parsed_data snapshot for job %r.",
-                    getattr(job, "name", job),
-                    exc_info=True,
-                )
-                data_snapshot = _DATA_SNAPSHOT_FAILED
-        return tuple(
-            self._dashboard_cell(job, column, _data=data_snapshot)
-            for column in self._dashboard_columns
-        )
+        """Return one cell value per configured dashboard column."""
+        return _build_row_cells_model(job, self._dashboard_columns, logger)
 
     def _resolve_dashboard_columns(self) -> tuple[dict[str, str], ...]:
-        try:
-            config = getattr(self._session, "tui_config", lambda: {})()
-            columns = config.get("dashboard_columns")
-        except Exception:
-            logger.warning("Failed to read Wave TUI config; using default dashboard columns.", exc_info=True)
-            return _DEFAULT_DASHBOARD_COLUMNS
-
-        if columns is None:
-            return _DEFAULT_DASHBOARD_COLUMNS
-        if not isinstance(columns, (list, tuple)) or not columns:
-            logger.warning("Invalid dashboard column config %r; using defaults.", columns)
-            return _DEFAULT_DASHBOARD_COLUMNS
-
-        resolved: list[dict[str, str]] = []
-        for idx, column in enumerate(columns):
-            if not isinstance(column, dict):
-                logger.warning("Invalid dashboard column at index %s: %r; using defaults.", idx, column)
-                return _DEFAULT_DASHBOARD_COLUMNS
-            kind = column.get("type")
-            if kind == "builtin" and column.get("key") in _DASHBOARD_BUILTIN_LABELS:
-                resolved.append({"type": "builtin", "key": str(column["key"])})
-            elif kind == "parsed_data" and column.get("label") and column.get("data"):
-                resolved.append({
-                    "type": "parsed_data",
-                    "label": str(column["label"]),
-                    "data": str(column["data"]),
-                })
-            else:
-                logger.warning("Invalid dashboard column at index %s: %r; using defaults.", idx, column)
-                return _DEFAULT_DASHBOARD_COLUMNS
-        return tuple(resolved)
+        return _resolve_dashboard_columns_model(self._session, logger)
 
     def _dashboard_column_labels(self) -> list[str]:
-        labels: list[str] = []
-        for column in self._dashboard_columns:
-            if column["type"] == "builtin":
-                labels.append(_DASHBOARD_BUILTIN_LABELS[column["key"]])
-            else:
-                labels.append(_escape_markup(column["label"]))
-        return labels
+        return _dashboard_column_labels_model(self._dashboard_columns)
 
     def _dashboard_cell(
         self,
@@ -789,63 +475,10 @@ class WaveApp(App):
         *,
         _data: dict | object | None = None,
     ) -> str:
-        if column["type"] == "parsed_data":
-            if _data is _DATA_SNAPSHOT_FAILED:
-                return "[red]ERR[/red]"
-            try:
-                data = _data if _data is not None else getattr(job, "peek_data", lambda: {})()
-                return _escape_markup(str(data.get(column["data"], "")))
-            except Exception:
-                logger.warning(
-                    "Failed to read parsed_data column %r for job %r.",
-                    column.get("data"),
-                    getattr(job, "name", job),
-                    exc_info=True,
-                )
-                return "[red]ERR[/red]"
-        return self._builtin_dashboard_cell(job, column["key"])
+        return _dashboard_cell_model(job, column, logger, data=_data)
 
     def _builtin_dashboard_cell(self, job, key: str) -> str:
-        if key == "name":
-            return _escape_markup(str(job.name))
-
-        status = getattr(job, "status", "pending")
-        if key == "status":
-            color = _STATUS_COLOR.get(status, "white")
-            return f"[{color}]{status.upper()}[/{color}]"
-
-        if key == "elapsed":
-            return _fmt_elapsed(_job_elapsed_s(job))
-
-        if key == "progress":
-            prog = getattr(job, "progress", None)
-            if isinstance(prog, (int, float)):
-                filled = max(0, min(10, round(prog / 10)))
-                bar = "#" * filled + "-" * (10 - filled)
-                return f"{bar} {prog:.0f}%"
-            return ""
-
-        if key == "retries":
-            retry_count = getattr(job, "retry_count", 0)
-            max_retries = getattr(job, "max_retries", 0)
-            return f"{retry_count}/{max_retries}" if max_retries > 0 else ""
-
-        if key == "exit_code":
-            exit_code = _job_exit_code(job)
-            if exit_code is not None:
-                color = "cyan" if exit_code == 0 else "red"
-                return f"[{color}]{exit_code}[/{color}]"
-            return ""
-
-        if key == "tags":
-            tags = getattr(job, "tags", None) or set()
-            return ",".join(sorted(_escape_markup(str(t)) for t in tags))
-
-        if key == "id":
-            return _escape_markup(str(getattr(job, "id", ""))[:8])
-
-        logger.warning("Unknown dashboard builtin column %r; rendering blank.", key)
-        return ""
+        return _builtin_dashboard_cell_model(job, key, logger)
 
     def _job_row_key(self, job) -> str:
         """Return the stable DataTable row key for *job*."""
@@ -857,46 +490,11 @@ class WaveApp(App):
 
     def _command_identifier_for_job(self, job) -> str:
         """Prefer name for unique jobs; use id when duplicate names exist."""
-        name = str(job.name)
-        same_name = [j for j in self._session.jobs() if str(j.name) == name]
-        if len(same_name) > 1:
-            return self._job_row_key(job)
-        return name
+        return _command_identifier_for_job_model(job, self._session.jobs())
 
     def _build_info_text(self, job) -> str:
-        """Build Rich markup text for the INFO metadata panel in Job Detail.
-
-        Displays static job metadata (name, id, priority, resources, tags,
-        retry config).  Only non-default / non-empty fields are shown to
-        keep the panel uncluttered.
-        """
-        lines: list[str] = []
-        lines.append(f"[bold white]{_escape_markup(str(job.name))}[/bold white]")
-        job_id = getattr(job, "id", None)
-        if job_id:
-            lines.append(f"[dim]ID: {_escape_markup(str(job_id))}[/dim]")
-
-        priority = getattr(job, "priority", 0)
-        if priority:
-            lines.append(f"\n[cyan]Priority:[/cyan]  {priority}")
-
-        max_retries = getattr(job, "max_retries", 0)
-        if max_retries > 0:
-            retry_count = getattr(job, "retry_count", 0)
-            lines.append(f"[cyan]Retries:[/cyan]   {retry_count} / {max_retries}")
-
-        resources = getattr(job, "resources", None) or {}
-        if resources:
-            lines.append("\n[bold]Resources[/bold]")
-            for k, v in resources.items():
-                lines.append(f"  [cyan]{_escape_markup(str(k))}[/cyan] = {_escape_markup(str(v))}")
-
-        tags = getattr(job, "tags", None) or set()
-        if tags:
-            tag_str = "  ".join(f"[dim]#{_escape_markup(str(t))}[/dim]" for t in sorted(str(t) for t in tags))
-            lines.append(f"\n[bold]Tags[/bold]   {tag_str}")
-
-        return "\n".join(lines)
+        """Build Rich markup text for the INFO metadata panel in Job Detail."""
+        return _build_info_text_model(job)
 
     def _add_job_row_on_main(
         self,
@@ -964,39 +562,95 @@ class WaveApp(App):
 
     def _tick(self) -> None:
         """Every second: refresh elapsed + detail panels + drain session events."""
+        if getattr(self, "_quitting", False) and not _active_jobs(self._session):
+            self.exit()
+            return
         try:
+            perf_enabled = getattr(self._session, "perf_enabled", False)
+            tick_t0 = time.perf_counter() if perf_enabled else None
             jobs = self._session.jobs()
-            for job in jobs:
-                key = self._job_row_key(job)
-                status = getattr(job, "status", "pending")
-                if status == "running" or self._row_status_cache.get(key) != status:
-                    self._refresh_job_row(job, update_subtitle=False)
-
-            if self._detail_job is not None and self._is_detail_tab_active():
-                self._refresh_right_panels(self._detail_job)
-
-            self._refresh_dashboard_preview()
+            self._refresh_dashboard_rows(jobs)
+            self._refresh_detail_if_visible()
+            self._refresh_dashboard_preview_if_visible()
             self._update_subtitle(jobs=jobs)
-
-            # Drain new session-level events into SYSTEM LOG tab
-            events = self._session.peek_events()
-            new_events = events[self._session_event_count:]
-            if new_events:
-                log = self.query_one("#session-log", RichLog)
-                buf = []
-                for ev in new_events:
-                    src = ev.get("source", "?")
-                    color = "cyan" if src == "system" else "white"
-                    buf.append(
-                        f"[grey50]{_escape_markup(str(ev.get('time', '?')))}[/grey50] "
-                        f"[{color}]\\[{_escape_markup(str(src))}][/{color}] "
-                        f"[bold]{_escape_markup(str(ev.get('tag', '')))}[/bold] - {_escape_markup(str(ev.get('message', '')))}"
-                    )
-                log.auto_scroll = (log.scroll_y >= max(0, log.max_scroll_y - 2))
-                log.write("\n".join(buf))
-                self._session_event_count = len(events)
+            self._drain_session_events()
+            self._write_perf_summary_if_finished(perf_enabled)
         except NoMatches:
             logger.debug("Skipped tick refresh while TUI widgets were unavailable.", exc_info=True)
+        finally:
+            if tick_t0 is not None:
+                self._session.perf_record_tui_tick(time.perf_counter() - tick_t0)
+
+    def _refresh_dashboard_rows(self, jobs: list) -> None:
+        """Refresh dashboard rows whose status or elapsed display may have changed."""
+        for job in jobs:
+            key = self._job_row_key(job)
+            status = getattr(job, "status", "pending")
+            if status == "running" or self._row_status_cache.get(key) != status:
+                self._refresh_job_row(job, update_subtitle=False)
+
+    def _refresh_detail_if_visible(self) -> None:
+        """Refresh the selected detail job only when JOB DETAIL is visible."""
+        if self._detail_job is not None and self._is_detail_tab_active():
+            self._refresh_right_panels(self._detail_job)
+
+    def _refresh_dashboard_preview_if_visible(self) -> None:
+        """Refresh the dashboard preview only while the Dashboard tab is visible."""
+        if self._is_dashboard_tab_active():
+            self._refresh_dashboard_preview()
+
+    def _refresh_visible_logs(self) -> None:
+        """Refresh only the log widgets currently visible to the user."""
+        try:
+            if self._is_dashboard_tab_active():
+                self._refresh_dashboard_preview()
+
+            if self._detail_job is None or not self._is_detail_tab_active():
+                return
+
+            self._refresh_detail_log(self._detail_job)
+            if self._active_detail_panel_id() == "detail-terminal":
+                self._refresh_terminal_panel(self._detail_job)
+        except NoMatches:
+            logger.debug("Skipped visible log refresh while TUI widgets were unavailable.", exc_info=True)
+
+    def _drain_session_events(self) -> None:
+        """Append new session-level events to the SYSTEM LOG tab."""
+        events = self._session.peek_events()
+        new_events = events[self._session_event_count:]
+        if not new_events:
+            return
+
+        log = self.query_one("#session-log", RichLog)
+        buf = []
+        for ev in new_events:
+            src = ev.get("source", "?")
+            color = "cyan" if src == "system" else "white"
+            buf.append(
+                f"[grey50]{_escape_markup(str(ev.get('time', '?')))}[/grey50] "
+                f"[{color}]\\[{_escape_markup(str(src))}][/{color}] "
+                f"[bold]{_escape_markup(str(ev.get('tag', '')))}[/bold] - {_escape_markup(str(ev.get('message', '')))}"
+            )
+        # Single decision point: snapshot before write, scroll_end after if needed.
+        _at_bottom = log.scroll_y >= max(0, log.max_scroll_y - 5)
+        log.write("\n".join(buf))
+        if _at_bottom:
+            log.scroll_end(animate=False)
+        self._session_event_count = len(events)
+
+    def _write_perf_summary_if_finished(self, perf_enabled: bool) -> None:
+        """Write the one-shot perf summary after the session leaves running state."""
+        if not perf_enabled or self._perf_summary_written:
+            return
+        if self._session.summary().get("outcome") == "running":
+            return
+        summary = self._session.perf_summary()
+        if not summary:
+            return
+        log = self.query_one("#session-log", RichLog)
+        for line in summary.splitlines():
+            log.write(_escape_markup(line))
+        self._perf_summary_written = True
 
     def _refresh_dashboard_preview(self, job=None, *, reset: bool = False) -> None:
         """Append log output for the Dashboard-highlighted job."""
@@ -1008,11 +662,14 @@ class WaveApp(App):
             return
 
         key = self._job_row_key(job)
-        log_view = self.query_one("#dashboard-log", RichLog)
+        log_view = self._plain_log("#dashboard-log")
 
         if reset or self._dashboard_preview_job_key != key:
             self._dashboard_preview_job_key = key
-            self._dashboard_preview_log_count = 0
+            self._dashboard_preview_log_count = self._tail_sync_start(
+                job,
+                _DASHBOARD_PREVIEW_TAIL_LINES,
+            )
             log_view.clear()
             log_view.write(f"{job.name}  [{key[:8]}]")
 
@@ -1021,31 +678,31 @@ class WaveApp(App):
             log_view,
             self._dashboard_preview_log_count,
             empty_message="No log output yet." if reset else None,
+            force_scroll=reset,
         )
 
     def _sync_job_log(
         self,
         job,
-        log_view: RichLog,
+        log_view: _LogViewAdapter,
         sync_count: int,
         *,
         empty_message: str | None = None,
+        force_scroll: bool = False,
     ) -> int:
         """Append newly emitted job log lines to *log_view* and return sync count."""
-        total_lines = getattr(job, "_total_log_lines", 0)
-        if total_lines <= sync_count:
-            if empty_message is not None and total_lines == 0:
-                log_view.write(empty_message)
-            return sync_count
+        return _sync_job_log_model(
+            job,
+            log_view,
+            sync_count,
+            empty_message=empty_message,
+            record_log_append=self._session.perf_record_tui_log_append,
+            force_scroll=force_scroll,
+        )
 
-        if hasattr(job, "log_snapshot_since"):
-            total_lines, new_lines = job.log_snapshot_since(sync_count)
-        else:
-            new_lines = job.tail(total_lines - sync_count)
-        if new_lines:
-            log_view.auto_scroll = (log_view.scroll_y >= max(0, log_view.max_scroll_y - 2))
-            log_view.write("\n".join(new_lines))
-        return total_lines
+    def _tail_sync_start(self, job, limit: int) -> int:
+        """Return the sync counter that starts at the last *limit* lines."""
+        return _tail_sync_start_model(job, limit)
 
     def _update_subtitle(self, *, jobs: list | None = None) -> None:
         if self._row_status_cache:
@@ -1080,27 +737,39 @@ class WaveApp(App):
         if job is not None:
             self._sync_dashboard_selection(job)
         # Reset all incremental sync counters for the new job
-        self._log_total_sync_count = 0
+        self._log_total_sync_count = (
+            self._tail_sync_start(job, _DETAIL_INITIAL_TAIL_LINES)
+            if job is not None
+            else 0
+        )
         self._events_sync_count = 0
-        self._terminal_sync_count = 0
-        self._terminal_empty_shown = False
         self._data_row_keys = set()
         self._data_cache = {}
 
-        log_view = self.query_one("#log-view", RichLog)
+        log_view = self._plain_log("#log-view")
         log_view.clear()
+        self._detail_job_needs_scroll = True  # scroll to bottom on the first log refresh
         if job is None:
             log_view.write("No job selected. Go to Dashboard (F1) and press Enter on a job to view details.")
 
         self.query_one("#events-log", RichLog).clear()
         self.query_one("#system-job-log", RichLog).clear()
         self.query_one("#data-table", DataTable).clear()
-        self.query_one("#info-panel", Static).update("")
-        self.query_one("#terminal-view", RichLog).clear()
-        self._update_terminal_hint(job)
+        self._update_detail_header(job)
+
+        # Update the Job Input Bar placeholder to show the current job name,
+        # truncated to 15 chars so there is always room to type.
+        job_input = self.query_one("#job-input-bar", Input)
+        job_input.clear()
+        if job is None:
+            job_input.placeholder = "No job selected"
+        else:
+            raw_name = str(getattr(job, "name", ""))
+            truncated = (raw_name[:13] + "\u2026") if len(raw_name) > 15 else raw_name
+            job_input.placeholder = f"[{truncated}] > "
 
         if job is not None:
-            self._refresh_right_panels(job)
+            self._refresh_right_panels(job, force=True)
         self.query_one("#main-tabs", TabbedContent).active = "tab-detail"
 
     def _detail_job_index(self) -> int | None:
@@ -1146,11 +815,16 @@ class WaveApp(App):
                 return
 
     def _is_detail_navigation_context(self) -> bool:
-        """Return True only when detail navigation keys should be active."""
+        """Return True only when detail navigation keys should be active.
+
+        Navigation keys ([ ] { } 1-4 i) are suppressed when any input widget
+        has focus, to prevent them from interfering with text entry.
+        """
         if self.query_one("#main-tabs", TabbedContent).active != "tab-detail":
             return False
         focused = self.focused
-        return getattr(focused, "id", None) != "cmd-input"
+        focused_id = getattr(focused, "id", None)
+        return focused_id not in ("cmd-input", "job-input-bar")
 
     def _update_detail_header(self, job) -> None:
         """Refresh the one-line JOB DETAIL location/status header."""
@@ -1195,25 +869,49 @@ class WaveApp(App):
 
         self._refresh_dashboard_preview(job, reset=True)
 
-    def _refresh_right_panels(self, job) -> None:
-        """Push the latest state for *job* into the three right-side panels."""
+    def _active_detail_panel_id(self) -> str:
+        """Return the active right-side detail panel id."""
+        try:
+            return self.query_one("#detail-tabs", TabbedContent).active
+        except NoMatches:
+            return "detail-info"
+
+    def _refresh_right_panels(self, job, *, force: bool = False) -> None:
+        """Refresh the left log and only the active right-side detail panel."""
         self._update_detail_header(job)
 
-        # -- INFO tab (static job metadata) ----------------------------
-        self.query_one("#info-panel", Static).update(self._build_info_text(job))
+        self._refresh_detail_log(job)
+        self._refresh_active_detail_panel(job, force=force)
 
-        # -- Log panel (append-only for the selected job) --------------
-        log_view = self.query_one("#log-view", RichLog)
+    def _refresh_detail_log(self, job) -> None:
+        """Append new log lines for the selected JOB DETAIL job."""
+        log_view = self._plain_log("#log-view")
+        force = self._detail_job_needs_scroll
+        self._detail_job_needs_scroll = False
         self._log_total_sync_count = self._sync_job_log(
             job,
             log_view,
             self._log_total_sync_count,
+            force_scroll=force,
         )
 
-        # -- DATA tab (upsert by key) -----------------------------------
-        self._refresh_data_panel(job)
+    def _refresh_active_detail_panel(self, job, *, force: bool = False) -> None:
+        """Refresh only the active right-side JOB DETAIL sub-tab."""
+        active_panel = self._active_detail_panel_id()
+        if active_panel == "detail-info":
+            self.query_one("#info-panel", Static).update(self._build_info_text(job))
+            return
+        if active_panel == "detail-data":
+            self._refresh_data_panel(job)
+            return
+        if active_panel == "detail-events":
+            self._refresh_events_panels(job)
+            return
+        elif active_panel == "detail-system":
+            self._refresh_events_panels(job)
 
-        # -- EVENTS & SYSTEM tabs (incremental chronologic rendering) --
+    def _refresh_events_panels(self, job) -> None:
+        """Incrementally refresh the EVENTS and SYSTEM sub-tabs."""
         all_events = getattr(job, "peek_events", lambda: [])()
         sync_count = self._events_sync_count
 
@@ -1236,39 +934,19 @@ class WaveApp(App):
                     sys_msgs.append(_format_system_event_line(ev))
 
             if ev_msgs:
-                ev_log.auto_scroll = (ev_log.scroll_y >= max(0, ev_log.max_scroll_y - 2))
+                _ev_bottom = ev_log.scroll_y >= max(0, ev_log.max_scroll_y - 5)
+                ev_log.auto_scroll = _ev_bottom
                 ev_log.write("\n".join(ev_msgs))
             if sys_msgs:
-                sys_log.auto_scroll = (sys_log.scroll_y >= max(0, sys_log.max_scroll_y - 2))
+                _sys_bottom = sys_log.scroll_y >= max(0, sys_log.max_scroll_y - 5)
                 sys_log.write("\n".join(sys_msgs))
+                if _sys_bottom:
+                    sys_log.scroll_end(animate=False)
 
             self._events_sync_count = len(all_events)
 
-        # -- TERMINAL tab (append-only PTY output) -------------------------
-        terminal_view = self.query_one("#terminal-view", RichLog)
-        if getattr(job, "supports_pty", False):
-            if getattr(job, "_total_log_lines", 0) > 0 and self._terminal_empty_shown:
-                terminal_view.clear()
-                self._terminal_empty_shown = False
-            # PTY job: sync PTY output lines
-            self._terminal_sync_count = self._sync_job_log(
-                job,
-                terminal_view,
-                self._terminal_sync_count,
-            )
-            # Show one-time empty message if no output yet
-            if self._terminal_sync_count == 0 and not self._terminal_empty_shown:
-                terminal_view.write("No PTY output yet.")
-                self._terminal_empty_shown = True
-        else:
-            # Non-PTY job: show one-time unsupported message, never sync batch logs
-            if not self._terminal_empty_shown:
-                terminal_view.write(
-                    "Terminal view is available for PtyCmdJob only.\n"
-                    "This job uses PIPE-based I/O (batch mode).\n"
-                    "Use the Logs view (left panel) for batch output."
-                )
-                self._terminal_empty_shown = True
+    def _format_command_hint(self) -> str:
+        return ""
 
     def _refresh_data_panel(self, job) -> None:
         """Refresh the DATA sub-tab, including a clear empty state."""
@@ -1326,7 +1004,7 @@ class WaveApp(App):
                 "[cyan]F8[/cyan] [dim]input[/dim]  "
                 "[cyan]F9[/cyan] [dim]Ctrl-C[/dim]  "
                 "[cyan]F10[/cyan] [dim]Ctrl-D[/dim]  "
-                "[dim]│[/dim]  "
+                "[dim]|[/dim]  "
                 "[cyan]key . ctrl-c[/cyan]  "
                 "[cyan]input . \\<text>[/cyan]"
             )
@@ -1350,9 +1028,17 @@ class WaveApp(App):
         elif active == "tab-help":
             self.query_one("#help-text").focus()
 
+    def _is_main_tab_active(self, tab_id: str) -> bool:
+        """Return True when the requested top-level tab is visible."""
+        return self.query_one("#main-tabs", TabbedContent).active == tab_id
+
+    def _is_dashboard_tab_active(self) -> bool:
+        """Return True when the top-level DASHBOARD tab is visible."""
+        return self._is_main_tab_active("tab-dashboard")
+
     def _is_detail_tab_active(self) -> bool:
         """Return True when the top-level JOB DETAIL tab is visible."""
-        return self.query_one("#main-tabs", TabbedContent).active == "tab-detail"
+        return self._is_main_tab_active("tab-detail")
 
     # ------------------------------------------------------------------
     # Textual event handlers
@@ -1361,8 +1047,13 @@ class WaveApp(App):
     def on_tabbed_content_tab_activated(self, event) -> None:
         """When a tab is selected (via mouse or F-keys), route focus to its main widget."""
         self._focus_active_panel()
-        if self._detail_job is not None and self._is_detail_tab_active():
-            self._refresh_right_panels(self._detail_job)
+        if self._detail_job is None:
+            return
+        control_id = getattr(getattr(event, "control", None), "id", None)
+        if control_id == "detail-tabs":
+            self._refresh_active_detail_panel(self._detail_job, force=True)
+        elif self._is_detail_tab_active():
+            self._refresh_right_panels(self._detail_job, force=True)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Track which Dashboard row the cursor is on for preview and commands."""
@@ -1373,7 +1064,7 @@ class WaveApp(App):
             self._refresh_dashboard_preview(reset=True)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Enter on a DASHBOARD row → open JOB DETAIL for that job."""
+        """Enter on a DASHBOARD row -> open JOB DETAIL for that job."""
         if getattr(event.control, "id", None) != "jobs-table":
             return
         row_key_val = event.row_key.value  # the key passed to add_row()
@@ -1383,10 +1074,28 @@ class WaveApp(App):
             return
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Dispatch the REPL command from the bottom command bar."""
-        # Import here to avoid circular imports at module level.
-        from rpkbin.wave.runner import _handle_cmd, _parse_repl_line  # noqa: PLC0415
+        """Dispatch the submitted input from either the command bar or the Job Input Bar."""
+        # --- Job Input Bar: send text directly to the current job's stdin ---
+        if getattr(event.control, "id", None) == "job-input-bar":
+            job_input = self.query_one("#job-input-bar", Input)
+            text = event.value
+            job_input.clear()
+            if not text or self._detail_job is None:
+                return
+            job = self._detail_job
+            if not hasattr(job, "send_input"):
+                self.notify("This job does not accept stdin input.", severity="warning", timeout=3)
+                return
+            # Always append newline (like pressing Enter in a real terminal).
+            if not text.endswith("\n"):
+                text += "\n"
+            try:
+                job.send_input(text)
+            except RuntimeError as exc:
+                self.notify(f"Send failed: {exc}", severity="error", timeout=4)
+            return
 
+        # --- Command bar (existing path) ---
         line = event.value.strip()
         cmd_input = self.query_one("#cmd-input", CommandInput)
         cmd_input.clear()
@@ -1405,7 +1114,7 @@ class WaveApp(App):
         # --- TUI-only: expand '.' to the current JOB DETAIL job id ---
         detail_job_id = (
             str(self._detail_job.id)
-            if self._detail_job is not None and hasattr(self._detail_job, "id")
+            if self._detail_job is not None and self._is_detail_tab_active() and hasattr(self._detail_job, "id")
             else None
         )
         parts, dot_error = _expand_dot_in_parts(parts, detail_job_id)
@@ -1453,8 +1162,6 @@ class WaveApp(App):
             return
 
         if verb in ("logs", "show", "data", "events") and len(parts) >= 2:
-            from rpkbin.wave.runner import _find_job  # noqa: PLC0415
-
             job = _find_job(parts[1], self._session, quiet=True)
             if job is not None:
                 self._open_detail_for(job)
@@ -1465,7 +1172,7 @@ class WaveApp(App):
                 elif verb == "show":
                     self.query_one("#detail-tabs", TabbedContent).active = "detail-info"
                 return
-            # Job not found — fall through to _handle_cmd for error message
+            # Job not found -> fall through to _handle_cmd for error message
 
         # -- Default path: run command, capture output to SYSTEM LOG ----
         buf = io.StringIO()
@@ -1500,8 +1207,6 @@ class WaveApp(App):
 
     def action_request_quit(self) -> None:
         """Quit safely: warn if jobs are still active, allow double-tap force quit."""
-        from rpkbin.wave.runner import _active_jobs  # noqa: PLC0415
-
         active = _active_jobs(self._session)
         if not active:
             self.exit()
@@ -1509,13 +1214,27 @@ class WaveApp(App):
 
         now = time.time()
         if self._last_ctrl_c > now - 3.0:
-            # Double-tap confirmed: force shutdown
+            # Double-tap confirmed: force shutdown — notify immediately so the
+            # user knows we are working (avoids the "frozen" appearance while
+            # cancel() + _stop() drain worker threads).
+            n = len(active)
+            self.notify(
+                f"Terminating {n} job(s)\u2026 please wait.",
+                severity="warning",
+                timeout=30,
+            )
             sys_log = self.query_one("#session-log", RichLog)
-            sys_log.write("[bold red]Force quit triggered. Canceling active jobs...[/bold red]")
-            for job in active:
-                if hasattr(job, "cancel"):
-                    job.cancel()
-            self.exit()
+            sys_log.write(f"[bold red]Force quit: cancelling {n} active job(s)\u2026[/bold red]")
+
+            def _cancel_jobs() -> None:
+                if hasattr(self._session, "pause"):
+                    self._session.pause()
+                for job in active:
+                    if hasattr(job, "cancel"):
+                        job.cancel()
+
+            self.run_worker(_cancel_jobs, thread=True)
+            self._quitting = True
         else:
             self._last_ctrl_c = now
             log = self.query_one("#session-log", RichLog)
@@ -1538,9 +1257,27 @@ class WaveApp(App):
         """Focus the REPL command bar (Vim style ':')."""
         self.query_one("#cmd-input", CommandInput).focus()
 
-    def action_unfocus_cmd(self) -> None:
-        """Leave command bar and focus the active panel's main widget."""
+    def action_focus_job_input(self) -> None:
+        """'i': Focus the Job Input Bar to send text to the current job's stdin."""
+        if not self._is_detail_tab_active():
+            return
+        focused = self.focused
+        if getattr(focused, "id", None) in ("cmd-input", "job-input-bar"):
+            return
+        self.query_one("#job-input-bar", Input).focus()
+
+    def action_unfocus_input(self) -> None:
+        """Esc: Leave any input widget and return focus to the active panel."""
         self._focus_active_panel()
+
+    def action_detail_panel(self, panel_id: str) -> None:
+        """1-4: Switch the right-side detail sub-tab by panel id."""
+        if not self._is_detail_navigation_context():
+            return
+        try:
+            self.query_one("#detail-tabs", TabbedContent).active = panel_id
+        except NoMatches:
+            pass
 
     def action_previous_detail_job(self) -> None:
         """Open the previous job in JOB DETAIL."""
@@ -1559,45 +1296,34 @@ class WaveApp(App):
         self._navigate_detail_job(1, status="running")
 
     # ------------------------------------------------------------------
-    # TERMINAL sub-tab shortcut actions (F8 / F9 / F10)
+    # TERMINAL sub-tab shortcut actions (F9 / F10)
     # ------------------------------------------------------------------
 
     def _is_terminal_shortcut_context(self) -> bool:
-        """Return True when F8/F9/F10 shortcuts should be active.
+        """Return True when F9/F10 shortcuts should be active.
 
         All of these must hold:
         - JOB DETAIL tab is open
-        - TERMINAL sub-tab is active
-        - A job is selected in JOB DETAIL
-        - Command bar is not focused
+        - A PTY job is selected in JOB DETAIL
+        - Neither command bar nor job input bar is focused
+
+        Note: the TERMINAL sub-tab no longer needs to be active — F9/F10
+        work from anywhere in JOB DETAIL as long as a PTY job is open.
         """
         if not self._is_detail_tab_active():
-            return False
-        try:
-            if self.query_one("#detail-tabs", TabbedContent).active != "detail-terminal":
-                return False
-        except Exception:
             return False
         if self._detail_job is None:
             return False
         focused = self.focused
-        return getattr(focused, "id", None) != "cmd-input"
-
-    def action_terminal_focus_input(self) -> None:
-        """F8: Focus the command bar and pre-fill 'input . ' (TERMINAL shortcut)."""
-        if not self._is_terminal_shortcut_context():
-            return
-        cmd_input = self.query_one("#cmd-input", CommandInput)
-        cmd_input.focus()
-        cmd_input.value = "input . "
-        cmd_input.cursor_position = len(cmd_input.value)
+        focused_id = getattr(focused, "id", None)
+        return focused_id not in ("cmd-input", "job-input-bar")
 
     def action_terminal_send_ctrl_c(self) -> None:
-        """F9: Send Ctrl-C (\\x03) to the current PTY job via terminal (TERMINAL shortcut)."""
+        """F9: Send Ctrl-C (\\x03) to the current PTY job."""
         self._terminal_send_key("ctrl-c")
 
     def action_terminal_send_ctrl_d(self) -> None:
-        """F10: Send Ctrl-D (\\x04) to the current PTY job via terminal (TERMINAL shortcut)."""
+        """F10: Send Ctrl-D (\\x04) to the current PTY job."""
         self._terminal_send_key("ctrl-d")
 
     def _terminal_send_key(self, key: str) -> None:

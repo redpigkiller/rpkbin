@@ -1,16 +1,17 @@
 """
-cmd_job.py — Concrete Job subclass for local shell command execution.
+cmd_job.py - Concrete Job subclass for local shell command execution.
 """
 
 from __future__ import annotations
 
 import os
-import sys
-import uuid
 import signal
 import subprocess
+import sys
+import uuid
 
 from .job import Job, RUNNING
+
 
 class CmdJob(Job):
     """A job that runs a shell command on the local machine.
@@ -34,17 +35,79 @@ class CmdJob(Job):
         flush_tokens: tuple[str, ...] | None = None,
         tags: frozenset[str] | set[str] | None = None,
     ) -> None:
-        super().__init__(name, job_id=job_id, priority=priority, max_retries=max_retries, resources=resources, max_log_lines=max_log_lines, tags=tags)
+        super().__init__(
+            name,
+            job_id=job_id,
+            priority=priority,
+            max_retries=max_retries,
+            resources=resources,
+            max_log_lines=max_log_lines,
+            tags=tags,
+        )
         self.cmd = cmd
         self.cwd = cwd
         self.env = env
         self.flush_tokens = flush_tokens
         self._proc: subprocess.Popen | None = None
 
+    def _write_log(self, log_file, text: str) -> None:
+        if log_file:
+            log_file.write(text)
+            log_file.flush()
+
+    def _stream_stdout_fast(self, proc: subprocess.Popen[str], log_file=None) -> None:
+        if proc.stdout is None:
+            return
+
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break
+
+            if line.endswith("\n"):
+                self._emit_line(line.rstrip())
+            else:
+                self._emit_line(line)
+            self._write_log(log_file, line)
+
+    def _stream_stdout_flush_tokens(
+        self,
+        proc: subprocess.Popen[str],
+        flush_tokens: tuple[str, ...],
+        log_file=None,
+    ) -> None:
+        if proc.stdout is None:
+            return
+
+        buffer: list[str] = []
+        while True:
+            char = proc.stdout.read(1)
+
+            if not char:
+                if buffer:
+                    line = "".join(buffer)
+                    self._emit_line(line)
+                    self._write_log(log_file, line)
+                break
+
+            buffer.append(char)
+            if char == "\n":
+                line = "".join(buffer)
+                self._emit_line(line.rstrip())
+                self._write_log(log_file, line)
+                buffer.clear()
+                continue
+
+            partial = "".join(buffer)
+            if partial.endswith(flush_tokens):
+                self._emit_line(partial)
+                self._write_log(log_file, partial)
+                buffer.clear()
+
     def _execute(self, log_file=None) -> None:
         """Run `self.cmd` via subprocess and stream output."""
         env = {**os.environ, **self.env} if self.env else None
-        
+
         # SRE Robustness: Process Group to avoid zombies and enable signals
         kwargs = {}
         if sys.platform != "win32":
@@ -64,47 +127,19 @@ class CmdJob(Job):
                 cwd=self.cwd,
                 env=env,
                 text=True,
-                bufsize=1,   # line-buffered
-                **kwargs
+                bufsize=1,  # line-buffered
+                **kwargs,
             )
             self._proc = proc
 
-        buffer = []
-        # Non-blocking OS check loop avoiding Busy Wait
-        while True:
-            if proc.stdout is None:
-                break
-            char = proc.stdout.read(1)
-            
-            if not char:  # EOF — process finished or killed
-                if buffer:
-                    line = "".join(buffer)
-                    self._emit_line(line)
-                    if log_file:
-                        log_file.write(line)
-                        log_file.flush()
-                break
-
-            buffer.append(char)
-            if char == "\n":
-                line = "".join(buffer)
-                self._emit_line(line.rstrip())
-                if log_file:
-                    log_file.write(line)
-                    log_file.flush()
-                buffer.clear()
-            else:
-                if self.flush_tokens:
-                    partial = "".join(buffer)
-                    if partial.endswith(self.flush_tokens):
-                        self._emit_line(partial)
-                        if log_file:
-                            log_file.write(partial)
-                            log_file.flush()
-                        buffer.clear()
+        flush_tokens = self.flush_tokens or ()
+        if flush_tokens:
+            self._stream_stdout_flush_tokens(proc, flush_tokens, log_file=log_file)
+        else:
+            self._stream_stdout_fast(proc, log_file=log_file)
 
         proc.wait()
-        
+
         with self._lock:
             self._result = proc.returncode
             if proc.returncode != 0 and self._status == RUNNING:
@@ -137,40 +172,40 @@ class CmdJob(Job):
             except ProcessLookupError:
                 pass
             except OSError:
-                proc.kill() # fallback
+                proc.kill()  # fallback
 
     def send_input(self, text: str) -> None:
         """Write *text* to the running process's stdin."""
         with self._lock:
             proc = self._proc
             status = self._status
-        
+
         if status != RUNNING or proc is None or proc.stdin is None:
             raise RuntimeError(f"Job {self.name!r}: stdin not available or not running.")
-            
+
         try:
             proc.stdin.write(text)
             proc.stdin.flush()
         except OSError:
-            pass # Pipe likely broken because process exited
+            pass  # Pipe likely broken because process exited
 
     def send_signal(self, signum: int) -> None:
         """Send an OS signal (e.g., signal.SIGINT) to the running process."""
         with self._lock:
             proc = self._proc
             status = self._status
-        
+
         if status != RUNNING or proc is None:
             raise RuntimeError(f"Job {self.name!r} is not running. Cannot send signal.")
-            
+
         if sys.platform == "win32":
             # On Windows, os.kill heavily relies on CTRL_BREAK_EVENT or CTRL_C_EVENT
             # if we want the subprocess to catch it instead of instantly dying.
             if signum == signal.SIGINT:
-                real_sig = signal.CTRL_BREAK_EVENT # Safest substitute on Windows
+                real_sig = signal.CTRL_BREAK_EVENT  # Safest substitute on Windows
             else:
                 real_sig = signum
-                
+
             try:
                 os.kill(proc.pid, real_sig)
             except OSError:
@@ -181,4 +216,3 @@ class CmdJob(Job):
                 os.killpg(os.getpgid(proc.pid), signum)
             except (ProcessLookupError, OSError):
                 pass
-

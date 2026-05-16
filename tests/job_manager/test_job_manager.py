@@ -5,9 +5,10 @@ import uuid
 import tempfile
 import threading
 import logging
+import io
 import pytest
 
-from rpkbin.job_manager import JobManager, CmdJob, FuncJob, DONE, FAILED, PENDING, CANCELLED
+from rpkbin.job_manager import JobManager, CmdJob, FuncJob, DONE, FAILED, PENDING, CANCELLED, RUNNING
 import rpkbin.job_manager.manager as manager_mod
 
 def test_cmd_job():
@@ -284,6 +285,82 @@ def test_flush_tokens():
             assert found, "Flush token was not emitted immediately"
             job.cancel()
             manager.wait()
+    finally:
+        os.remove(script_path)
+
+def test_cmd_job_fast_path_without_flush_tokens(monkeypatch):
+    class FakeStdout:
+        def __init__(self, lines):
+            self._lines = iter(lines)
+
+        def readline(self):
+            return next(self._lines, "")
+
+        def read(self, size=-1):
+            raise AssertionError("fast path should not use read()")
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = FakeStdout(["first line\n", "second line\n", "tail"])
+            self.stdin = None
+            self.returncode = 0
+            self.pid = 1234
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    proc = FakeProc()
+    monkeypatch.setattr("rpkbin.job_manager.cmd_job.subprocess.Popen", lambda *args, **kwargs: proc)
+
+    job = CmdJob("fast_path", "fake command")
+    job._status = RUNNING
+    log_file = io.StringIO()
+
+    job._execute(log_file=log_file)
+
+    assert job.logs() == ["first line", "second line", "tail"]
+    assert log_file.getvalue() == "first line\nsecond line\ntail"
+    assert job.result == 0
+
+def test_cmd_job_partial_eof_without_newline():
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write("import sys\nsys.stdout.write('tail-without-newline')\nsys.stdout.flush()\n")
+        script_path = f.name
+
+    try:
+        job = CmdJob("partial_eof", f'python "{script_path}"')
+        with JobManager(max_workers=1) as manager:
+            manager.add(job)
+            manager.wait()
+
+        assert job.status == DONE
+        assert job.logs()[-1] == "tail-without-newline"
+    finally:
+        os.remove(script_path)
+
+def test_cmd_job_log_file_preserves_raw_output():
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(
+            "import sys\n"
+            "print('line one')\n"
+            "print('line two')\n"
+            "sys.stdout.write('tail')\n"
+            "sys.stdout.flush()\n"
+        )
+        script_path = f.name
+
+    try:
+        job = CmdJob("log_file_raw", f'python "{script_path}"')
+        job._status = RUNNING
+        log_file = io.StringIO()
+
+        job._execute(log_file=log_file)
+
+        assert job.logs() == ["line one", "line two", "tail"]
+        assert log_file.getvalue() == "line one\nline two\ntail"
     finally:
         os.remove(script_path)
 

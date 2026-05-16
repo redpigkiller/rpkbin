@@ -177,6 +177,118 @@ class Session:
                 except Exception:
                     logger.exception("tui_job_added callback raised")
 
+    def define_job_action(
+        self,
+        name: str,
+        fn: Callable,
+        *,
+        allow_from_hook: bool = False,
+    ) -> None:
+        """Register a reusable action that targets one job.
+
+        The callable is invoked as ``fn(job, ctx)`` where ``ctx`` contains
+        ``session``, ``job``, ``args`` and ``source``.  Job actions may be run
+        from the CLI/TUI via ``action <job> <name>``.  Hook-triggered execution
+        is opt-in via ``allow_from_hook=True``.
+        """
+        action_name = self._normalize_action_name(name)
+        if not callable(fn):
+            raise TypeError("job action must be callable")
+        with self._session_lock:
+            self._job_actions[action_name] = {
+                "fn": fn,
+                "allow_from_hook": bool(allow_from_hook),
+            }
+
+    def define_session_action(
+        self,
+        name: str,
+        fn: Callable,
+        *,
+        allow_from_hook: bool = False,
+    ) -> None:
+        """Register a session-level action in a separate namespace.
+
+        Session actions are intentionally not run by the ``action <job> ...``
+        command.  Use ``session_action <name>`` explicitly, and keep
+        hook-triggered execution disabled unless the action is known to be
+        lightweight and safe to re-enter.
+        """
+        action_name = self._normalize_action_name(name)
+        if not callable(fn):
+            raise TypeError("session action must be callable")
+        with self._session_lock:
+            self._session_actions[action_name] = {
+                "fn": fn,
+                "allow_from_hook": bool(allow_from_hook),
+            }
+
+    def job_action_names(self) -> list[str]:
+        """Return registered job action names."""
+        with self._session_lock:
+            return sorted(self._job_actions)
+
+    def session_action_names(self) -> list[str]:
+        """Return registered session action names."""
+        with self._session_lock:
+            return sorted(self._session_actions)
+
+    def run_job_action(
+        self,
+        job,
+        name: str,
+        *args: str,
+        source: str = "api",
+    ):
+        """Run a registered job action for *job*.
+
+        Per-job actions registered via ``job.add_action`` override
+        session-defined actions with the same name.  Hook sources may run only
+        actions that explicitly allow hook execution.
+        """
+        action_name = self._normalize_action_name(name)
+        job_actions = getattr(job, "_wave_actions", {})
+        spec = job_actions.get(action_name)
+        if spec is None:
+            with self._session_lock:
+                spec = self._job_actions.get(action_name)
+        if spec is None:
+            raise KeyError(f"No job action named {action_name!r}.")
+        if source == "hook" and not spec.get("allow_from_hook", False):
+            raise PermissionError(f"Job action {action_name!r} is not allowed from hooks.")
+
+        ctx = {
+            "session": self,
+            "job": job,
+            "action": action_name,
+            "args": tuple(args),
+            "source": source,
+        }
+        return spec["fn"](job, ctx)
+
+    def run_session_action(
+        self,
+        name: str,
+        *args: str,
+        source: str = "api",
+    ):
+        """Run a registered session-level action."""
+        action_name = self._normalize_action_name(name)
+        with self._session_lock:
+            spec = self._session_actions.get(action_name)
+        if spec is None:
+            raise KeyError(f"No session action named {action_name!r}.")
+        if source == "hook" and not spec.get("allow_from_hook", False):
+            raise PermissionError(f"Session action {action_name!r} is not allowed from hooks.")
+
+        ctx = {
+            "session": self,
+            "action": action_name,
+            "args": tuple(args),
+            "source": source,
+        }
+        return spec["fn"](self, ctx)
+
     def jobs(self) -> list:
         """Return all known jobs (buffered or in the manager).
 
@@ -362,6 +474,112 @@ class Session:
             "duration_s": duration_s,
         }
 
+    @property
+    def perf_enabled(self) -> bool:
+        return self._perf_enabled
+
+    def set_perf_enabled(self, enabled: bool) -> None:
+        self._perf_enabled = bool(enabled)
+        for job in self.jobs():
+            if isinstance(job, WaveJobMixin):
+                job._wave_perf_enabled = self._perf_enabled
+
+    def perf_record_tui_tick(self, elapsed_s: float) -> None:
+        if not self._perf_enabled:
+            return
+        with self._session_lock:
+            self._perf_tui["tick_count"] += 1
+            self._perf_tui["tick_elapsed_s"] += elapsed_s
+
+    def perf_record_tui_dirty_flush(self, dirty_jobs: int) -> None:
+        if not self._perf_enabled:
+            return
+        with self._session_lock:
+            self._perf_tui["dirty_flush_count"] += 1
+            self._perf_tui["dirty_flush_jobs"] += max(0, int(dirty_jobs))
+
+    def perf_record_tui_log_append(self, lines: int) -> None:
+        if not self._perf_enabled or lines <= 0:
+            return
+        with self._session_lock:
+            self._perf_tui["log_append_lines"] += int(lines)
+
+    def perf_snapshot(self) -> dict:
+        if not self._perf_enabled:
+            return {"enabled": False}
+
+        jobs = self.jobs()
+        per_job = []
+        totals = {
+            "lines": 0,
+            "parser_calls": 0,
+            "parser_elapsed_s": 0.0,
+            "hook_calls": 0,
+            "hook_elapsed_s": 0.0,
+        }
+        for job in jobs:
+            lines = int(getattr(job, "_total_log_lines", 0))
+            parser_calls = int(getattr(job, "_perf_parser_calls", 0))
+            parser_elapsed_s = float(getattr(job, "_perf_parser_elapsed_s", 0.0))
+            hook_calls = int(getattr(job, "_perf_hook_calls", 0))
+            hook_elapsed_s = float(getattr(job, "_perf_hook_elapsed_s", 0.0))
+            per_job.append({
+                "name": getattr(job, "name", ""),
+                "lines": lines,
+                "parser_calls": parser_calls,
+                "parser_elapsed_s": parser_elapsed_s,
+                "hook_calls": hook_calls,
+                "hook_elapsed_s": hook_elapsed_s,
+            })
+            totals["lines"] += lines
+            totals["parser_calls"] += parser_calls
+            totals["parser_elapsed_s"] += parser_elapsed_s
+            totals["hook_calls"] += hook_calls
+            totals["hook_elapsed_s"] += hook_elapsed_s
+
+        with self._session_lock:
+            tui = dict(self._perf_tui)
+
+        return {
+            "enabled": True,
+            "jobs": per_job,
+            "totals": totals,
+            "tui": tui,
+        }
+
+    def perf_summary(self) -> str:
+        snapshot = self.perf_snapshot()
+        if not snapshot.get("enabled"):
+            return ""
+
+        totals = snapshot["totals"]
+        tui = snapshot["tui"]
+        lines = [
+            "[Wave][perf] summary",
+            (
+                "[Wave][perf] total "
+                f"lines={totals['lines']} "
+                f"parser={totals['parser_calls']} calls/{totals['parser_elapsed_s']:.6f}s "
+                f"hook={totals['hook_calls']} calls/{totals['hook_elapsed_s']:.6f}s"
+            ),
+        ]
+        for job in snapshot["jobs"]:
+            lines.append(
+                "[Wave][perf] job "
+                f"{job['name']}: "
+                f"lines={job['lines']} "
+                f"parser={job['parser_calls']}/{job['parser_elapsed_s']:.6f}s "
+                f"hook={job['hook_calls']}/{job['hook_elapsed_s']:.6f}s"
+            )
+        lines.append(
+            "[Wave][perf] tui "
+            f"tick={tui['tick_count']}/{tui['tick_elapsed_s']:.6f}s "
+            f"dirty_flush={tui['dirty_flush_count']} "
+            f"dirty_jobs={tui['dirty_flush_jobs']} "
+            f"log_append_lines={tui['log_append_lines']}"
+        )
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Internal lifecycle (called by runner.py, not by the user)
     # ------------------------------------------------------------------
@@ -494,9 +712,19 @@ class Session:
         self._tui_config: dict = {
             "dashboard_columns": None,
         }
+        self._job_actions: dict[str, dict] = {}
+        self._session_actions: dict[str, dict] = {}
         self._session_timeout_fired: bool = False
         self._timer_thread: threading.Thread | None = None
         self._stop_timer = threading.Event()
+        self._perf_enabled: bool = False
+        self._perf_tui: dict[str, int | float] = {
+            "tick_count": 0,
+            "tick_elapsed_s": 0.0,
+            "dirty_flush_count": 0,
+            "dirty_flush_jobs": 0,
+            "log_append_lines": 0,
+        }
 
     def _normalize_dashboard_columns(self, columns: list | tuple) -> tuple:
         if not isinstance(columns, (list, tuple)):
@@ -538,10 +766,23 @@ class Session:
 
         return tuple(normalized)
 
+    @staticmethod
+    def _normalize_action_name(name: str) -> str:
+        if not isinstance(name, str):
+            raise TypeError("action name must be a string")
+        action_name = name.strip()
+        if not action_name:
+            raise ValueError("action name must not be empty")
+        if any(ch.isspace() for ch in action_name):
+            raise ValueError("action name must not contain whitespace")
+        return action_name
+
     def _inject_notify(self, job) -> None:
         """Wire the tui_notify callback into a Wave-aware job."""
         if isinstance(job, WaveJobMixin):
             job._tui_notify = self._tui_notify
+            job._wave_perf_enabled = self._perf_enabled
+            job._wave_session = self
 
     def _start_timer(self) -> None:
         """Start the background timer thread for elapsed_exceeds hooks."""

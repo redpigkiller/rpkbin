@@ -98,6 +98,8 @@ class WaveJobMixin:
         self._wave_hooks: list["Hook"] = []
         self._wave_lock = threading.RLock()
         self._tui_notify: Callable[["WaveJobMixin"], None] | None = None
+        self._wave_session = None
+        self._wave_actions: dict[str, dict] = {}
         self._wave_skipped: bool = False
         self._stop_policy: dict[str, object | None] = {
             "graceful_key": None,
@@ -114,6 +116,11 @@ class WaveJobMixin:
         self._on_done_cb_injected: bool = False
         self._on_fail_cb_injected: bool = False
         self._on_retry_cb_injected: bool = False
+        self._wave_perf_enabled: bool = False
+        self._perf_parser_calls: int = 0
+        self._perf_parser_elapsed_s: float = 0.0
+        self._perf_hook_calls: int = 0
+        self._perf_hook_elapsed_s: float = 0.0
 
     @staticmethod
     def _rerun_base_name(name: str) -> str:
@@ -209,6 +216,32 @@ class WaveJobMixin:
         if need_fail: self.on_fail(self._handle_on_fail)         # type: ignore[attr-defined]
         if need_retry: self.on_retry(self._handle_on_retry)      # type: ignore[attr-defined]
 
+    def add_action(
+        self,
+        name: str,
+        fn: Callable,
+        *,
+        allow_from_hook: bool = False,
+    ) -> None:
+        """Register a per-job action override.
+
+        Per-job actions are run via ``action <job> <name>`` just like
+        session-defined job actions, but take precedence for this job only.
+        """
+        action_name = self._normalize_action_name(name)
+        if not callable(fn):
+            raise TypeError("job action must be callable")
+        with self._wave_lock:
+            self._wave_actions[action_name] = {
+                "fn": fn,
+                "allow_from_hook": bool(allow_from_hook),
+            }
+
+    def action_names(self) -> list[str]:
+        """Return per-job action names registered on this job."""
+        with self._wave_lock:
+            return sorted(self._wave_actions)
+
     def emit(self, tag: str, message: str, source: str = "user") -> None:
         """Record a named event, visible in the TUI Events panel."""
         event = {
@@ -221,6 +254,17 @@ class WaveJobMixin:
             self.events.append(event)
         if self._tui_notify:
             self._tui_notify(self)
+
+    @staticmethod
+    def _normalize_action_name(name: str) -> str:
+        if not isinstance(name, str):
+            raise TypeError("action name must be a string")
+        action_name = name.strip()
+        if not action_name:
+            raise ValueError("action name must not be empty")
+        if any(ch.isspace() for ch in action_name):
+            raise ValueError("action name must not contain whitespace")
+        return action_name
 
     def update_parsed_data(self, updates: dict) -> None:
         """Merge *updates* into ``parsed_data``, fire data_equals hooks, notify TUI.
@@ -476,19 +520,25 @@ class WaveJobMixin:
             hooks = list(self._wave_hooks)
             parsers = list(self._wave_parsers)
         updates: dict = {}
+        perf_enabled = self._wave_perf_enabled
         for fn in parsers:
             try:
-                t0 = time.perf_counter()
-                result = fn(line)
-                dt = time.perf_counter() - t0
-                if dt > SLOW_PARSER_WARNING_S:
-                    logger.warning(
-                        "Slow parser detected for job %r (took %.2fs): %r. "
-                        "Avoid blocking work inside parsers.",
-                        self.name,  # type: ignore[attr-defined]
-                        dt,
-                        fn,
-                    )
+                if perf_enabled:
+                    t0 = time.perf_counter()
+                    result = fn(line)
+                    dt = time.perf_counter() - t0
+                    self._perf_parser_calls += 1
+                    self._perf_parser_elapsed_s += dt
+                    if dt > SLOW_PARSER_WARNING_S:
+                        logger.warning(
+                            "Slow parser detected for job %r (took %.2fs): %r. "
+                            "Avoid blocking work inside parsers.",
+                            self.name,  # type: ignore[attr-defined]
+                            dt,
+                            fn,
+                        )
+                else:
+                    result = fn(line)
                 if result:
                     updates.update(result)
             except Exception as exc:
