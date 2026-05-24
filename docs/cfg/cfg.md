@@ -155,6 +155,19 @@ removed_attrs = cfg.remove_edge("idle", "work")
 clone = cfg.copy()
 ```
 
+#### Safe Block Rename
+
+Do not mutate `BasicBlock.id` directly. Use `CFG.rename_block()` so the graph
+key, entry/exit markers, and edge structure stay consistent.
+
+```python
+cfg.rename_block("old", "new")
+```
+
+All incoming and outgoing edges (including self-loops) are preserved with their
+original attributes. The entry and exit markers are updated automatically if
+they referred to the renamed block.
+
 Validation:
 
 ```python
@@ -268,6 +281,30 @@ print(program.format(show_call_sites=False, show_meta=True))
 issues = program.validate(max_call_depth=2)
 ```
 
+#### Function Order
+
+`Program.function_order()` returns function names in the requested physical
+placement order for assembly-like output. It does not produce block layouts or
+call `CFG.linearize()`.
+
+```python
+# entry function first, then remaining in insertion order (default)
+program.function_order()
+
+# insertion order exactly as in program.cfgs
+program.function_order("insertion")
+
+# DFS pre-order of the call graph from entry_fn;
+# unreachable functions are appended in insertion order
+program.function_order("call_dfs")
+
+# explicit order; unspecified functions are appended in insertion order
+program.function_order("custom", order=["SUB_CHECK", "main"])
+
+# strict=True: order must list every function, nothing is appended
+program.function_order("custom", order=["SUB_CHECK", "main"], strict=True)
+```
+
 ---
 
 ## Domain Recipes
@@ -332,6 +369,55 @@ for slot in layout.slots:
     if slot.needs_jump:
         emit_jump(slot.jump_target)
 ```
+
+---
+
+## Structural Diff
+
+Use `rpkbin.cfg.diff` to compare two CFGs or two Programs structurally.
+This compares graph structure and caller-owned annotations as stored.
+It does **not** check semantic equivalence.
+
+```python
+from rpkbin.cfg import diff_cfgs, cfg_structurally_equal
+from rpkbin.cfg import diff_programs, program_structurally_equal
+
+# CFG comparison
+result = diff_cfgs(old_cfg, new_cfg)
+if result.has_changes():
+    print("added blocks:",   result.added_blocks)
+    print("removed blocks:", result.removed_blocks)
+    print("changed blocks:", result.changed_blocks)   # dict[key, BlockDelta]
+    print("added edges:",    result.added_edges)
+    print("removed edges:", result.removed_edges)
+    print("changed edges:", result.changed_edges)     # dict[(src,dst), EdgeDelta]
+    print("added calls:",   result.added_calls)       # CallRef relationships
+    print("removed calls:", result.removed_calls)
+
+# Convenience boolean
+if not cfg_structurally_equal(old_cfg, new_cfg):
+    ...
+
+# Program comparison
+result = diff_programs(old_program, new_program)
+if result.has_changes():
+    print("entry changed:",      result.entry_fn_changed)
+    print("added functions:",    result.added_functions)
+    print("removed functions:",  result.removed_functions)
+    print("changed functions:",  result.changed_functions)  # dict[name, CFGDiffResult]
+```
+
+Key options for `diff_cfgs` / `diff_programs`:
+
+| Option | Default | Effect |
+|---|---|---|
+| `align_by` | `"id"` | `"label"` matches blocks by `block.label` instead of `block.id`. |
+| `compare_insns` | `True` | Set `False` to ignore instruction-list differences. |
+| `compare_meta` | `False` | Set `True` to include `meta` dict differences. |
+| `compare_edge_attrs` | `True` | Set `False` to ignore edge attribute differences. |
+
+`CallRef` relationships are **always** compared regardless of `compare_insns`.
+They represent structural caller/callee relationships, not instruction content.
 
 ---
 
@@ -436,6 +522,7 @@ rpkbin/cfg/
   cfg.py       CFG structure, validation, layout, and graph utilities
   program.py   Program container for multiple CFGs
   analysis.py  call graph, call depth, and liveness analysis
+  diff.py      structural diff and equality for CFG / Program
   fsm.py       FSM-oriented checks and layout
   mcu.py       MCU-oriented checks and layout
 ```

@@ -1,4 +1,4 @@
-﻿"""Tests for rpkbin.cfg.program."""
+"""Tests for rpkbin.cfg.program."""
 
 import pytest
 
@@ -125,3 +125,126 @@ def test_program_validate_can_check_call_depth():
     issues = program.validate(max_call_depth=1)
 
     assert any("Call depth" in issue for issue in issues)
+
+
+# ---------------------------------------------------------------------------
+# Program.function_order
+# ---------------------------------------------------------------------------
+
+def _simple_cfg():
+    cfg = CFG()
+    cfg.add_block("entry")
+    cfg.set_entry("entry")
+    return cfg
+
+
+class TestFunctionOrder:
+    def _make_program(self, fn_names, entry="main"):
+        """Build a Program with plain CFGs (no calls between them)."""
+        cfgs = {fn: _simple_cfg() for fn in fn_names}
+        return Program(cfgs, entry_fn=entry)
+
+    def _make_call_program(self):
+        """main -> a -> c,  main -> b,  orphan (unreachable from main)."""
+        from rpkbin.cfg import CallRef
+
+        main = CFG()
+        main.add_block("m", insns=[CallRef("a"), CallRef("b")])
+        main.set_entry("m")
+
+        a = CFG()
+        a.add_block("a_body", insns=[CallRef("c")])
+        a.set_entry("a_body")
+
+        b = CFG()
+        b.add_block("b_body")
+        b.set_entry("b_body")
+
+        c = CFG()
+        c.add_block("c_body")
+        c.set_entry("c_body")
+
+        orphan = CFG()
+        orphan.add_block("o")
+        orphan.set_entry("o")
+
+        return Program({"main": main, "a": a, "b": b, "c": c, "orphan": orphan})
+
+    # -- strategy: entry_first -----------------------------------------------
+
+    def test_entry_first_puts_entry_first(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order()
+        assert result[0] == "main"
+
+    def test_entry_first_entry_appears_once(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order()
+        assert result.count("main") == 1
+
+    def test_entry_first_others_keep_insertion_order(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order()
+        non_entry = [fn for fn in result if fn != "main"]
+        assert non_entry == ["helper", "sub"]
+
+    # -- strategy: insertion --------------------------------------------------
+
+    def test_insertion_preserves_dict_order(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order("insertion")
+        assert result == ["helper", "main", "sub"]
+
+    # -- strategy: call_dfs ---------------------------------------------------
+
+    def test_call_dfs_caller_before_reachable_callee(self):
+        program = self._make_call_program()
+        result = program.function_order("call_dfs")
+        assert result.index("main") < result.index("a")
+        assert result.index("main") < result.index("b")
+        assert result.index("a") < result.index("c")
+
+    def test_call_dfs_unreachable_appended_in_insertion_order(self):
+        program = self._make_call_program()
+        result = program.function_order("call_dfs")
+        # "orphan" is not reachable from main via calls
+        assert "orphan" in result
+        # All 5 functions must be present
+        assert set(result) == {"main", "a", "b", "c", "orphan"}
+
+    # -- strategy: custom -----------------------------------------------------
+
+    def test_custom_returns_specified_order_then_remaining(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order("custom", order=["sub", "main"])
+        assert result[:2] == ["sub", "main"]
+        assert result[2] == "helper"
+
+    def test_custom_strict_requires_all_functions(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        with pytest.raises(ValueError, match="strict"):
+            program.function_order("custom", order=["sub", "main"], strict=True)
+
+    def test_custom_strict_accepts_complete_order(self):
+        program = self._make_program(["helper", "main", "sub"], entry="main")
+        result = program.function_order(
+            "custom", order=["sub", "main", "helper"], strict=True
+        )
+        assert result == ["sub", "main", "helper"]
+
+    def test_custom_rejects_unknown_name(self):
+        program = self._make_program(["main"], entry="main")
+        with pytest.raises(KeyError):
+            program.function_order("custom", order=["main", "ghost"])
+
+    def test_custom_rejects_duplicate_names(self):
+        program = self._make_program(["main", "sub"], entry="main")
+        with pytest.raises(ValueError, match="uplicate"):
+            program.function_order("custom", order=["main", "main"])
+
+    # -- unknown strategy -----------------------------------------------------
+
+    def test_unknown_strategy_raises_value_error(self):
+        program = self._make_program(["main"])
+        with pytest.raises(ValueError, match="Unknown"):
+            program.function_order("magic")  # type: ignore[arg-type]

@@ -71,6 +71,16 @@ from .cfg import (
     merge_cfgs,
 )
 from .program import Program
+from .diff import (
+    BlockDelta,
+    EdgeDelta,
+    CFGDiffResult,
+    ProgramDiffResult,
+    diff_cfgs,
+    diff_programs,
+    cfg_structurally_equal,
+    program_structurally_equal,
+)
 from . import fsm
 from . import mcu
 
@@ -92,6 +102,15 @@ __all__ = [
     "InsnConflictError",
     "EdgeConflictError",
     "MetaConflictError",
+    # Structural diff
+    "BlockDelta",
+    "EdgeDelta",
+    "CFGDiffResult",
+    "ProgramDiffResult",
+    "diff_cfgs",
+    "diff_programs",
+    "cfg_structurally_equal",
+    "program_structurally_equal",
     # Domain recipe modules
     "fsm",
     "mcu",

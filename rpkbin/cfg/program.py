@@ -1,4 +1,4 @@
-﻿"""Program — multi-function CFG container.
+"""Program — multi-function CFG container.
 
 A :class:`Program` bundles together all the :class:`~rpkbin.cfg.CFG` objects
 that make up a single FSM or MCU program (main flow + subroutines) along with
@@ -206,3 +206,102 @@ class Program:
             issues.append(str(exc))
 
         return issues
+
+    def function_order(
+        self,
+        strategy: "Literal[\"entry_first\", \"insertion\", \"call_dfs\", \"custom\"]" = "entry_first",
+        *,
+        order: "list[str] | tuple[str, ...] | None" = None,
+        strict: bool = False,
+    ) -> "list[str]":
+        """Return a list of function names in the requested physical placement order.
+
+        This determines the order in which CFGs are emitted in assembly-like
+        output.  It does **not** call :meth:`CFG.linearize` or produce block
+        layouts — it only orders the functions themselves.
+
+        Args:
+            strategy: One of:
+
+                * ``"entry_first"`` *(default)* — entry function first, then
+                  all remaining functions in insertion order.
+                * ``"insertion"`` — exactly ``list(program.cfgs)``; no special
+                  handling of the entry function.
+                * ``"call_dfs"`` — DFS pre-order traversal of the call graph
+                  starting from ``entry_fn``; functions unreachable from the
+                  entry are appended in insertion order.  Handles cycles
+                  (recursive calls) gracefully.
+                * ``"custom"`` — caller supplies an explicit *order* list.
+                  Unspecified functions are appended in insertion order unless
+                  ``strict=True`` requires all functions to be listed.
+
+            order: Required when *strategy* is ``"custom"``.  An explicit
+                   sequence of function names.
+            strict: Only used with ``"custom"``.  When ``True``, *order* must
+                    list every function in the program; missing functions raise
+                    :class:`ValueError`.
+
+        Returns:
+            An ordered :class:`list` of function name strings.
+
+        Raises:
+            ValueError: For unknown strategy, duplicate names in *order*,
+                        missing functions under ``strict=True``, or ``custom``
+                        without an *order*.
+            KeyError:   If any name in *order* is not in ``program.cfgs``.
+        """
+        from typing import Literal  # noqa: F401 – kept for runtime safety
+
+        if strategy == "entry_first":
+            rest = [fn for fn in self.cfgs if fn != self.entry_fn]
+            return [self.entry_fn] + rest
+
+        elif strategy == "insertion":
+            return list(self.cfgs)
+
+        elif strategy == "call_dfs":
+            from .analysis import build_call_graph
+            import networkx as nx
+
+            cg = build_call_graph(self)
+            ordered = list(nx.dfs_preorder_nodes(cg, source=self.entry_fn))
+            ordered += [fn for fn in self.cfgs if fn not in ordered]
+            return ordered
+
+        elif strategy == "custom":
+            if order is None:
+                raise ValueError(
+                    "strategy='custom' requires an explicit 'order' argument."
+                )
+            order_list = list(order)
+
+            # Reject unknown names
+            for fn in order_list:
+                if fn not in self.cfgs:
+                    raise KeyError(
+                        f"Function {fn!r} is not in program.cfgs."
+                    )
+
+            # Reject duplicates
+            seen: set[str] = set()
+            for fn in order_list:
+                if fn in seen:
+                    raise ValueError(
+                        f"Duplicate function name {fn!r} in order list."
+                    )
+                seen.add(fn)
+
+            if strict:
+                missing = [fn for fn in self.cfgs if fn not in seen]
+                if missing:
+                    raise ValueError(
+                        f"strict=True but these functions are not in order: {missing!r}"
+                    )
+                return order_list
+
+            # Non-strict: append unspecified functions in insertion order
+            rest = [fn for fn in self.cfgs if fn not in seen]
+            return order_list + rest
+
+        else:
+            raise ValueError(f"Unknown function order strategy: {strategy!r}")

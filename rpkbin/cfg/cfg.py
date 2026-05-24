@@ -1,4 +1,4 @@
-﻿"""CFG — Control Flow Graph with structural analysis algorithms.
+"""CFG — Control Flow Graph with structural analysis algorithms.
 
 Backend: networkx DiGraph.  All graph operations delegate to networkx;
 this class adds CFG semantics (entry/exit designation, basic block storage,
@@ -301,6 +301,30 @@ class CFG:
         attrs = dict(self._g[src][dst])
         self._g.remove_edge(src, dst)
         return attrs
+
+    def rename_block(self, old_id: str, new_id: str) -> BasicBlock:
+        """Rename block *old_id* to *new_id* and return the updated block.
+
+        All incoming and outgoing edges (including self-loops) are preserved
+        with their original attributes.  The CFG entry and exit markers are
+        updated if they referred to *old_id*.
+
+        Raises:
+            KeyError:   If *old_id* is not found in the CFG.
+            ValueError: If *new_id* already exists in the CFG.
+        """
+        if old_id not in self._g:
+            raise KeyError(f"Block {old_id!r} not found in CFG.")
+        if new_id in self._g:
+            raise ValueError(f"Block {new_id!r} already exists in CFG.")
+        nx.relabel_nodes(self._g, {old_id: new_id}, copy=False)
+        bb = self._g.nodes[new_id]["block"]
+        bb.id = new_id
+        if self._entry == old_id:
+            self._entry = new_id
+        if self._exit == old_id:
+            self._exit = new_id
+        return bb
 
     def set_entry(self, block_id: str) -> None:
         """Designate *block_id* as the CFG entry (start) block.  Required."""

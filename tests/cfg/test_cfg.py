@@ -1,4 +1,4 @@
-﻿"""Tests for rpkbin.cfg.CFG and merge_cfgs."""
+"""Tests for rpkbin.cfg.CFG and merge_cfgs."""
 import warnings
 import pytest
 import networkx as nx
@@ -765,3 +765,87 @@ class TestCFGDisplay:
         err = exc_info.value
         assert set(err.block_ids) == {"a1", "a2", "a3"}
 
+
+# ---------------------------------------------------------------------------
+# CFG.rename_block
+# ---------------------------------------------------------------------------
+
+class TestRenameBlock:
+    def _make(self):
+        """entry --[cond=go]--> mid --[cond=done]--> exit_b (with a self-loop on mid)."""
+        cfg = CFG()
+        cfg.add_block("entry", label="ENTRY")
+        cfg.add_block("mid",   label="MID",   meta={"k": "v"})
+        cfg.add_block("end",   label="END")
+        cfg.add_edge("entry", "mid",   cond="go",   priority=0)
+        cfg.add_edge("mid",   "end",   cond="done", priority=1)
+        cfg.add_edge("mid",   "mid",   cond="loop", priority=0)   # self-loop
+        cfg.set_entry("entry")
+        cfg.set_exit("end")
+        return cfg
+
+    def test_rename_returns_block(self):
+        cfg = self._make()
+        bb = cfg.rename_block("mid", "middle")
+        assert isinstance(bb, BasicBlock)
+
+    def test_old_id_no_longer_in_cfg(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert "mid" not in cfg
+
+    def test_new_id_now_in_cfg(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert "middle" in cfg
+
+    def test_block_id_updated(self):
+        cfg = self._make()
+        bb = cfg.rename_block("mid", "middle")
+        assert bb.id == "middle"
+        assert cfg.get_block("middle").id == "middle"
+
+    def test_incoming_edges_preserved(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert cfg.has_edge("entry", "middle")
+
+    def test_outgoing_edges_preserved(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert cfg.has_edge("middle", "end")
+
+    def test_edge_attrs_preserved(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert cfg.edge_attrs("entry", "middle")["cond"] == "go"
+        assert cfg.edge_attrs("middle", "end")["cond"] == "done"
+        assert cfg.edge_attrs("middle", "end")["priority"] == 1
+
+    def test_self_loop_preserved(self):
+        cfg = self._make()
+        cfg.rename_block("mid", "middle")
+        assert cfg.has_edge("middle", "middle")
+        assert cfg.edge_attrs("middle", "middle")["cond"] == "loop"
+
+    def test_rename_entry_updates_entry_marker(self):
+        cfg = self._make()
+        cfg.rename_block("entry", "start")
+        assert cfg.entry is not None
+        assert cfg.entry.id == "start"
+
+    def test_rename_exit_updates_exit_marker(self):
+        cfg = self._make()
+        cfg.rename_block("end", "halt")
+        assert cfg.exit is not None
+        assert cfg.exit.id == "halt"
+
+    def test_unknown_old_id_raises_key_error(self):
+        cfg = self._make()
+        with pytest.raises(KeyError, match="ghost"):
+            cfg.rename_block("ghost", "new")
+
+    def test_existing_new_id_raises_value_error(self):
+        cfg = self._make()
+        with pytest.raises(ValueError, match="end"):
+            cfg.rename_block("mid", "end")

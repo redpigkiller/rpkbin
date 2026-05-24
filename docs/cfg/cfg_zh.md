@@ -141,6 +141,16 @@ removed_attrs = cfg.remove_edge("idle", "work")
 clone = cfg.copy()
 ```
 
+#### 安全改名 Block
+
+不要直接修改 `BasicBlock.id`。請使用 `CFG.rename_block()`，以確保 graph key、entry/exit markers 與 edge 結構保持一致。
+
+```python
+cfg.rename_block("old", "new")
+```
+
+所有 incoming / outgoing edges（包含 self-loop）都會保留原本的 attrs。如果 entry 或 exit 指向被改名的 block，也會自動更新。
+
 驗證：
 
 ```python
@@ -244,6 +254,28 @@ print(program.format(show_call_sites=False, show_meta=True))
 issues = program.validate(max_call_depth=2)
 ```
 
+#### Function Order（函數排列順序）
+
+`Program.function_order()` 回傳 function names，順序用於 assembly-like output 中多個 CFG 的物理排列。它不會產生 block layout 或呼叫 `CFG.linearize()`。
+
+```python
+# entry function 排第一，其餘依 insertion order（預設）
+program.function_order()
+
+# 與 program.cfgs 的 insertion order 完全相同
+program.function_order("insertion")
+
+# 從 entry_fn 開始對 call graph 做 DFS pre-order 排列；
+# 從 entry 無法到達的 functions 會依 insertion order 補在後面
+program.function_order("call_dfs")
+
+# 由 caller 自訂順序；未列出的 functions 依 insertion order 補在後面
+program.function_order("custom", order=["SUB_CHECK", "main"])
+
+# strict=True：order 必須列出所有 functions，不補充
+program.function_order("custom", order=["SUB_CHECK", "main"], strict=True)
+```
+
 ---
 
 ## Domain Recipes
@@ -301,6 +333,54 @@ for slot in layout.slots:
     if slot.needs_jump:
         emit_jump(slot.jump_target)
 ```
+
+---
+
+## Structural Diff（結構比對）
+
+使用 `rpkbin.cfg.diff` 對兩個 CFG 或兩個 Program 做結構比對。
+這只比較 graph 結構與 caller-owned annotations，**不做 semantic equivalence 檢查**。
+
+```python
+from rpkbin.cfg import diff_cfgs, cfg_structurally_equal
+from rpkbin.cfg import diff_programs, program_structurally_equal
+
+# CFG 比對
+result = diff_cfgs(old_cfg, new_cfg)
+if result.has_changes():
+    print("新增 blocks:",   result.added_blocks)
+    print("刪除 blocks:",   result.removed_blocks)
+    print("變更 blocks:",   result.changed_blocks)   # dict[key, BlockDelta]
+    print("新增 edges:",    result.added_edges)
+    print("刪除 edges:",    result.removed_edges)
+    print("變更 edges:",    result.changed_edges)     # dict[(src,dst), EdgeDelta]
+    print("新增 calls:",    result.added_calls)       # CallRef 關係
+    print("刪除 calls:",    result.removed_calls)
+
+# 方便的 boolean 形式
+if not cfg_structurally_equal(old_cfg, new_cfg):
+    ...
+
+# Program 比對
+result = diff_programs(old_program, new_program)
+if result.has_changes():
+    print("entry 改變:",       result.entry_fn_changed)
+    print("新增 functions:",   result.added_functions)
+    print("刪除 functions:",   result.removed_functions)
+    print("變更 functions:",   result.changed_functions)  # dict[name, CFGDiffResult]
+```
+
+`diff_cfgs` / `diff_programs` 的主要選項：
+
+| 選項 | 預設值 | 效果 |
+|---|---|---|
+| `align_by` | `"id"` | `"label"` 改用 `block.label` 來對應兩邊的 blocks。 |
+| `compare_insns` | `True` | 設 `False` 可忽略 instruction list 差異。 |
+| `compare_meta` | `False` | 設 `True` 可偵測 `meta` dict 差異。 |
+| `compare_edge_attrs` | `True` | 設 `False` 可忽略 edge attribute 差異。 |
+
+`CallRef` 關係**永遠都會比對**，不受 `compare_insns` 影響。
+CallRef 代表 structural 的 caller/callee 關係，而非 instruction 內容。
 
 ---
 
@@ -397,6 +477,7 @@ rpkbin/cfg/
   cfg.py       CFG structure、validation、layout 與 graph utilities
   program.py   多個 CFG 的 Program container
   analysis.py  call graph、call depth 與 liveness analysis
+  diff.py      CFG / Program 的結構比對與等價判斷
   fsm.py       FSM-oriented checks 與 layout
   mcu.py       MCU-oriented checks 與 layout
 ```
