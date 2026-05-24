@@ -39,6 +39,44 @@ from rpkbin.wave._util import TUI_BUILTIN_DASHBOARD_COLUMNS as _TUI_BUILTIN_DASH
 
 logger = logging.getLogger(__name__)
 
+TUI_PROFILES: dict[str, dict[str, int | float]] = {
+    "lite": {
+        "tick_interval": 1.5,
+        "visible_log_interval": 0.35,
+        "dashboard_log_max_lines": 800,
+        "detail_log_max_lines": 2000,
+        "session_log_max_lines": 2000,
+        "event_log_max_lines": 800,
+        "dashboard_preview_tail_lines": 300,
+        "detail_initial_tail_lines": 1000,
+    },
+    "normal": {
+        "tick_interval": 1.0,
+        "visible_log_interval": 0.2,
+        "dashboard_log_max_lines": 2000,
+        "detail_log_max_lines": 5000,
+        "session_log_max_lines": 5000,
+        "event_log_max_lines": 2000,
+        "dashboard_preview_tail_lines": 1000,
+        "detail_initial_tail_lines": 5000,
+    },
+    "heavy": {
+        "tick_interval": 0.5,
+        "visible_log_interval": 0.1,
+        "dashboard_log_max_lines": 5000,
+        "detail_log_max_lines": 12000,
+        "session_log_max_lines": 10000,
+        "event_log_max_lines": 5000,
+        "dashboard_preview_tail_lines": 2500,
+        "detail_initial_tail_lines": 10000,
+    },
+}
+TUI_PROFILE_NAMES: tuple[str, ...] = tuple(TUI_PROFILES)
+
+
+# Sentinel so configure_tui() can distinguish "not passed" from "None (reset)".
+_CONFIGURE_TUI_UNSET: object = object()
+
 
 class Session:
     """Manages a single Wave batch run."""
@@ -89,7 +127,11 @@ class Session:
         self._config["log_dir"] = log_dir
         self._config["timeout"] = timeout
 
-    def configure_tui(self, *, dashboard_columns: list | tuple | None = None) -> None:
+    def configure_tui(
+        self,
+        *,
+        dashboard_columns=_CONFIGURE_TUI_UNSET,
+    ) -> None:
         """Configure TUI presentation details from a wave file.
 
         ``dashboard_columns`` accepts built-in column names plus parsed-data
@@ -102,14 +144,75 @@ class Session:
                 "exit_code",
             ])
 
-        Built-ins are: name, id, status, elapsed, progress, retries, exit_code,
-        tags. Parsed-data specs must provide non-empty string ``label`` and
-        ``data`` fields.
+        Passing ``dashboard_columns=None`` resets the column list back to the
+        built-in default (equivalent to never having called this method).
+
+        Built-ins are: no (displayed as #), name, id, status, elapsed,
+        progress, retries, exit_code, tags. ``index`` is accepted as a
+        compatibility alias for ``no``. Parsed-data specs must provide
+        non-empty string ``label`` and ``data`` fields.
         """
+        if dashboard_columns is _CONFIGURE_TUI_UNSET:
+            return  # nothing passed — genuine no-op
         if dashboard_columns is None:
-            self._tui_config["dashboard_columns"] = None
-            return
-        self._tui_config["dashboard_columns"] = self._normalize_dashboard_columns(dashboard_columns)
+            self._tui_config["dashboard_columns"] = None  # reset to built-in default
+        else:
+            self._tui_config["dashboard_columns"] = self._normalize_dashboard_columns(dashboard_columns)
+
+    def configure_tui_profile(self, profile: str) -> None:
+        """Apply a coarse TUI performance profile.
+
+        Profiles are the preferred user-facing way to tune TUI retention and
+        refresh behavior. Use ``configure_tui_advanced`` only when these
+        presets are not sufficient.
+        """
+        try:
+            config = TUI_PROFILES[profile]
+        except KeyError as exc:
+            allowed = ", ".join(TUI_PROFILE_NAMES)
+            raise ValueError(f"Unknown TUI profile {profile!r}. Use one of: {allowed}") from exc
+        self.configure_tui_advanced(**config)
+
+    def configure_tui_advanced(
+        self,
+        *,
+        tick_interval: float | None = None,
+        visible_log_interval: float | None = None,
+        dashboard_log_max_lines: int | None = None,
+        detail_log_max_lines: int | None = None,
+        session_log_max_lines: int | None = None,
+        event_log_max_lines: int | None = None,
+        dashboard_preview_tail_lines: int | None = None,
+        detail_initial_tail_lines: int | None = None,
+    ) -> None:
+        """Configure low-level TUI retention and refresh settings.
+
+        This is an advanced escape hatch. Most wave files should prefer
+        ``configure_tui(dashboard_columns=...)`` and ``configure_tui_profile``.
+        Numeric values must be positive.
+        """
+
+        numeric_updates = {
+            "tick_interval": tick_interval,
+            "visible_log_interval": visible_log_interval,
+            "dashboard_log_max_lines": dashboard_log_max_lines,
+            "detail_log_max_lines": detail_log_max_lines,
+            "session_log_max_lines": session_log_max_lines,
+            "event_log_max_lines": event_log_max_lines,
+            "dashboard_preview_tail_lines": dashboard_preview_tail_lines,
+            "detail_initial_tail_lines": detail_initial_tail_lines,
+        }
+        for key, value in numeric_updates.items():
+            if value is None:
+                continue
+            if key.endswith("_interval"):
+                if value <= 0:
+                    raise ValueError(f"{key} must be > 0")
+                self._tui_config[key] = float(value)
+            else:
+                if value <= 0:
+                    raise ValueError(f"{key} must be > 0")
+                self._tui_config[key] = int(value)
 
     def tui_config(self) -> dict:
         """Return a shallow copy of TUI configuration."""
@@ -711,6 +814,14 @@ class Session:
         }
         self._tui_config: dict = {
             "dashboard_columns": None,
+            "tick_interval": 1.0,
+            "visible_log_interval": 0.2,
+            "dashboard_log_max_lines": 2000,
+            "detail_log_max_lines": 5000,
+            "session_log_max_lines": 5000,
+            "event_log_max_lines": 2000,
+            "dashboard_preview_tail_lines": 1000,
+            "detail_initial_tail_lines": 5000,
         }
         self._job_actions: dict[str, dict] = {}
         self._session_actions: dict[str, dict] = {}
@@ -736,6 +847,8 @@ class Session:
         for idx, column in enumerate(columns):
             if isinstance(column, str):
                 key = column.strip().lower()
+                if key == "index":
+                    key = "no"
                 if key not in _TUI_BUILTIN_DASHBOARD_COLUMNS:
                     allowed = ", ".join(sorted(_TUI_BUILTIN_DASHBOARD_COLUMNS))
                     raise ValueError(

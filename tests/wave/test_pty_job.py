@@ -530,7 +530,7 @@ class TestCmdKeyDispatch:
         sess = mock.MagicMock()
         # Mock _find_job by making sess.jobs() return our job
         with mock.patch("rpkbin.wave.runner._find_job", return_value=job):
-            _cmd_key(["key", "test", "ctrl-c"], sess)
+            _cmd_key(["send-key", "test", "ctrl-c"], sess)
 
         assert calls == ["ctrl-c"]
 
@@ -542,7 +542,7 @@ class TestCmdKeyDispatch:
 
         sess = mock.MagicMock()
         with mock.patch("rpkbin.wave.runner._find_job", return_value=job):
-            _cmd_key(["key", "batch-job", "ctrl-c"], sess)
+            _cmd_key(["send-key", "batch-job", "ctrl-c"], sess)
 
         captured = capsys.readouterr()
         assert "does not support terminal keys" in captured.out
@@ -553,7 +553,7 @@ class TestCmdKeyDispatch:
         from rpkbin.wave.runner import _cmd_key
 
         sess = mock.MagicMock()
-        _cmd_key(["key"], sess)
+        _cmd_key(["send-key"], sess)
         captured = capsys.readouterr()
         assert "Usage:" in captured.out
         assert "ctrl-c" in captured.out

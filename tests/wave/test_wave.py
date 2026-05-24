@@ -39,6 +39,7 @@ import pytest
 from rpkbin.job_manager import JobManager, PENDING, DONE, FAILED, CANCELLED, RUNNING
 from rpkbin.wave.hook import Hook, HookWhen
 from rpkbin.wave.job import WaveCmdJob, WaveFuncJob, WaveJobMixin
+from rpkbin.wave.parser import RegexParser, StatefulParser
 from rpkbin.wave.session import Session
 
 _TMP_COUNTER = count()
@@ -158,6 +159,76 @@ class TestHookFire:
 # ---------------------------------------------------------------------------
 
 class TestAddParser:
+    def test_regex_parser_extracts_named_groups(self):
+        parser = RegexParser(
+            r"SUITE=(?P<suite>\w+)\s+TESTS=(?P<tests>\d+)",
+            transform=lambda d: {"suite": d["suite"], "total": d["tests"]},
+        )
+
+        assert parser("SUITE=math TESTS=150") == {"suite": "math", "total": "150"}
+        assert parser("unrelated") == {}
+        assert parser.clone() is parser
+
+    def test_stateful_parser_updates_memory_after_to_data_succeeds(self):
+        parser = StatefulParser(
+            r"FAILURES=(?P<fails>\d+)",
+            on_match=lambda m, mem: {
+                "max_fails": max(mem.get("max_fails", 0), int(m["fails"]))
+            },
+            to_data=lambda m, mem: {"peak_failures": str(mem["max_fails"])},
+        )
+
+        assert parser("FAILURES=2") == {"peak_failures": "2"}
+        assert parser("FAILURES=5") == {"peak_failures": "5"}
+        assert parser("FAILURES=3") == {"peak_failures": "5"}
+        assert parser.clone()("FAILURES=1") == {"peak_failures": "1"}
+
+    def test_stateful_parser_keeps_memory_when_to_data_raises(self):
+        fail = [False]
+
+        def to_data(match_data, memory):
+            if fail[0]:
+                raise ValueError("bad")
+            return {"count": str(memory["count"])}
+
+        parser = StatefulParser(
+            r"(?P<warning>WARNING):",
+            on_match=lambda m, mem: {"count": mem.get("count", 0) + 1},
+            to_data=to_data,
+        )
+
+        assert parser("WARNING: first") == {"count": "1"}
+        fail[0] = True
+        with pytest.raises(ValueError):
+            parser("WARNING: second")
+        fail[0] = False
+        assert parser("WARNING: third") == {"count": "2"}
+
+    def test_stateful_parser_rolls_back_in_place_memory_mutation(self):
+        fail = [False]
+
+        def on_match(match_data, memory):
+            memory["count"] = memory.get("count", 0) + 1
+            return None
+
+        def to_data(match_data, memory):
+            if fail[0]:
+                raise ValueError("bad")
+            return {"count": str(memory["count"])}
+
+        parser = StatefulParser(
+            r"(?P<warning>WARNING):",
+            on_match=on_match,
+            to_data=to_data,
+        )
+
+        assert parser("WARNING: first") == {"count": "1"}
+        fail[0] = True
+        with pytest.raises(ValueError):
+            parser("WARNING: second")
+        fail[0] = False
+        assert parser("WARNING: third") == {"count": "2"}
+
     def test_parser_result_merged_into_parsed_data(self):
         def my_parser(line):
             if "STATE=ACTIVE" in line:
@@ -1555,6 +1626,45 @@ class TestCLI:
         assert called["no_tui"] is True
         assert called["perf"] is True
 
+    def test_run_tui_profile_flag_forwarding(self, monkeypatch):
+        """Verify that --tui-profile is forwarded correctly to the runner."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main
+        called = {}
+
+        def fake_run(path, **kwargs):
+            called["path"] = path
+            called.update(kwargs)
+            return 0
+
+        monkeypatch.setattr("rpkbin.wave.cli.run", fake_run)
+        result = CliRunner().invoke(main, ["run", __file__, "--no-tui", "--tui-profile", "lite"])
+
+        assert result.exit_code == 0
+        assert called["tui_profile"] == "lite"
+
+    def test_init_template_rendering_pure_unit(self):
+        """Verify the content logic of _render_wave_template without writing files."""
+        from rpkbin.wave.cli import _render_wave_template
+
+        # minimal
+        minimal = _render_wave_template("min_test", "minimal")
+        assert "min_test" in minimal
+        assert "CmdJob" in minimal
+        assert "add_parser" not in minimal
+        assert "PtyJob" not in minimal
+
+        # full
+        full = _render_wave_template("full_test", "full")
+        assert "from __future__ import annotations" in full
+        assert "full_test" in full
+        assert "add_parser" in full
+        assert "Hook.on_done" in full
+
+        # pty
+        pty = _render_wave_template("pty_test", "pty")
+        assert "PtyJob(" in pty
+
     def test_run_no_tui(self, tmp_path):
         from click.testing import CliRunner
         from rpkbin.wave.cli import main
@@ -1605,6 +1715,96 @@ session.add(FuncJob("fail", fail))
         result = CliRunner().invoke(main, ["run", str(tmp_path / "no.wave.py"), "--no-tui"])
         # Click's exists=True check triggers before our code
         assert result.exit_code != 0
+
+    def test_help_shows_run_init_export_docs_not_docs(self):
+        """rpk-wave --help must list run/init/export-docs; must NOT list docs."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main
+
+        result = CliRunner().invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "run" in result.output
+        assert "init" in result.output
+        assert "export-docs" in result.output
+        assert "docs" not in result.output.replace("export-docs", "")
+
+    def test_init_help_shows_profile_choices_and_force(self):
+        """rpk-wave init --help must show --profile, each profile name, and --force."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main
+
+        result = CliRunner().invoke(main, ["init", "--help"])
+        assert result.exit_code == 0
+        assert "--profile" in result.output
+        assert "minimal" in result.output
+        assert "parser" in result.output
+        assert "full" in result.output
+        assert "pty" in result.output
+        assert "--force" in result.output
+
+    def test_export_docs_help(self):
+        """rpk-wave export-docs --help must show --force."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main
+
+        result = CliRunner().invoke(main, ["export-docs", "--help"])
+        assert result.exit_code == 0
+        assert "--force" in result.output
+
+    def test_export_docs_copies_files(self, tmp_path):
+        """export-docs copies docs into <dest>/wave/ and reports main entry files."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main, _find_wave_docs_src
+
+        if _find_wave_docs_src() is None:
+            pytest.skip("wave docs directory not found in this checkout")
+
+        dest = tmp_path / "exported"
+        result = CliRunner().invoke(main, ["export-docs", str(dest)])
+        assert result.exit_code == 0, result.output
+        assert "Docs exported to" in result.output
+        # wave/ subdir must exist with at least one .md file
+        wave_dir = dest / "wave"
+        assert wave_dir.is_dir()
+        md_files = list(wave_dir.glob("*.md"))
+        assert md_files, "No .md files found in exported wave/ directory"
+        # Main entry files reported
+        assert "Main entry" in result.output
+
+    def test_export_docs_refuses_nonempty_dest_without_force(self, tmp_path):
+        """export-docs fails with non-zero exit when dest/wave/ already has content."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main, _find_wave_docs_src
+
+        if _find_wave_docs_src() is None:
+            pytest.skip("wave docs directory not found in this checkout")
+
+        dest = tmp_path / "occupied"
+        wave_dest = dest / "wave"
+        wave_dest.mkdir(parents=True)
+        (wave_dest / "existing.md").write_text("already here", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["export-docs", str(dest)])
+        assert result.exit_code != 0
+        # Click merges stderr into output by default; the error message appears there
+        assert "already has content" in result.output
+
+    def test_export_docs_force_overwrites(self, tmp_path):
+        """export-docs --force succeeds even when dest/wave/ already has content."""
+        from click.testing import CliRunner
+        from rpkbin.wave.cli import main, _find_wave_docs_src
+
+        if _find_wave_docs_src() is None:
+            pytest.skip("wave docs directory not found in this checkout")
+
+        dest = tmp_path / "occupied2"
+        wave_dest = dest / "wave"
+        wave_dest.mkdir(parents=True)
+        (wave_dest / "stale.md").write_text("stale", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["export-docs", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Docs exported to" in result.output
 
 
 class TestHeadlessCommandParsing:
@@ -1862,6 +2062,31 @@ class TestHeadlessCommandParsing:
 
         with pytest.raises(ValueError, match="Unknown dashboard column"):
             sess.configure_tui(dashboard_columns=["name", "result"])
+
+    def test_configure_tui_none_resets_to_default_columns(self):
+        """configure_tui(dashboard_columns=None) clears custom columns back to built-in default."""
+        from rpkbin.wave.tui.app import WaveApp
+
+        sess = Session()
+        # Set custom columns first
+        sess.configure_tui(dashboard_columns=[
+            "name",
+            {"label": "Result", "data": "result"},
+        ])
+        # Verify custom columns are active
+        assert sess.tui_config()["dashboard_columns"] is not None
+
+        # Reset via None
+        sess.configure_tui(dashboard_columns=None)
+
+        # dashboard_columns must be None in tui_config (TUI falls back to built-in default)
+        assert sess.tui_config()["dashboard_columns"] is None
+
+        # WaveApp must also use built-in default columns after reset
+        app = WaveApp(sess)
+        labels = app._dashboard_column_labels()
+        assert "Exit Code" in labels  # built-in default includes exit_code
+        assert "Result" not in labels  # custom column no longer present
 
     def test_detail_header_includes_exit_code_for_failed_func_job(self):
         from rpkbin.wave.tui.app import WaveApp

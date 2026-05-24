@@ -602,7 +602,10 @@ class PtyCmdJob(WaveJobMixin, Job):
             parsers = list(self._wave_parsers)
             hooks = list(self._wave_hooks)
         for fn in parsers:
-            new.add_parser(fn)
+            if hasattr(fn, "clone"):
+                new.add_parser(fn.clone())
+            else:
+                new.add_parser(fn)
         for hook in hooks:
             new.add_hook(hook.copy())
         policy = self.peek_stop_policy()

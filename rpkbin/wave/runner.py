@@ -158,14 +158,14 @@ class _WaveCompleter:
                     yield Completion(name, start_position=-len(current))
             return
 
-        # key <job> <key-name>: third argument is a terminal key name.
+        # send-key <job> <key-name>: third argument is a terminal key name.
         if first == "send-key" and len(parts) == 3:
             for k in _KEY_COMPLETIONS:
                 if k.startswith(current):
                     yield Completion(k, start_position=-len(current))
             return
 
-        # signal <job> <signal-name>: third argument is a signal name.
+        # send-signal <job> <signal-name>: third argument is a signal name.
         if first == "send-signal" and len(parts) == 3:
             for s in _SIGNAL_COMPLETIONS:
                 if s.startswith(current):
@@ -189,6 +189,7 @@ def run(
     no_tui: bool = False,
     workers: int | None = None,
     perf: bool = False,
+    tui_profile: str | None = None,
 ) -> int:
     """Load *wave_file* and run the batch."""
     session.reset()
@@ -197,6 +198,8 @@ def run(
 
     if workers is not None:
         session.configure(max_workers=workers)
+    if tui_profile is not None:
+        _apply_tui_profile(tui_profile)
 
     if no_tui:
         _run_headless()
@@ -204,6 +207,11 @@ def run(
         _run_tui()
 
     return _session_exit_code()
+
+
+def _apply_tui_profile(profile: str) -> None:
+    """Apply coarse TUI performance presets after the wave file is loaded."""
+    session.configure_tui_profile(profile)
 
 
 def _run_headless() -> None:
@@ -897,8 +905,8 @@ def _cmd_key(parts: list[str], sess) -> None:
         return
     if not hasattr(job, "send_key"):
         print(f"[Wave] {parts[1]!r} does not support terminal keys.")
-        print("  'key' is only available for PtyCmdJob (PTY mode).")
-        print("  For OS signals, use: signal <job> SIGINT")
+        print("  'send-key' is only available for PtyCmdJob (PTY mode).")
+        print("  For OS signals, use: send-signal <job> SIGINT")
         return
     try:
         job.send_key(parts[2])

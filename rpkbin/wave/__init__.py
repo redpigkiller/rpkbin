@@ -13,6 +13,16 @@ Public API:
 from rpkbin.wave.session import session
 from rpkbin.wave.job import WaveCmdJob as CmdJob, WaveFuncJob as FuncJob
 from rpkbin.wave.pty_job import PtyCmdJob, PtyCmdJob as PtyJob
+from rpkbin.wave.parser import RegexParser, StatefulParser
 from rpkbin.wave.hook import Hook
 
-__all__ = ["session", "CmdJob", "FuncJob", "PtyJob", "PtyCmdJob", "Hook"]
+__all__ = [
+    "session",
+    "CmdJob",
+    "FuncJob",
+    "PtyJob",
+    "PtyCmdJob",
+    "Hook",
+    "RegexParser",
+    "StatefulParser",
+]

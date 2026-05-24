@@ -14,6 +14,7 @@ from rpkbin.wave.tui.formatting import _STATUS_COLOR, _fmt_elapsed, _job_elapsed
 
 
 _DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
+    {"type": "builtin", "key": "no"},
     {"type": "builtin", "key": "name"},
     {"type": "builtin", "key": "id"},
     {"type": "builtin", "key": "status"},
@@ -74,6 +75,8 @@ def build_row_cells(
     job,
     columns: tuple[dict[str, str], ...],
     logger: logging.Logger,
+    *,
+    row_number: int | None = None,
 ) -> tuple[str, ...]:
     """Return one dashboard row cell per configured column."""
     has_data_cols = any(column["type"] == "parsed_data" for column in columns)
@@ -90,6 +93,8 @@ def build_row_cells(
             data_snapshot = _DATA_SNAPSHOT_FAILED
     return tuple(
         dashboard_cell(job, column, logger, data=data_snapshot)
+        if column["type"] != "builtin" or column["key"] != "no"
+        else "" if row_number is None else str(row_number)
         for column in columns
     )
 
@@ -119,6 +124,9 @@ def dashboard_cell(
 
 
 def builtin_dashboard_cell(job, key: str, logger: logging.Logger) -> str:
+    if key == "no":
+        return ""
+
     if key == "name":
         return _escape_markup(str(job.name))
 

@@ -72,7 +72,7 @@ from rpkbin.wave.tui.view_models import (
 )
 from rpkbin.wave.runner import _handle_cmd, _parse_repl_line, _active_jobs, _find_job
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -108,7 +108,6 @@ _DATA_EMPTY_ROW_KEY = "__wave_empty_data__"
 _DASHBOARD_PREVIEW_TAIL_LINES = 1000
 _DETAIL_INITIAL_TAIL_LINES = 5000
 _DIRTY_FLUSH_DELAY_S = 0.05
-_VISIBLE_LOG_REFRESH_INTERVAL_S = 0.2
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +214,7 @@ class WaveApp(App):
         Binding("f2", "goto_tab('tab-detail')", "Job Detail", show=True),
         Binding("f3", "goto_tab('tab-system')", "System Log", show=True),
         Binding("f4", "goto_tab('tab-help')", "Help", show=True),
-        # F8 retired — job input bar (i key) replaces the old pre-fill shortcut.
+        # F8 retired: job input bar (i key) replaces the old pre-fill shortcut.
         Binding("f9", "terminal_send_ctrl_c", "Send Ctrl-C", show=False),
         Binding("f10", "terminal_send_ctrl_d", "Send Ctrl-D", show=False),
         Binding("i", "focus_job_input", "Job Input", show=False),
@@ -242,6 +241,7 @@ class WaveApp(App):
         # duplicate human-readable names never collapse into one TUI row.
         self._row_keys: set[str] = set()
         self._jobs_by_row_key: dict[str, object] = {}
+        self._row_numbers: dict[str, int] = {}
         # Row cache to prevent needless DataTable cell updates
         self._row_cache: dict[str, tuple] = {}
         self._row_status_cache: dict[str, str] = {}
@@ -253,6 +253,7 @@ class WaveApp(App):
         self._jobs_col_keys: tuple = ()
         self._data_col_keys: tuple = ()
         self._dashboard_columns = self._resolve_dashboard_columns()
+        self._tui_config = self._read_tui_config()
 
         # Incremental sync counters (avoid re-painting unchanged content).
         # All three are declared here to ensure they are always defined before
@@ -300,7 +301,11 @@ class WaveApp(App):
                     with Vertical(id="dashboard-left"):
                         yield DataTable(id="jobs-table", cursor_type="row")
                     with Vertical(id="dashboard-preview"):
-                        yield Log(id="dashboard-log", highlight=False, max_lines=2000)
+                        yield Log(
+                            id="dashboard-log",
+                            highlight=False,
+                            max_lines=self._tui_config["dashboard_log_max_lines"],
+                        )
 
             # -- Tab 2: JOB DETAIL -------------------------------------
             with TabPane("JOB DETAIL", id="tab-detail"):
@@ -308,7 +313,11 @@ class WaveApp(App):
                     yield Static("", id="detail-header", markup=True)
                     with Horizontal(id="detail-container"):
                         with Vertical(id="left-panel"):
-                            yield Log(id="log-view", highlight=False, max_lines=5000)
+                            yield Log(
+                                id="log-view",
+                                highlight=False,
+                                max_lines=self._tui_config["detail_log_max_lines"],
+                            )
                             # Job Input Bar: docked at bottom of left panel.
                             # Press 'i' to focus, Enter to send, Esc to return.
                             yield Input(
@@ -323,13 +332,25 @@ class WaveApp(App):
                                 with TabPane("DATA", id="detail-data"):
                                     yield DataTable(id="data-table", cursor_type="row")
                                 with TabPane("EVENTS", id="detail-events"):
-                                    yield RichLog(id="events-log", markup=True, max_lines=2000)
+                                    yield RichLog(
+                                        id="events-log",
+                                        markup=True,
+                                        max_lines=self._tui_config["event_log_max_lines"],
+                                    )
                                 with TabPane("SYSTEM", id="detail-system"):
-                                    yield RichLog(id="system-job-log", markup=True, max_lines=2000)
+                                    yield RichLog(
+                                        id="system-job-log",
+                                        markup=True,
+                                        max_lines=self._tui_config["event_log_max_lines"],
+                                    )
 
             # -- Tab 3: SYSTEM LOG (session-level events + command output)
             with TabPane("SYSTEM LOG", id="tab-system"):
-                yield RichLog(id="session-log", markup=True, max_lines=5000)
+                yield RichLog(
+                    id="session-log",
+                    markup=True,
+                    max_lines=self._tui_config["session_log_max_lines"],
+                )
 
             # -- Tab 4: HELP -------------------------------------------
             with TabPane("HELP", id="tab-help"):
@@ -370,10 +391,10 @@ class WaveApp(App):
         )
 
         # Periodic timer: elapsed refresh + detail panel sync + session-event drain
-        self.set_interval(1.0, self._tick)
+        self.set_interval(self._tui_config["tick_interval"], self._tick)
         # Visible logs get a faster path so output feels live without making
         # all detail/dashboard bookkeeping run at log-line frequency.
-        self.set_interval(_VISIBLE_LOG_REFRESH_INTERVAL_S, self._refresh_visible_logs)
+        self.set_interval(self._tui_config["visible_log_interval"], self._refresh_visible_logs)
 
         self._update_subtitle(jobs=initial_jobs)
         self.query_one("#jobs-table", DataTable).focus()
@@ -386,6 +407,37 @@ class WaveApp(App):
     def _plain_log(self, selector: str) -> _LogViewAdapter:
         """Return a thin adapter for a plain-text log widget."""
         return _LogViewAdapter(self.query_one(selector))
+
+    def _read_tui_config(self) -> dict[str, int | float]:
+        """Read numeric TUI config with safe defaults."""
+        defaults: dict[str, int | float] = {
+            "tick_interval": 1.0,
+            "visible_log_interval": 0.2,
+            "dashboard_log_max_lines": 2000,
+            "detail_log_max_lines": 5000,
+            "session_log_max_lines": 5000,
+            "event_log_max_lines": 2000,
+            "dashboard_preview_tail_lines": _DASHBOARD_PREVIEW_TAIL_LINES,
+            "detail_initial_tail_lines": _DETAIL_INITIAL_TAIL_LINES,
+        }
+        try:
+            raw = getattr(self._session, "tui_config", lambda: {})()
+        except Exception:
+            logger.warning("Failed to read Wave TUI config; using numeric defaults.", exc_info=True)
+            return defaults
+        config = dict(defaults)
+        for key, default in defaults.items():
+            value = raw.get(key, default)
+            try:
+                numeric = float(value) if key.endswith("_interval") else int(value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid TUI config %s=%r; using default %r.", key, value, default)
+                continue
+            if numeric <= 0:
+                logger.warning("Invalid TUI config %s=%r; using default %r.", key, value, default)
+                continue
+            config[key] = numeric
+        return config
 
     # ------------------------------------------------------------------
     # Worker-thread callbacks (called by Session via tui_notify /
@@ -460,7 +512,23 @@ class WaveApp(App):
 
     def _build_row_cells(self, job) -> tuple[str, ...]:
         """Return one cell value per configured dashboard column."""
-        return _build_row_cells_model(job, self._dashboard_columns, logger)
+        return _build_row_cells_model(
+            job,
+            self._dashboard_columns,
+            logger,
+            row_number=self._dashboard_row_number(job),
+        )
+
+    def _dashboard_row_number(self, job) -> int | None:
+        """Return the current 1-based display index for *job*."""
+        key = self._job_row_key(job)
+        cached = self._row_numbers.get(key)
+        if cached is not None:
+            return cached
+        for idx, candidate in enumerate(self._session.jobs(), start=1):
+            if self._job_row_key(candidate) == key:
+                return idx
+        return None
 
     def _resolve_dashboard_columns(self) -> tuple[dict[str, str], ...]:
         return _resolve_dashboard_columns_model(self._session, logger)
@@ -508,6 +576,7 @@ class WaveApp(App):
             return  # already present
         self._row_keys.add(key)
         self._jobs_by_row_key[key] = job
+        self._row_numbers[key] = len(self._row_numbers) + 1
 
         cells = self._build_row_cells(job)
         self._row_cache[key] = cells
@@ -609,8 +678,6 @@ class WaveApp(App):
                 return
 
             self._refresh_detail_log(self._detail_job)
-            if self._active_detail_panel_id() == "detail-terminal":
-                self._refresh_terminal_panel(self._detail_job)
         except NoMatches:
             logger.debug("Skipped visible log refresh while TUI widgets were unavailable.", exc_info=True)
 
@@ -668,7 +735,7 @@ class WaveApp(App):
             self._dashboard_preview_job_key = key
             self._dashboard_preview_log_count = self._tail_sync_start(
                 job,
-                _DASHBOARD_PREVIEW_TAIL_LINES,
+                int(self._tui_config["dashboard_preview_tail_lines"]),
             )
             log_view.clear()
             log_view.write(f"{job.name}  [{key[:8]}]")
@@ -738,7 +805,7 @@ class WaveApp(App):
             self._sync_dashboard_selection(job)
         # Reset all incremental sync counters for the new job
         self._log_total_sync_count = (
-            self._tail_sync_start(job, _DETAIL_INITIAL_TAIL_LINES)
+            self._tail_sync_start(job, int(self._tui_config["detail_initial_tail_lines"]))
             if job is not None
             else 0
         )
@@ -990,32 +1057,6 @@ class WaveApp(App):
                 dt.add_row(sk, sv, key=sk)
                 self._data_row_keys.add(sk)
 
-    def _update_terminal_hint(self, job) -> None:
-        """Update the TERMINAL tab hint text based on job type."""
-        hint = self.query_one("#terminal-hint", Static)
-        if job is None:
-            hint.update("[dim]No job selected.[/dim]")
-            return
-        if getattr(job, "supports_pty", False):
-            name = _escape_markup(str(job.name))
-            hint.update(
-                f"[dim]PTY terminal for[/dim] [bold]{name}[/bold]  "
-                "[dim]Shortcuts:[/dim]  "
-                "[cyan]F8[/cyan] [dim]input[/dim]  "
-                "[cyan]F9[/cyan] [dim]Ctrl-C[/dim]  "
-                "[cyan]F10[/cyan] [dim]Ctrl-D[/dim]  "
-                "[dim]|[/dim]  "
-                "[cyan]key . ctrl-c[/cyan]  "
-                "[cyan]input . \\<text>[/cyan]"
-            )
-        else:
-            hint.update(
-                "[dim]Terminal view is available for PtyCmdJob only. "
-                "This job uses PIPE-based I/O (batch mode).[/dim]"
-            )
-
-
-
     def _focus_active_panel(self) -> None:
         """Route keyboard focus to the primary widget of the active tab."""
         active = self.query_one("#main-tabs", TabbedContent).active
@@ -1027,6 +1068,13 @@ class WaveApp(App):
             self.query_one("#session-log").focus()
         elif active == "tab-help":
             self.query_one("#help-text").focus()
+
+    def _focus_log_view_if_available(self) -> None:
+        """Focus the detail log view when the Textual widget tree is ready."""
+        try:
+            self.query_one("#log-view").focus()
+        except (NoMatches, ScreenStackError):
+            logger.debug("Skipped log-view focus because the widget tree is unavailable.", exc_info=True)
 
     def _is_main_tab_active(self, tab_id: str) -> bool:
         """Return True when the requested top-level tab is visible."""
@@ -1044,6 +1092,22 @@ class WaveApp(App):
     # Textual event handlers
     # ------------------------------------------------------------------
 
+    def on_key(self, event) -> None:
+        """Intercept Tab in Job Detail content area to prevent focus cycling."""
+        if event.key == "tab":
+            focused_id = getattr(self.focused, "id", None)
+            if self._is_detail_navigation_context():
+                event.stop()
+                event.prevent_default()
+                self._focus_log_view_if_available()
+            elif self._is_dashboard_tab_active() and focused_id != "cmd-input":
+                event.stop()
+                event.prevent_default()
+                self.query_one("#jobs-table").focus()
+            elif focused_id == "job-input-bar":
+                event.stop()
+                event.prevent_default()
+
     def on_tabbed_content_tab_activated(self, event) -> None:
         """When a tab is selected (via mouse or F-keys), route focus to its main widget."""
         self._focus_active_panel()
@@ -1052,6 +1116,7 @@ class WaveApp(App):
         control_id = getattr(getattr(event, "control", None), "id", None)
         if control_id == "detail-tabs":
             self._refresh_active_detail_panel(self._detail_job, force=True)
+            self._focus_log_view_if_available()
         elif self._is_detail_tab_active():
             self._refresh_right_panels(self._detail_job, force=True)
 
@@ -1185,7 +1250,7 @@ class WaveApp(App):
             session_log.write(f"[dim]$ {_escape_markup(line)}[/dim]")
             for out_line in output.splitlines():
                 session_log.write(_escape_markup(out_line))
-            # Known operational commands (stop, skip, input, signal) produce a
+            # Known operational commands (stop, skip, send-line, send-signal) produce a
             # short confirmation message - show a Toast so the user stays put.
             # Everything else (display commands, unknown verbs) jumps to System
             # Log so the user can actually read the output or error message.
@@ -1276,6 +1341,7 @@ class WaveApp(App):
             return
         try:
             self.query_one("#detail-tabs", TabbedContent).active = panel_id
+            self._focus_log_view_if_available()
         except NoMatches:
             pass
 
@@ -1307,7 +1373,7 @@ class WaveApp(App):
         - A PTY job is selected in JOB DETAIL
         - Neither command bar nor job input bar is focused
 
-        Note: the TERMINAL sub-tab no longer needs to be active — F9/F10
+        Note: the TERMINAL sub-tab no longer needs to be active; F9/F10
         work from anywhere in JOB DETAIL as long as a PTY job is open.
         """
         if not self._is_detail_tab_active():

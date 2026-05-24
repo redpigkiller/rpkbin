@@ -41,11 +41,13 @@ wave file (Python)          Runtime
 | Run a Python function | `FuncJob(name, fn)` | wave file |
 | Run an interactive CLI program | `PtyJob(name, cmd)` | wave file |
 | Extract progress/state from logs | `job.add_parser(fn)` | wave file |
+| Stateless log parsing (regex groups) | `job.add_parser(RegexParser(pattern))` | wave file |
+| Stateful log parsing (memory across lines) | `job.add_parser(StatefulParser(pattern, ...))` | wave file |
 | Auto-kill on timeout | `Hook(when=Hook.elapsed_exceeds(s), action=Hook.action_kill())` | wave file |
 | React to a specific log pattern | `Hook(when=Hook.log_matches(pattern), action=...)` | wave file |
 | Notify on completion | `Hook(when=Hook.on_done(), action=Hook.action_emit(...))` | wave file |
-| Send Ctrl-C to a PTY job | `key <job> ctrl-c` or TUI `F9` | REPL / TUI |
-| Send an OS signal to a job | `signal <job> SIGTERM` | REPL / TUI |
+| Send Ctrl-C to a PTY job | `send-key <job> ctrl-c` or TUI `F9` | REPL / TUI |
+| Send an OS signal to a job | `send-signal <job> SIGTERM` | REPL / TUI |
 | Graceful shutdown of interactive tool | `job.set_stop_policy(graceful_key=..., graceful_input=..., graceful_signal=...)` | wave file |
 | Auto-retry on failure | `CmdJob(name, cmd, max_retries=3)` | wave file |
 | Limit GPU / license concurrency | `session.configure(resources={"gpu": 2})` + `CmdJob(..., resources={"gpu": 1})` | wave file |
@@ -172,7 +174,7 @@ Wave extends job manager jobs with observability features.
 - `PtyJob` / `PtyCmdJob`
   - shell command job inside a **pseudo-terminal** (PTY)
   - child process sees `isatty() == True`; suitable for interactive programs
-  - supports log parsers, hooks, terminal control keys (`key`), stdin input, and OS signals
+  - supports log parsers, hooks, terminal control keys (`send-key`), stdin input, and OS signals
   - default stop policy: `graceful_key="ctrl-c"`
   - Linux / macOS only; on Windows, construction succeeds but execution fails with a clear error
 - `FuncJob` / `WaveFuncJob`
@@ -200,23 +202,23 @@ Wave-specific job features include:
 | Child I/O | PIPE (stdin/stdout) | PTY (pseudo-terminal) |
 | `isatty()` | `False` | `True` |
 | Use case | Batch scripts, builds, tests | Interactive REPLs, `read`-based scripts |
-| Ctrl-C behavior | `signal <job> SIGINT` (OS signal) | `key <job> ctrl-c` (terminal key → kernel SIGINT) |
+| Ctrl-C behavior | `send-signal <job> SIGINT` (OS signal) | `send-key <job> ctrl-c` (terminal key -> kernel SIGINT) |
 | Default stop | `graceful_signal=SIGINT` | `graceful_key="ctrl-c"` |
 | Platform | All (Windows, Linux, macOS) | Linux / macOS only |
 
 Use `CmdJob` unless the program specifically needs `isatty() == True` or terminal control key semantics.
 
-#### `input` vs `key` vs `signal`
+#### `send-line` vs `send-key` vs `send-signal`
 
 | Command | What it does | Works on |
 |---|---|---|
-| `input <job> <text>` | Write text to stdin / PTY master (data channel) | `CmdJob`, `PtyJob` |
-| `key <job> <key>` | Write a terminal control byte to the PTY master | `PtyJob` only |
-| `signal <job> <sig>` | Send an OS signal to the process group | `CmdJob`, `PtyJob` |
+| `send-line <job> <text>` | Write text plus a trailing newline to stdin / PTY master (data channel) | `CmdJob`, `PtyJob` |
+| `send-key <job> <key>` | Write a terminal control byte to the PTY master | `PtyJob` only |
+| `send-signal <job> <sig>` | Send an OS signal to the process group | `CmdJob`, `PtyJob` |
 
-`key ctrl-c` writes `\x03` to the PTY. Because `PtyJob` uses `pty.fork()` to establish a proper controlling terminal, the kernel line discipline translates this byte into a real SIGINT for the child's foreground process group — just like pressing Ctrl-C in a real terminal.
+`send-key ctrl-c` writes `\x03` to the PTY. Because `PtyJob` uses `pty.fork()` to establish a proper controlling terminal, the kernel line discipline translates this byte into a real SIGINT for the child's foreground process group, just like pressing Ctrl-C in a real terminal.
 
-`signal SIGINT` sends the signal directly via `os.killpg()`, bypassing the terminal driver entirely. Use `signal` when you need to send signals not mapped to terminal keys (e.g. `SIGTERM`, `SIGUSR1`).
+`send-signal SIGINT` sends the signal directly via `os.killpg()`, bypassing the terminal driver entirely. Use `send-signal` when you need to send signals not mapped to terminal keys (e.g. `SIGTERM`, `SIGUSR1`).
 
 ### 3. Hooks
 
@@ -260,11 +262,44 @@ Common actions:
 
 Rule of thumb:
 
-- use Wave hooks for reactions based on logs, parsed data, elapsed time, or Wave lifecycle events
+- use Wave hooks for job-local, synchronous, lightweight reactions based on logs, parsed data, elapsed time, or Wave lifecycle events
+- keep `Hook.action_*` work close to the job: emit an event, set parsed data, send input, send a terminal key, send a signal, or request stop
+- use session actions for batch-level or cross-job work such as summaries, batch control, external notifications, or aggregate reports
 - **Note**: `elapsed_exceeds` with `policy="always"` will trigger repeatedly under timer polling; `policy="once"` is recommended for most use cases.
 - use plain job manager callbacks such as `on_done(...)` / `on_fail(...)` for simple completion/failure notifications
 
-### 4. User-Defined Actions
+### 4. Parsers
+
+Parsers process job stdout line-by-line to extract structured key-value state and update `job.parsed_data`. You can add multiple parsers to a job using `job.add_parser()`.
+
+#### When to Use Which
+* **`RegexParser`**: Best for stateless, standard log extraction. If you just need to capture specific values from a single line using pattern matching (e.g., `PROGRESS=42%`), use `RegexParser`.
+* **`StatefulParser`**: Best when the state depends on history or needs accumulation across multiple log lines (e.g., counting warnings or tracking the minimum loss seen so far).
+* **Plain Functions**: Best when you need full procedural control, arbitrary custom Python logic, or conditional dictionary building that regex alone cannot elegantly handle.
+
+#### StatefulParser Execution Order
+For each log line, `StatefulParser` executes in the following sequence:
+1. **Match**: Searches the log line using the compiled regex `pattern`. If it doesn't match, it returns `{}` immediately.
+2. **`on_match` call**: If matched, calls `on_match(match_data, memory)`.
+3. **Provisional memory**: Builds a merged memory view from the current memory plus the dict returned by `on_match` (upsert merge).
+4. **`to_data` call**: Calls `to_data(match_data, memory)` with the provisional memory to generate the update dictionary. If `to_data` raises an exception, the parser's internal memory is left unchanged.
+5. **parsed_data update**: The dictionary returned by `to_data` is returned to the job runner and merged into `job.parsed_data`.
+
+#### Memory Semantics
+* **Merge-only (Upsert)**: The return value of `on_match` is merged with the existing internal memory. Existing keys are updated, new keys are added, and no keys are deleted.
+* **Internal-only**: The internal memory dictionary is entirely private to the parser. It never appears in `job.parsed_data` or the TUI unless `to_data` explicitly includes it in the returned dictionary.
+
+#### Rerun & Cloning
+Wave jobs support automatic retries (`max_retries`). When a job is retried or rerun:
+* The framework calls `clone()` on each parser to reset its state.
+* `RegexParser.clone()` simply returns `self` (since it is stateless).
+* `StatefulParser.clone()` returns a new instance of `StatefulParser` with the identical configuration but with its internal `_memory` reset to `{}`.
+
+> [!CAUTION]
+> **Constraint: Parsers Cannot Emit Events**
+> Parsers must focus solely on extraction and return a dictionary of strings. They **cannot** and **must not** emit events or trigger actions (like killing the job). To react to log messages or specific parsed data values, use **Hooks** instead.
+
+### 5. User-Defined Actions
 
 Actions are named commands you define in the wave file and trigger later from the TUI, headless REPL, or a guarded hook. They are deliberately general-purpose; Wave does not assume any specific tool or domain.
 
@@ -284,7 +319,8 @@ action sim interrupt
 action . interrupt      # TUI-only shorthand for the current JOB DETAIL job
 ```
 
-Session actions live in a separate namespace and operate on the whole session:
+Session actions live in a separate namespace and operate on the whole session.
+They are intended for batch-level or cross-job behavior:
 
 ```python
 def summarize(sess, ctx):
@@ -311,9 +347,14 @@ job.add_hook(Hook(
 ))
 ```
 
-By default, hooks cannot run job actions or session-level actions. Enable `allow_from_hook=True` only for lightweight, re-entrant actions that are safe to run from a worker thread.
+By default, hooks cannot run job actions or session-level actions. Enable
+`allow_from_hook=True` only for lightweight, re-entrant actions that are safe to
+run from a worker thread. A hook may call `Hook.action_run_session_action(...)`
+only when that session action was registered with `allow_from_hook=True`; this
+is intentionally guarded, and hook-triggered session actions should not do heavy
+batch-level work.
 
-### 5. Job Outcome Semantics
+### 6. Job Outcome Semantics
 
 Wave keeps a small distinction between "failed" and "intentionally skipped":
 
@@ -496,6 +537,38 @@ sim.add_hook(
 )
 
 session.add(sim)
+```
+
+### RegexParser and StatefulParser
+
+An example showing how to extract named regex groups and maintain stateful memory across log lines:
+
+```python
+# parser_wave.py
+from rpkbin.wave import session, CmdJob, RegexParser, StatefulParser
+
+session.configure(max_workers=2)
+
+job = CmdJob("compile_and_test", "python run_tests.py")
+
+# -- Stateless RegexParser: Extract test suite name and count --
+# Assumes log line: "SUITE=math TESTS=150"
+job.add_parser(RegexParser(
+    r"SUITE=(?P<suite>\w+)\s+TESTS=(?P<test_count>\d+)",
+    transform=lambda d: {"test_suite": d["suite"], "total_tests": d["test_count"]}
+))
+
+# -- StatefulParser: Track maximum failures seen so far --
+# Assumes log lines like: "FAILURES=2", "FAILURES=5"
+job.add_parser(StatefulParser(
+    r"FAILURES=(?P<fails>\d+)",
+    on_match=lambda m, mem: {
+        "max_fails": max(mem.get("max_fails", 0), int(m["fails"]))
+    },
+    to_data=lambda m, mem: {"peak_failures": str(mem["max_fails"])}
+))
+
+session.add(job)
 ```
 
 ### FuncJob
@@ -737,8 +810,9 @@ session.configure_tui(dashboard_columns=[
 ])
 ```
 
-Built-in columns are `name`, `id`, `status`, `elapsed`, `progress`, `retries`,
-`exit_code`, and `tags`. Parsed-data columns use
+Built-in columns are `no` (shown as `#`), `name`, `id`, `status`, `elapsed`,
+`progress`, `retries`, `exit_code`, and `tags`. `index` is accepted as a
+compatibility alias for `no`. Parsed-data columns use
 `{"label": "...", "data": "KEY"}` and render the current value from
 `job.peek_data()`. Unknown built-ins or malformed column specs fail early with a
 clear exception when the wave file is loaded.
@@ -761,9 +835,9 @@ Additional TUI-only keyboard bindings:
 | `F2` | Switch to JOB DETAIL |
 | `F3` | Switch to SYSTEM LOG |
 | `F4` | Switch to HELP |
-| `F8` | Focus Command Bar and pre-fill `input . ` (TERMINAL tab only) |
-| `F9` | Send Ctrl-C to the current PTY job (TERMINAL tab only) |
-| `F10` | Send Ctrl-D to the current PTY job (TERMINAL tab only) |
+| `i` | Focus the inline Job Input Bar in JOB DETAIL; sends text plus newline to the current job |
+| `F9` | Send Ctrl-C to the current PTY job from JOB DETAIL |
+| `F10` | Send Ctrl-D to the current PTY job from JOB DETAIL |
 | `:` | Focus Command Bar (Vim style) |
 | `Esc` | Leave Command Bar, return focus to active panel |
 | `Enter` (on DASHBOARD row) | Open JOB DETAIL for selected job |
@@ -836,9 +910,11 @@ inspect results before leaving with `exit`.
   - run a user-defined job action
 - `session_action <name> [args...]`
   - run a user-defined session-level action
-- `input <job> <text>`
-  - send stdin text to a running job (supports `\n`, `\r`, `\t` escape sequences)
-- `signal <job> <sig>`
+- `send-line <job> <text>`
+  - send text plus newline to a running job (supports `\n`, `\r`, `\t` escape sequences)
+- `send-key <job> <key>`
+  - send a terminal control key to a PTY job
+- `send-signal <job> <sig>`
   - send an OS signal to a running job
 - `watch status`
   - poll and reprint status until `Ctrl+C`
@@ -861,7 +937,7 @@ Names containing spaces must be quoted:
 ```text
 logs "test suite"
 stop -g "sim run 1"
-input "interactive shell" "exit\n"
+send-line "interactive shell" exit
 ```
 
 ### Watch Behavior
@@ -964,7 +1040,9 @@ For jobs without graceful stop support:
 | Method | Description |
 | --- | --- |
 | `session.configure(max_workers=..., resources=..., log_dir=..., timeout=...)` | Configure the Wave session before it starts. `timeout` is a session-wide time limit. |
-| `session.configure_tui(dashboard_columns=...)` | Configure TUI presentation. Dashboard columns support built-ins plus parsed-data columns such as `{"label": "Final", "data": "FINAL_RESULT"}`. |
+| `session.configure_tui(dashboard_columns=...)` | Configure basic TUI presentation. Dashboard columns support built-ins (`no`, `name`, `status`, etc.) plus parsed-data columns such as `{"label": "Final", "data": "FINAL_RESULT"}`. |
+| `session.configure_tui_profile("lite" \| "normal" \| "heavy")` | Apply coarse TUI retention/refresh presets. Prefer this over low-level knobs. |
+| `session.configure_tui_advanced(...)` | Advanced escape hatch for low-level retention/refresh settings such as intervals and max line counts. Most wave files should not need this. |
 | `session.add(job, timeout=None)` | Register a job. If already started, dispatch immediately. `timeout` is only supported for Wave jobs; plain scheduler jobs will issue a warning and ignore it. **Note**: Raises `RuntimeError` if called after session finalization. |
 | `session.emit(tag, message)` / `session.peek_events()` | Append and inspect batch-level events. User-created events are marked with `source="user"`; Wave's own lifecycle events use `source="system"`. |
 | `session.pause()` / `session.resume()` | Pause or resume the job manager's dispatch loop. |
@@ -996,6 +1074,21 @@ For jobs without graceful stop support:
 | `retry_count` | Number of retry attempts made so far. |
 | `set_stop_policy(...)` | Configure graceful key/input/signal stop behavior. |
 
+### Built-in Parsers
+
+#### `RegexParser(pattern, *, transform=None)`
+Stateless parser matching a regex pattern with named capture groups.
+* **`pattern`**: A string regex or compiled pattern containing at least one named group (`(?P<name>...)`).
+* **`transform`**: Optional function `(match_data: dict[str, str]) -> dict[str, str]` to format the captured groups.
+* **`clone()`**: Returns `self`.
+
+#### `StatefulParser(pattern, *, on_match=None, to_data)`
+Stateful parser maintaining memory across log lines.
+* **`pattern`**: A string regex or compiled pattern containing at least one named group.
+* **`on_match`**: Optional function `(match_data: dict[str, str], memory: dict) -> dict` returning memory updates (merged into internal memory).
+* **`to_data`**: Required function `(match_data: dict[str, str], memory: dict) -> dict` returning the dictionary to merge into `job.parsed_data`.
+* **`clone()`**: Returns a new `StatefulParser` instance with identical configuration and reset memory.
+
 ### Session Actions
 
 | Method | Description |
@@ -1024,6 +1117,9 @@ For jobs without graceful stop support:
 | `rpk-wave run <wave_file> --no-tui` | Run headless; open REPL when stdin is interactive. |
 | `rpk-wave run <wave_file> --workers N` | Override `max_workers` from the wave file. |
 | `rpk-wave run <wave_file> --perf` | Enable lightweight perf/debug counters and print a summary. |
+| `rpk-wave run <wave_file> --tui-profile lite\|normal\|heavy` | Apply coarse TUI retention/refresh presets. |
+| `rpk-wave init <name> [--profile minimal\|parser\|full\|pty] [--force]` | Generate a starter wave file. `minimal` is the default; `parser` adds a small parsed-data example; `full` adds parser, memory parser, and a job-local hook; `pty` adds a commented, generic `PtyJob("interactive", "python3 -i")` example. Use `--force` to overwrite existing files. |
+| `rpk-wave export-docs <dir> [--force]` | Copy the Wave documentation to `<dir>`. Use `--force` to overwrite existing content. |
 
 ---
 

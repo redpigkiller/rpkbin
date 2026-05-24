@@ -13,6 +13,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 DASHBOARD_BUILTIN_LABELS: dict[str, str] = {
+    "no": "#",
     "name": "Name",
     "id": "ID",
     "status": "Status",

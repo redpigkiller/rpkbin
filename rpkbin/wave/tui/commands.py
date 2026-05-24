@@ -10,76 +10,70 @@ from textual.widgets import Input
 
 
 _HELP_TEXT = """\
+[bold green]Key Scopes[/bold green]
+  [cyan]Global[/cyan]       F1–F4, :, Ctrl+C  — always active
+  [cyan]Job Detail[/cyan]   [ ] { } 1–4 i F9 F10  — active when Job Detail is open
+               and focus is not in any input bar
+  [cyan]Input[/cyan]        Enter Esc ↑ ↓ Tab  — active when an input bar is focused
+
 [bold green]Navigation[/bold green]
   [cyan]F1 / F2 / F3 / F4[/cyan]  Switch tabs (Dashboard / Job Detail / System Log / Help)
-  [cyan]:[/cyan]                Focus Command Bar (Vim style)
-  [cyan]Esc[/cyan]              Return focus to main view (exit any input bar)
-  [cyan]UP / DOWN[/cyan]            Navigate jobs in Dashboard; scroll in log / info views
-  [cyan]Enter[/cyan]            Open selected job in Job Detail
-  [cyan][ ][/cyan]              Previous / next job in Job Detail
-  [cyan]{ }[/cyan]              Previous / next running job in Job Detail
-  [cyan]1 / 2 / 3 / 4[/cyan]   Switch right panel tab: INFO / DATA / EVENTS / SYSTEM
-  [cyan]UP / DOWN[/cyan] (in CMD) Browse command history
-  [cyan]Tab[/cyan]   (in CMD) Auto-complete commands, job names, key/signal args
-  [cyan]Shift + Drag[/cyan]     Select text (Right-click or Ctrl+Shift+C to copy, NEVER Ctrl+C)
-  [cyan]Ctrl+C[/cyan]           Quit (Safe: warns if jobs are active. Double-tap to force quit)
+  [cyan]:[/cyan]                Focus Command Bar  [dim](global)[/dim]
+  [cyan]Esc[/cyan]              Leave input bar, return focus to content area  [dim](input)[/dim]
+  [cyan]↑ / ↓[/cyan]            Dashboard: move job cursor  [dim](job list focused)[/dim]
+                   Command Bar: browse history  [dim](command bar focused)[/dim]
+  [cyan]Enter[/cyan]            Dashboard: open Job Detail for selected job  [dim](job list focused)[/dim]
+                   Input bars: submit  [dim](input focused)[/dim]
+  [cyan][ / ][/cyan]            Previous / next job in Job Detail  [dim](job detail)[/dim]
+  [cyan]{ / }[/cyan]            Previous / next running job in Job Detail  [dim](job detail)[/dim]
+  [cyan]1 / 2 / 3 / 4[/cyan]   Switch right panel: INFO / DATA / EVENTS / SYSTEM  [dim](job detail)[/dim]
+  [cyan]Tab[/cyan]              Command Bar: autocomplete  [dim](command bar focused)[/dim]
 
-[bold green]Terminal Shortcuts[/bold green]
-  [cyan]i[/cyan]                Focus inline Job Input Bar (send text to current job's stdin)
-  [cyan]F9[/cyan]               Send Ctrl-C (\\x03) to the current PTY job
-  [cyan]F10[/cyan]              Send Ctrl-D (\\x04) to the current PTY job
-  [dim]Note: F9/F10 activate in JOB DETAIL when a PTY job is open (no sub-tab required).[/dim]
+[bold green]Terminal Shortcuts[/bold green]  [dim](job detail, PTY jobs only)[/dim]
+  [cyan]i[/cyan]    Focus Job Input Bar — send text to current job's stdin
+  [cyan]F9[/cyan]   Send Ctrl-C (\\x03) to the current PTY job
+  [cyan]F10[/cyan]  Send Ctrl-D (\\x04) to the current PTY job
   [dim]For OS signals, use: send-signal . SIGTERM[/dim]
 
 [bold green]Inspect[/bold green]
   [cyan]help[/cyan]                    Show this reference
   [cyan]status[/cyan]                  List all jobs
   [cyan]show   <job>[/cyan]            Compact summary for one job
-  [cyan]logs   <job> [n][/cyan]        Last [i]n[/i] log lines (default 50)
-  [cyan]data   <job>[/cyan]            Parsed data output for a job
+  [cyan]logs   <job> [n][/cyan]        Last n log lines (default 50)
+  [cyan]data   <job>[/cyan]            Parsed data for a job
   [cyan]events <job>[/cyan]            User event history for a job
 
 [bold green]Control Jobs[/bold green]
   [cyan]pause[/cyan]                   Pause dispatch of pending jobs
-  [cyan]resume[/cyan]                  Resume dispatch of pending jobs
+  [cyan]resume[/cyan]                  Resume dispatch
   [cyan]stop   <job>[/cyan]            Graceful stop, fallback to force stop
-  [cyan]stop   -g <job>[/cyan]         Graceful only (no force fallback)
+  [cyan]stop   -g <job>[/cyan]         Graceful only
   [cyan]stop   --all[/cyan]            Graceful stop all active jobs
   [cyan]stop   --group <tag>[/cyan]    Graceful stop all active jobs with a tag
-  [cyan]cancel <job>[/cyan]            Force-cancel a job immediately
+  [cyan]cancel <job>[/cyan]            Force-cancel immediately
   [cyan]cancel --all[/cyan]            Force-cancel all active jobs
   [cyan]cancel --group <tag>[/cyan]    Force-cancel all active jobs with a tag
   [cyan]skip   <job>[/cyan]            Skip a pending job
   [cyan]rerun  <job>[/cyan]            Rerun a job (creates a new instance)
-  [cyan]action <job> <name>[/cyan]      Run a user-defined job action
-  [cyan]session_action <name>[/cyan]    Run a user-defined session action
+  [cyan]action <job> <name>[/cyan]     Run a user-defined job action
+  [cyan]session_action <name>[/cyan]   Run a user-defined session action
 
 [bold green]Interactive I/O[/bold green]
+  [cyan]i[/cyan]                        Focus Job Input Bar  [dim](job detail)[/dim]
   [cyan]send-line   <job> <text>[/cyan]  Send text + newline to a job's stdin
-                              Text may contain spaces; \\n \\r \\t escape sequences supported.
-                              [dim]Tip: In JOB DETAIL, press [bold cyan]i[/bold cyan] to use the inline input bar instead.[/dim]
   [cyan]send-key    <job> <key>[/cyan]   Send terminal control key to a PTY job
-                              [dim]ctrl-c[/dim]  terminal interrupt byte (\\x03)
-                              [dim]ctrl-d[/dim]  EOF byte (\\x04)
-                              [dim]ctrl-z[/dim]  suspend byte (\\x1a)
-                              [dim]enter[/dim]   carriage return / [dim]tab[/dim]   tab character
-                              For OS signals, use [cyan]send-signal[/cyan] instead.
-  [cyan]send-signal <job> <sig>[/cyan]   Deliver an OS signal to a running job's process
-                              This is a real OS signal (not a terminal key).
-                              For terminal control keys, use [cyan]send-key[/cyan] instead.
-                              [dim]SIGINT[/dim]  OS-level interrupt
-                              [dim]SIGTERM[/dim] request graceful termination
-                              [dim]SIGKILL[/dim] force kill (cannot be caught)
-                              [dim]SIGUSR1[/dim] user-defined signal 1
-                              [dim]SIGUSR2[/dim] user-defined signal 2
+                               [dim]ctrl-c  ctrl-d  ctrl-z  enter  tab[/dim]
+  [cyan]send-signal <job> <sig>[/cyan]   Send an OS signal to a running job
+                               [dim]SIGINT  SIGTERM  SIGKILL  SIGUSR1  SIGUSR2[/dim]
 
 [bold green]Exit[/bold green]
-  [cyan]exit[/cyan]                    Leave TUI when no active jobs remain
-  [cyan]exit   --stop[/cyan]           Stop active jobs gracefully, then leave
-  [cyan]exit   --force[/cyan]          Force-kill active jobs, then leave
+  [cyan]exit[/cyan]            Leave when no active jobs remain
+  [cyan]exit --stop[/cyan]     Stop active jobs gracefully, then leave
+  [cyan]exit --force[/cyan]    Force-kill active jobs, then leave
+  [cyan]Ctrl+C[/cyan]          Quit  [dim](warns if jobs active; double-tap within 3s to force quit)[/dim]
 
-[dim]Note: <job> may be a unique name, job id, or the special shorthand [bold cyan].[/bold cyan] which
-refers to the job currently open in JOB DETAIL (TUI only).
+[dim]<job> accepts a unique name, job id, or unique id prefix.
+In Job Detail, [bold cyan].[/bold cyan] refers to the currently open job.
 Names with spaces must be quoted, e.g. logs "my job".[/dim]
 """
 
@@ -168,7 +162,9 @@ class CommandInput(Input):
         self._history_index = -1
         self._draft = ""
 
-    def on_key(self, event: Key) -> None:  # noqa: D102
+    def on_key(self, event: Key) -> None:
+        if event.key == "tab":
+            event.prevent_default()
         if event.key not in ("tab", "shift+tab"):
             self._cycle_matches = []
             self._cycle_index = -1

@@ -356,7 +356,7 @@ class TestTuiAutocomplete:
         assert "." not in candidates
 
     def test_dot_matches_literal_dot_prefix(self):
-        """When user types 'key .' the '.' candidate still appears."""
+        """When user types 'send-key .' the '.' candidate still appears."""
         detail_job = MagicMock()
         inp = self._make_cmd_input(detail_job=detail_job)
         candidates = self._completions(inp, "send-key .")

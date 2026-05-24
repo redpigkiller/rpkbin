@@ -461,7 +461,10 @@ class Hook:
         """Run a registered session-level action from a hook.
 
         Session-level hook execution is intentionally guarded by
-        ``allow_from_hook=True`` on the registered action.
+        ``allow_from_hook=True`` on the registered action. Prefer this only for
+        lightweight coordination; batch summaries, aggregate reporting, and
+        external notifications are usually clearer as explicit session actions
+        triggered from the TUI/REPL/API.
         """
         def _action(job, ctx):
             sess = getattr(job, "_wave_session", None)

@@ -39,11 +39,13 @@ wave file (Python)          執行環境
 | 跑一個 Python function | `FuncJob(name, fn)` | wave file |
 | 跑一個互動式 CLI 程式 | `PtyJob(name, cmd)` | wave file |
 | 從 log 擷取進度或狀態 | `job.add_parser(fn)` | wave file |
+| 無狀態 log 解析（Regex 命名群組）| `job.add_parser(RegexParser(pattern))` | wave file |
+| 有狀態 log 解析（跨行記憶狀態）| `job.add_parser(StatefulParser(pattern, ...))` | wave file |
 | 超時自動停止 | `Hook(when=Hook.elapsed_exceeds(s), action=Hook.action_kill())` | wave file |
 | 在特定 log 出現時做事 | `Hook(when=Hook.log_matches(pattern), action=...)` | wave file |
 | 完成時發通知 | `Hook(when=Hook.on_done(), action=Hook.action_emit(...))` | wave file |
-| 對 PTY job 送 Ctrl-C | `key <job> ctrl-c` 或 TUI `F9` | REPL / TUI |
-| 對 job 送 OS signal | `signal <job> SIGTERM` | REPL / TUI |
+| 對 PTY job 送 Ctrl-C | `send-key <job> ctrl-c` 或 TUI `F9` | REPL / TUI |
+| 對 job 送 OS signal | `send-signal <job> SIGTERM` | REPL / TUI |
 | 溫和關閉互動式程式 | `job.set_stop_policy(graceful_key=..., graceful_input=..., graceful_signal=...)` | wave file |
 | 失敗時自動重試 | `CmdJob(name, cmd, max_retries=3)` | wave file |
 | 限制 GPU / license 並行 | `session.configure(resources={"gpu": 2})` + `CmdJob(..., resources={"gpu": 1})` | wave file |
@@ -170,7 +172,7 @@ Wave 在 job manager job 之上加入了觀測能力。
 - `PtyJob` / `PtyCmdJob`
   - 在**偽終端 (PTY)** 裡跑 shell command
   - child process 會看到 `isatty() == True`，適合互動式程式
-  - 支援 log parser、hook、terminal control key (`key`)、stdin input、OS signal
+  - 支援 log parser、hook、terminal control key (`send-key`)、stdin input、OS signal
   - 預設 stop policy：`graceful_key="ctrl-c"`
   - 僅限 Linux / macOS；Windows 上可以建構物件但執行時會回報清楚的錯誤
 - `FuncJob` / `WaveFuncJob`
@@ -198,23 +200,23 @@ Wave 額外提供的 job API：
 | Child I/O | PIPE (stdin/stdout) | PTY（偽終端）|
 | `isatty()` | `False` | `True` |
 | 適用場景 | 批次腳本、build、test | 互動式 REPL、`read`-based script |
-| Ctrl-C 行為 | `signal <job> SIGINT`（OS signal）| `key <job> ctrl-c`（terminal key → kernel SIGINT）|
+| Ctrl-C 行為 | `send-signal <job> SIGINT`（OS signal）| `send-key <job> ctrl-c`（terminal key -> kernel SIGINT）|
 | 預設 stop | `graceful_signal=SIGINT` | `graceful_key="ctrl-c"` |
 | 平台支援 | 全平台（Windows、Linux、macOS）| 僅 Linux / macOS |
 
 除非程式需要 `isatty() == True` 或 terminal control key 語意，否則請優先使用 `CmdJob`。
 
-#### `input` vs `key` vs `signal`
+#### `send-line` vs `send-key` vs `send-signal`
 
 | 指令 | 做了什麼 | 適用對象 |
 |---|---|---|
-| `input <job> <text>` | 將文字寫入 stdin / PTY master（資料通道）| `CmdJob`、`PtyJob` |
-| `key <job> <key>` | 將 terminal control byte 寫入 PTY master | 僅 `PtyJob` |
-| `signal <job> <sig>` | 對 process group 發送 OS signal | `CmdJob`、`PtyJob` |
+| `send-line <job> <text>` | 將文字加上換行後寫入 stdin / PTY master（資料通道）| `CmdJob`、`PtyJob` |
+| `send-key <job> <key>` | 將 terminal control byte 寫入 PTY master | 僅 `PtyJob` |
+| `send-signal <job> <sig>` | 對 process group 發送 OS signal | `CmdJob`、`PtyJob` |
 
-`key ctrl-c` 會寫入 `\x03` 到 PTY。因為 `PtyJob` 使用 `pty.fork()` 建立了正確的 controlling terminal，kernel 的 line discipline 會將這個 byte 轉換成對 child foreground process group 的真實 SIGINT，就像在真實終端機按下 Ctrl-C 一樣。
+`send-key ctrl-c` 會寫入 `\x03` 到 PTY。因為 `PtyJob` 使用 `pty.fork()` 建立了正確的 controlling terminal，kernel 的 line discipline 會將這個 byte 轉換成對 child foreground process group 的真實 SIGINT，就像在真實終端機按下 Ctrl-C 一樣。
 
-`signal SIGINT` 則是透過 `os.killpg()` 直接發送 signal，完全繞過 terminal driver。當你需要發送非 terminal key 對應的 signal（如 `SIGTERM`、`SIGUSR1`）時，使用 `signal`。
+`send-signal SIGINT` 則是透過 `os.killpg()` 直接發送 signal，完全繞過 terminal driver。當你需要發送非 terminal key 對應的 signal（如 `SIGTERM`、`SIGUSR1`）時，使用 `send-signal`。
 
 ### 3. Hooks
 
@@ -258,11 +260,44 @@ Hook 由三部分構成：
 
 經驗法則：
 
-- 如果你想對 log、parsed data、經過時間、Wave lifecycle 做反應，用 Wave hook
+- 如果你想對 log、parsed data、經過時間、Wave lifecycle 做 job-local、同步、輕量反應，用 Wave hook
+- `Hook.action_*` 建議只做靠近單一 job 的操作，例如 emit、set_data、send_key、send_input、send_signal、request_stop
+- Session action 適合 batch-level 或跨 job 的工作，例如 summary、批次控制、外部通知、聚合報表
 - **注意**：在 timer polling 機制下，`elapsed_exceeds` 若搭配 `policy="always"` 會重複觸發；多數場景建議使用 `policy="once"`。
 - 如果你只是想在完成或失敗時收到簡單通知，用 job manager 原生 callback `on_done(...)` / `on_fail(...)`
 
-### 4. 使用者自訂 Actions
+### 4. Parsers（解析器）
+
+Parsers 用於逐行處理 job 的 stdout，以擷取結構化的 key-value 狀態並更新 `job.parsed_data`。您可以使用 `job.add_parser()` 為一個 job 新增多個 parser。
+
+#### 何時該用哪一個
+* **`RegexParser`**：適合「無狀態」的常規 log 擷取。如果您只需要透過 pattern matching 從單行 log 中擷取特定欄位（例如 `PROGRESS=42%`），請使用 `RegexParser`。
+* **`StatefulParser`**：適合狀態依賴於歷史紀錄、或需要跨多行 log 累積狀態的情境（例如：計算 warning 出現次數，或追蹤目前為止出現過的最小 loss 值）。
+* **自訂 Python 函數**：適合需要完整程式控制流程、任意 custom Python logic，或是 Regex 無法優雅處理的複雜條件字典構建情境。
+
+#### StatefulParser 執行順序
+對於每一行 log，`StatefulParser` 會依序執行以下步驟：
+1. **Match**：使用指定的 regex `pattern` 搜尋 log line。若不匹配則立即回傳 `{}`。
+2. **呼叫 `on_match`**：若匹配，則呼叫 `on_match(match_data, memory)`。
+3. **暫定 memory**：用目前的 memory 加上 `on_match` 回傳的字典建立合併後的 memory view（upsert merge）。
+4. **呼叫 `to_data`**：以暫定 memory 呼叫 `to_data(match_data, memory)` 來產生要更新的數據字典。如果 `to_data` 拋出例外，parser 的內部 memory 會維持不變。
+5. **更新 parsed_data**：將 `to_data` 回傳的字典交給 job runner，並合併到 `job.parsed_data` 中。
+
+#### Memory 記憶體語意
+* **僅合併（Upsert）**：`on_match` 的回傳值會與現有的內部 memory 合併。已存在的 key 會更新，新的 key 會新增，且不會刪除任何 key。
+* **僅限內部使用**：內部 memory 字典是 parser 私有的。它永遠不會直接出現在 `job.parsed_data` 或 TUI 中，除非 `to_data` 在回傳的字典中明確包含它。
+
+#### Rerun 與 Cloning（複製）
+Wave job 支援自動重試（`max_retries`）。當 job 被重試或重新執行時：
+* 框架會對每個 parser 呼叫 `clone()` 來重設其狀態。
+* `RegexParser.clone()` 會直接回傳 `self`（因為它是無狀態的）。
+* `StatefulParser.clone()` 會回傳一個全新且配置相同的 `StatefulParser` 實例，但其內部的 `_memory` 會被重設為 `{}`。
+
+> [!CAUTION]
+> **限制：Parser 無法發送 Event**
+> Parser 的職責應純粹專注於數據擷取並回傳 string 字典。它們**不能**也**絕對不可以**發送 event 或觸發 action（例如 kill 該 job）。如果您需要對特定的 log 訊息或 parsed data 變化做出反應，請使用 **Hooks**。
+
+### 5. 使用者自訂 Actions
 
 Actions 是你在 wave file 裡定義的具名操作，之後可以從 TUI、Headless REPL 或受保護的 hook 觸發。它們是 general-purpose 機制，不假設任何特定工具或領域。
 
@@ -282,7 +317,7 @@ action sim interrupt
 action . interrupt      # TUI 專用：目前 JOB DETAIL 的 job
 ```
 
-Session action 使用獨立 namespace，適合操作整個 session：
+Session action 使用獨立 namespace，適合操作整個 session，也適合 batch-level 或跨 job 的行為：
 
 ```python
 def summarize(sess, ctx):
@@ -309,9 +344,9 @@ job.add_hook(Hook(
 ))
 ```
 
-預設情況下，hook 不能執行 job action 或 session-level action。只有輕量、可重入、適合在 worker thread 中執行的 action，才建議設定 `allow_from_hook=True`。
+預設情況下，hook 不能執行 job action 或 session action。只有在註冊 action 時明確設定 `allow_from_hook=True`，`Hook.action_run_action(...)` 或 `Hook.action_run_session_action(...)` 才能從 hook 觸發。建議只允許輕量、可重入、在 worker thread 中同步執行也安全的 action；不建議讓 hook 直接做重型 session-level 工作。
 
-### 5. Job 結果語意
+### 6. Job 結果語意
 
 Wave 會保留「失敗」與「刻意跳過」之間的小差異：
 
@@ -493,6 +528,38 @@ sim.add_hook(
 )
 
 session.add(sim)
+```
+
+### RegexParser 與 StatefulParser
+
+以下範例展示了如何從 log 中擷取命名的 regex 群組，並在跨行 log 中維持有狀態的記憶體：
+
+```python
+# parser_wave.py
+from rpkbin.wave import session, CmdJob, RegexParser, StatefulParser
+
+session.configure(max_workers=2)
+
+job = CmdJob("compile_and_test", "python run_tests.py")
+
+# -- 無狀態 RegexParser：擷取測試套件名稱與測試個數 --
+# 假設 log 輸出為: "SUITE=math TESTS=150"
+job.add_parser(RegexParser(
+    r"SUITE=(?P<suite>\w+)\s+TESTS=(?P<test_count>\d+)",
+    transform=lambda d: {"test_suite": d["suite"], "total_tests": d["test_count"]}
+))
+
+# -- 有狀態 StatefulParser：追蹤目前為止出現過的最大失敗次數 --
+# 假設 log 輸出如: "FAILURES=2", "FAILURES=5"
+job.add_parser(StatefulParser(
+    r"FAILURES=(?P<fails>\d+)",
+    on_match=lambda m, mem: {
+        "max_fails": max(mem.get("max_fails", 0), int(m["fails"]))
+    },
+    to_data=lambda m, mem: {"peak_failures": str(mem["max_fails"])}
+))
+
+session.add(job)
 ```
 
 ### FuncJob
@@ -732,7 +799,7 @@ session.configure_tui(dashboard_columns=[
 ])
 ```
 
-內建欄位包含 `name`、`id`、`status`、`elapsed`、`progress`、`retries`、`exit_code`、`tags`。
+內建欄位包含 `no`（顯示為 `#`）、`name`、`id`、`status`、`elapsed`、`progress`、`retries`、`exit_code`、`tags`。`index` 會作為 `no` 的相容 alias。
 Parsed-data 欄位使用 `{"label": "...", "data": "KEY"}`，會顯示 `job.peek_data()` 裡目前的值。
 未知的內建欄位或格式錯誤的欄位設定會在 wave file 載入時直接丟出清楚的例外。
 
@@ -753,9 +820,9 @@ TUI 專屬快捷鍵：
 | `F2` | 切換到 JOB DETAIL |
 | `F3` | 切換到 SYSTEM LOG |
 | `F4` | 切換到 HELP |
-| `F8` | 聚焦 Command Bar 並預填 `input . `（僅限 TERMINAL tab）|
-| `F9` | 透過 PTY 對 job 發送 Ctrl-C（僅限 TERMINAL tab）|
-| `F10` | 透過 PTY 對 job 發送 Ctrl-D（僅限 TERMINAL tab）|
+| `i` | 在 JOB DETAIL 聚焦 inline Job Input Bar；送出文字時會自動加換行 |
+| `F9` | 在 JOB DETAIL 透過 PTY 對目前 job 發送 Ctrl-C |
+| `F10` | 在 JOB DETAIL 透過 PTY 對目前 job 發送 Ctrl-D |
 | `:` | 聚焦 Command Bar（Vim 風格）|
 | `Esc` | 離開 Command Bar，焦點回到目前面板 |
 | `Enter`（在 DASHBOARD row 上）| 開啟該 job 的 JOB DETAIL |
@@ -826,9 +893,11 @@ Headless REPL 是給執行中 batch 用的較佳輸入介面。
   - 執行使用者自訂的 job action
 - `session_action <name> [args...]`
   - 執行使用者自訂的 session-level action
-- `input <job> <text>`
-  - 對 running job 寫入 stdin（支援 `\n`, `\r`, `\t` 等 escape sequences）
-- `signal <job> <sig>`
+- `send-line <job> <text>`
+  - 對 running job 寫入文字並自動加換行（支援 `\n`, `\r`, `\t` 等 escape sequences）
+- `send-key <job> <key>`
+  - 對 PTY job 發送 terminal control key
+- `send-signal <job> <sig>`
   - 對 running job 發送 OS signal
 - `watch status`
   - 輪詢並重印 status，直到 `Ctrl+C`
@@ -851,7 +920,7 @@ Headless REPL 是給執行中 batch 用的較佳輸入介面。
 ```text
 logs "test suite"
 stop -g "sim run 1"
-input "interactive shell" "exit\n"
+send-line "interactive shell" exit
 ```
 
 ### Watch 行為
@@ -951,7 +1020,9 @@ pty_job.set_stop_policy(
 | 方法 | 說明 |
 | --- | --- |
 | `session.configure(max_workers=..., resources=..., log_dir=..., timeout=...)` | 在 session 開始前設定 Wave session。`timeout` 為整份 batch 的時限。 |
-| `session.configure_tui(dashboard_columns=...)` | 設定 TUI 顯示方式。Dashboard 欄位支援內建欄位與 parsed-data 欄位，例如 `{"label": "Final", "data": "FINAL_RESULT"}`。 |
+| `session.configure_tui(dashboard_columns=...)` | 設定基礎 TUI 顯示方式。Dashboard 欄位支援內建欄位（如 `no`、`name`、`status`）與 parsed-data 欄位，例如 `{"label": "Final", "data": "FINAL_RESULT"}`。 |
+| `session.configure_tui_profile("lite" \| "normal" \| "heavy")` | 套用粗略的 TUI 保留行數與刷新頻率 preset。一般建議優先用這個，不要直接調低階參數。 |
+| `session.configure_tui_advanced(...)` | 進階 escape hatch，用於調整 interval、max line count 等低階保留/刷新設定。大多數 wave file 不需要使用。 |
 | `session.add(job, timeout=None)` | 註冊 job；若 session 已啟動，會立即 dispatch。此 `timeout` 僅對 Wave job 生效；若傳入 plain scheduler job，實作會發出 warning 且不生效。**注意**：若在 session finalize 後呼叫會拋出 `RuntimeError`。 |
 | `session.emit(tag, message)` / `session.peek_events()` | 新增與查看 batch-level 事件。使用者建立的事件會標記 `source="user"`；Wave 內建 lifecycle 事件會標記 `source="system"`。 |
 | `session.pause()` / `session.resume()` | 暫停或恢復 job manager 的排程循環。 |
@@ -983,6 +1054,21 @@ pty_job.set_stop_policy(
 | `retry_count` | 目前已重試的次數。 |
 | `set_stop_policy(...)` | 設定 graceful key / input / signal stop 行為。 |
 
+### 內建 Parsers（解析器）
+
+#### `RegexParser(pattern, *, transform=None)`
+用於匹配帶有命名擷取群組的 Regex pattern 的無狀態解析器。
+* **`pattern`**：字串 Regex 或已編譯的 pattern，必須包含至少一個命名群組（`(?P<name>...)`）。
+* **`transform`**：選填。格式為 `(match_data: dict[str, str]) -> dict[str, str]` 的函數，用於對擷取到的群組進行格式化/後處理。
+* **`clone()`**：回傳 `self`（無狀態）。
+
+#### `StatefulParser(pattern, *, on_match=None, to_data)`
+用於跨多行 log 維持記憶體狀態的有狀態解析器。
+* **`pattern`**：字串 Regex 或已編譯的 pattern，必須包含至少一個命名群組。
+* **`on_match`**：選填。格式為 `(match_data: dict[str, str], memory: dict) -> dict` 的函數，回傳要合併至內部記憶體（memory）的更新字典。
+* **`to_data`**：必填。格式為 `(match_data: dict[str, str], memory: dict) -> dict` 的函數，回傳要合併至 `job.parsed_data` 的最終數據字典。
+* **`clone()`**：回傳一個全新的 `StatefulParser` 實例，具有相同的配置，但其內部的 `_memory` 已重設為 `{}`。
+
 ### Session Actions
 
 | 方法 | 說明 |
@@ -1011,6 +1097,9 @@ pty_job.set_stop_policy(
 | `rpk-wave run <wave_file> --no-tui` | 用 headless 模式執行；若 stdin 是互動式的就開 REPL。 |
 | `rpk-wave run <wave_file> --workers N` | 覆寫 wave file 內的 `max_workers`。 |
 | `rpk-wave run <wave_file> --perf` | 啟用輕量 perf/debug counters，並輸出 summary。 |
+| `rpk-wave run <wave_file> --tui-profile lite\|normal\|heavy` | 套用粗略的 TUI 保留行數與刷新頻率 preset。 |
+| `rpk-wave init <name> [--profile minimal\|parser\|full\|pty] [--force]` | 產生 starter wave file。預設為 `minimal`；`parser` 加入簡單 parsed-data 範例；`full` 加入 parser、memory parser 與 job-local hook；`pty` 加入註解過、泛用的 `PtyJob("interactive", "python3 -i")` 範例。若目標檔案存在可使用 `--force` 覆寫。 |
+| `rpk-wave export-docs <dir> [--force]` | 將 Wave 文件複製到 `<dir>`。若目標目錄已有內容可使用 `--force` 覆寫。 |
 
 ---
 
