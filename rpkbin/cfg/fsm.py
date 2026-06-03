@@ -188,7 +188,8 @@ def check_conditions_complete(program: Program) -> list[str]:
 
 def linearize(
     program: Program,
-    strategy: Literal["rpo", "topological", "trace"] = "rpo",
+    strategy: Literal["rpo", "topological", "trace", "custom"] = "rpo",
+    order: list[str] | None = None,
 ) -> FSMLayout:
     """Linearize the main FSM flow and produce an :class:`FSMLayout`.
 
@@ -198,14 +199,20 @@ def linearize(
     Args:
         program:  The program whose main CFG is linearized.
         strategy: Block ordering — ``"rpo"`` (default) handles cycles;
-                  ``"topological"`` raises if the main CFG contains a cycle.
+                  ``"topological"`` raises if the main CFG contains a cycle;
+                  ``"trace"`` uses priority-guided trace order;
+                  ``"custom"`` uses *order* as a preference list (requires
+                  *order* to be provided).
+        order:    Preference order for ``strategy="custom"``.  Passed directly
+                  to :meth:`~rpkbin.cfg.CFG.linearize`.  Ignored for other
+                  strategies.
 
     Returns:
         :class:`FSMLayout` with slots in emission order.
     """
     cfg = program.main
     g = cfg._graph
-    ordered_ids = cfg.linearize(strategy=strategy)
+    ordered_ids = cfg.linearize(strategy=strategy, order=order)
 
     slots: list[FSMSlot] = []
     for bid in ordered_ids:

@@ -7,6 +7,7 @@ Supported trigger types
 -----------------------
 log_matches     : fires when a log line matches a regex pattern
 data_equals     : fires when job.parsed_data[key] == value
+on_data_change  : fires when job.parsed_data[key] changes
 elapsed_exceeds : fires when job elapsed time >= seconds  (timer-driven)
 on_start        : fires when the job transitions to RUNNING  (MRO-driven)
 on_done         : fires when the job reaches DONE status  (event-driven)
@@ -58,6 +59,7 @@ def _format_hook_exception_event(hook: "Hook", exc: BaseException) -> str:
 HookWhenType = Literal[
     "log_matches",
     "data_equals",
+    "on_data_change",
     "elapsed_exceeds",
     "on_start",
     "on_done",
@@ -80,7 +82,7 @@ class HookWhen:
     # log_matches
     pattern: re.Pattern | None = None
 
-    # data_equals
+    # data_equals / on_data_change
     key: str | None = None
     value: str | None = None
 
@@ -113,11 +115,15 @@ class Hook:
         ``"every_n"``: fire every *n*-th time the condition is satisfied.
     n:
         Used only when ``policy="every_n"``.  Must be >= 1.
+    throttle_key:
+        Optional callable used only with ``policy="every_n"``.  It receives
+        ``ctx`` and returns the grouping key for independent per-key counters.
 
     Context keys per trigger type
     ------------------------------
     log_matches     : {"match": re.Match, "line": str}
     data_equals     : {"key": str, "value": str}
+    on_data_change  : {"key": str, "old": str | None, "new": str}
     elapsed_exceeds : {"elapsed": float}
     on_start        : {}
     on_done         : {}
@@ -132,15 +138,20 @@ class Hook:
         action: HookAction,
         policy: Literal["once", "always", "every_n"] = "once",
         n: int = 1,
+        throttle_key: Callable[[dict], object] | None = None,
     ) -> None:
         if policy == "every_n" and n < 1:
             raise ValueError(f"Hook: n must be >= 1, got {n!r}")
+        if throttle_key is not None and policy != "every_n":
+            raise ValueError("Hook: throttle_key is only supported with policy='every_n'")
         self.when = when
         self.action = action
         self.policy = policy
         self.n = n
+        self.throttle_key = throttle_key
         self._exhausted = False
         self._fire_count: int = 0
+        self._fire_counts_by_key: dict[object, int] = {}
         self._lock = threading.Lock()  # protect once/every_n state from concurrent fires
 
     def copy(self) -> "Hook":
@@ -151,7 +162,13 @@ class Hook:
         ``_exhausted``, ``_fire_count``, and ``_lock`` state — safe for
         use on a different job without interfering with the original.
         """
-        return Hook(self.when, self.action, policy=self.policy, n=self.n)
+        return Hook(
+            self.when,
+            self.action,
+            policy=self.policy,
+            n=self.n,
+            throttle_key=self.throttle_key,
+        )
 
     # ------------------------------------------------------------------
     # Internal trigger
@@ -164,14 +181,35 @@ class Hook:
         to fire the same hook.  The lock ensures exactly-once semantics
         under ``policy="once"``.
         """
-        with self._lock:
-            if self.policy == "once":
-                if self._exhausted:
-                    return
-                self._exhausted = True
-            self._fire_count += 1
-            if self.policy == "every_n" and self._fire_count % self.n != 0:
-                return
+        try:
+            with self._lock:
+                if self.policy == "once":
+                    if self._exhausted:
+                        return
+                    self._exhausted = True
+                self._fire_count += 1
+                if self.policy == "every_n":
+                    if self.throttle_key is None:
+                        if self._fire_count % self.n != 0:
+                            return
+                    else:
+                        group = self.throttle_key(ctx)
+                        group_count = self._fire_counts_by_key.get(group, 0) + 1
+                        self._fire_counts_by_key[group] = group_count
+                        if group_count % self.n != 0:
+                            return
+        except Exception as exc:
+            logger.exception(
+                "Hook policy evaluation raised an exception (ignored). "
+                "Hook type=%s, policy=%s.",
+                self.when.type, self.policy,
+            )
+            if hasattr(job, "emit"):
+                try:
+                    job.emit("hook_error", _format_hook_exception_event(self, exc), source="system")
+                except Exception:
+                    pass
+            return
 
         try:
             perf_enabled = bool(getattr(job, "_wave_perf_enabled", False))
@@ -218,6 +256,11 @@ class Hook:
     def data_equals(key: str, value: str) -> HookWhen:
         """Trigger when ``job.parsed_data[key] == value``."""
         return HookWhen(type="data_equals", key=key, value=value)
+
+    @staticmethod
+    def on_data_change(key: str) -> HookWhen:
+        """Trigger when ``job.parsed_data[key]`` changes value."""
+        return HookWhen(type="on_data_change", key=key)
 
     @staticmethod
     def elapsed_exceeds(seconds: float) -> HookWhen:

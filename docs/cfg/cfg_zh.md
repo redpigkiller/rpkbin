@@ -64,8 +64,33 @@ print(order)
 | `rpo` | 需要穩定、通用、可處理 loop 的排列。 |
 | `trace` | 希望 branch chain 盡量聚在一起，讓 emitted code 比較好讀。 |
 | `topological` | 已知 flow 是 DAG，並希望取得嚴格拓樸順序。 |
+| `custom` | 想要自行指定 blocks 的排序偏好。 |
+
+#### Custom Order (自訂順序) 策略
+
+你可以使用 `strategy="custom"` 並傳入 `order` 參數來指定排序偏好：
+
+```python
+order = cfg.linearize(strategy="custom", order=["entry", "B", "C"])
+```
+
+`custom` 策略的規則：
+- `order` 是偏好清單 (preference list)，不是硬性覆蓋。
+- 最終只會輸出從 start node (或 CFG entry) 可達 (reachable) 的 blocks。
+- 每個 reachable block 在結果中恰好只會出現一次。
+- 若 `order` 裡包含未知的 block ID，會 raise `ValueError`。
+- 若 `order` 裡包含 unreachable (不可達) 的 block ID，會 raise `ValueError`。
+- 漏掉沒寫在 `order` 裡的 reachable blocks 會以 RPO 排序補在最尾端。
 
 所有策略都會從 `start` 或 CFG entry 開始，只回傳 reachable blocks。若要檢查不在主流程上的 blocks，使用 `find_unreachable()`。
+
+### 選擇適合的 Linearization 方式 (CFG vs. FSM vs. MCU)
+
+根據你的 target 輸出風格，選擇最合適的 linearization 工具：
+
+- **`cfg.linearize()`**：當你只需要一個單純的 reachable block ID 排序（例如 topological、trace、custom 或 RPO），不需要額外處理 transition metadata 或 jump 指令時使用。
+- **`fsm.linearize()`**：適用於 state machine、transition table 或 state dispatch 類的程式碼發射，需要將 state 對應到 slots 並依 priority 處理 exits 的場景。
+- **`mcu.linearize()`**：適用於 assembly-like 或 MCU sequential code emission。當你需要處理 block 的物理排序，並計算 `needs_jump`、`jump_target` 以及 `is_fallthrough` 時使用。
 
 ---
 
@@ -304,6 +329,20 @@ layout = fsm.linearize(program, strategy="rpo")
 
 FSM sink SCCs 是進入後無法回到 reset state 的 cycles。一般 loop 是正常的；trap cycles 才可疑。
 
+#### FSM Custom Order 自訂順序
+
+你可以使用 `strategy="custom"` 並傳入 `order` 參數來指定 FSM state 的排序偏好：
+
+```python
+layout = fsm.linearize(program, strategy="custom", order=["IDLE", "FETCH", "DONE"])
+```
+
+說明：
+- FSM layout 面向 state 與 transition。
+- `custom` order 只會影響 slot emission 的物理排序（哪一個 state 先被輸出）。
+- 每個 state slot 的 exits 仍會依 edge priority 進行排序。
+- FSM 不使用 MCU fallthrough policy。
+
 ### MCU
 
 當 main flow 預期最後應該到達 halt 或 exit block 時，使用 `rpkbin.cfg.mcu`。
@@ -326,6 +365,7 @@ layout = mcu.linearize(program, strategy="trace")
 
 ```python
 for slot in layout.slots:
+    emit_label(slot.block.id)
     emit_block(slot.block)
     for edge in slot.exits:
         if edge.cond is not None:
@@ -333,6 +373,83 @@ for slot in layout.slots:
     if slot.needs_jump:
         emit_jump(slot.jump_target)
 ```
+
+- Emitter 說明：
+  - Emitter (程式碼產生器) 仍需負責目標平台特定的 branch 助記符 (mnemonic，例如 `jmp`、`jne`、`beq`)。
+  - `MCULayout` 本身**不產生 assembly**。
+  - `MCULayout` **不做 condition inversion**。
+
+#### Fallthrough Policy 與 Layout Hints
+
+你可以透過設定 `fallthrough_policy` 並在 edge 上提供 layout hints 來客製化 block 的重新排序。
+
+```python
+layout = mcu.linearize(
+    program,
+    strategy="trace",
+    fallthrough_policy="layout",
+)
+```
+
+支援的 `fallthrough_policy` 選項：
+- `"none"`：預設值。維持 base strategy 的排列順序，不做 layout hint 重新排序。
+- `"default"`：偏好將 unconditional edge (`cond is None`) 指向的 target 放在緊接的下一個位置。
+- `"layout"`：使用 edge 的 `layout_role` 屬性進行排序（優先順序為 `"main"` > `"normal"` > `"cold"`）。
+- `"likelihood"`：使用 edge 的 `likelihood` 屬性進行排序（優先順序為 `"likely"` > `"normal"` > `"unlikely"`）。
+- `"weight"`：使用 edge 的 `weight` 屬性進行排序（數值越高越優先）。
+
+> [!IMPORTANT]
+> **Heuristics 限制說明**
+> 這些 policy 是保守的貪婪啟發式演算法 (conservative greedy heuristics)，無法保證全局最優的 layout (global optimal layout)。
+> - Policy 僅會影響 block 排列的**偏好順序**。
+> - 它們**不會**修改原本的 CFG 結構。
+> - 它們**不會**修改 edge conditions。
+> - 它們**不會**進行 branch inversion (分支翻轉)。
+
+#### Edge Layout 屬性
+
+你可以在建立 edge 時附加 layout 屬性。`add_edge()` 的 API 簽名不需修改，因為它支援 `**attrs` 任意關鍵字參數：
+
+```python
+# layout_role 支援: "main", "normal", "cold"
+cfg.add_edge("A", "B", cond=None, layout_role="main")
+cfg.add_edge("A", "RESET", cond="fail", layout_role="cold")
+
+# likelihood 支援: "likely", "normal", "unlikely"
+cfg.add_edge("B", "C", cond=None, likelihood="likely")
+cfg.add_edge("B", "RESET", cond="timeout", likelihood="unlikely")
+
+# weight 支援: 任何非負整數/浮點數 (non-negative int/float)
+cfg.add_edge("C", "D", cond=None, weight=10.0)
+cfg.add_edge("C", "RESET", cond="error", weight=1.0)
+```
+
+欄位驗證只在 `mcu.linearize()` 使用對應的 policy 時發生。未明確設定屬性時，預設值為：
+- `layout_role = "normal"`
+- `likelihood = "normal"`
+- `weight = 1.0`
+
+#### 物理 Fallthrough 規則
+
+> [!WARNING]
+> **重要：物理 Fallthrough (順序直通) 判定條件**
+> 在 `MCULayout` 中，只有在滿足以下**所有**條件時，`MCUExitEdge.is_fallthrough` 才會是 `True`：
+> 1. Edge 沒有條件限制 (`edge.cond is None`)。
+> 2. Edge 的 target 剛好是緊接的下一個物理 slot (`edge.target` 位於 layout 的下一個位置)。
+> 
+> Conditional edges (有條件的 edge) **永遠不可能是** physical fallthrough，即使 target 在 layout 中剛好相鄰。系統不會進行 condition inversion。
+> 
+> 請注意：
+> - `layout_role="main"` 不等於 fallthrough。
+> - `likelihood="likely"` 不等於 fallthrough。
+> - `weight` 高不等於 fallthrough。
+> - 它們**只是排序偏好**，真正的 fallthrough 仍必須滿足上述 `cond is None` 且 target 是下一個 slot 的條件。
+
+#### 安全性與相容性
+
+- 預設 `mcu.linearize()` 的 `fallthrough_policy` 為 `"none"`，以避免破壞既有行為 (breaking changes)。
+- 既有的 `rpo` / `trace` / `topological` 策略行為維持不變。
+- Custom order 與 fallthrough policies 是完全 opt-in 的功能。
 
 ---
 

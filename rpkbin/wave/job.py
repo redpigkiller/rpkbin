@@ -25,6 +25,7 @@ Hook trigger wiring
   log_matches     -> on_log callback (_handle_log)
   data_equals     -> checked inside update_parsed_data() - no on_log needed;
                     fires whether the change came from a parser or direct call
+  on_data_change  -> checked inside update_parsed_data() with old/new values
   elapsed_exceeds -> driven by Session's timer thread (_check_timer_hooks)
   on_start        -> WaveJobMixin._execute() - fires just before execution
   on_done         -> on_done callback (_handle_on_done)
@@ -178,6 +179,7 @@ class WaveJobMixin:
 
         - ``log_matches``     -> one shared ``on_log`` callback
         - ``data_equals``     -> no callback; checked inside ``update_parsed_data``
+        - ``on_data_change``  -> no callback; checked inside ``update_parsed_data``
         - ``elapsed_exceeds`` -> no callback; polled by Session's timer thread
         - ``on_start``        -> no callback; fired by ``WaveJobMixin._execute()``
         - ``on_done``         -> one ``on_done`` callback
@@ -205,6 +207,7 @@ class WaveJobMixin:
                 need_retry = True
             # on_start      : fired by WaveJobMixin._execute() - no injection needed
             # data_equals   : checked in update_parsed_data() - no injection needed
+            # on_data_change: checked in update_parsed_data() - no injection needed
             # elapsed_exceeds : timer thread in Session - no injection needed
             # on_cancel     : fired by WaveJobMixin.cancel() override - no injection needed
 
@@ -267,21 +270,27 @@ class WaveJobMixin:
         return action_name
 
     def update_parsed_data(self, updates: dict) -> None:
-        """Merge *updates* into ``parsed_data``, fire data_equals hooks, notify TUI.
+        """Merge *updates* into ``parsed_data``, fire data hooks, notify TUI.
 
         This is the single write path for ``parsed_data``.  Calling it from
-        both parsers and user code ensures that ``data_equals`` hooks fire
+        both parsers and user code ensures that data hooks fire
         regardless of *how* the data changed.
         """
         if not updates:
             return
         with self._wave_lock:
+            changes = {
+                key: (self.parsed_data.get(key), value)
+                for key, value in updates.items()
+                if self.parsed_data.get(key) != value
+            }
             self.parsed_data.update(updates)
             hooks_snapshot = list(self._wave_hooks)
             data_snapshot = dict(self.parsed_data)
-        # Check data_equals hooks after every change - covers both the
+        # Check parsed-data hooks after every change - covers both the
         # parser-driven path and direct update_parsed_data() calls.
         self._check_data_equals_hooks(hooks_snapshot, data_snapshot)
+        self._check_data_change_hooks(hooks_snapshot, changes)
         if self._tui_notify:
             self._tui_notify(self)
 
@@ -618,6 +627,21 @@ class WaveJobMixin:
                 actual = data.get(key)  # type: ignore[arg-type]
                 if actual == hook.when.value:
                     hook._fire(self, {"key": key, "value": actual})
+
+    def _check_data_change_hooks(
+        self,
+        hooks: list["Hook"],
+        changes: dict[object, tuple[object | None, object]],
+    ) -> None:
+        """Fire on_data_change hooks for keys whose value changed."""
+        if not changes:
+            return
+        for hook in hooks:
+            if hook.when.type == "on_data_change":
+                key = hook.when.key
+                if key in changes:
+                    old, new = changes[key]
+                    hook._fire(self, {"key": key, "old": old, "new": new})
 
     # ------------------------------------------------------------------
     # Internal: timer-driven (called by Session's timer thread)

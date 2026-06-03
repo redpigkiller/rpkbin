@@ -1,4 +1,4 @@
-﻿"""Tests for rpkbin.cfg.fsm --- FSM analysis and linearization."""
+"""Tests for rpkbin.cfg.fsm --- FSM analysis and linearization."""
 import pytest
 from rpkbin.cfg import CFG, Assignment, CallRef, Program
 from rpkbin.cfg import fsm
@@ -116,3 +116,97 @@ class TestFSMLinearize:
         layout = fsm.linearize(Program({"main": cfg}))
         a_slot = layout.slots[0]
         assert a_slot.exits[0].cond is None
+
+
+# ---------------------------------------------------------------------------
+# FSM custom order
+# ---------------------------------------------------------------------------
+
+class TestFSMLinearizeCustomOrder:
+    """Tests for fsm.linearize(strategy='custom', order=[...])."""
+
+    def _make_prog(self):
+        """IDLE -> FETCH -> PROCESS loop."""
+        cfg = CFG()
+        for bid in ("IDLE", "FETCH", "PROCESS"):
+            cfg.add_block(bid)
+        cfg.add_edge("IDLE", "FETCH", cond="start")
+        cfg.add_edge("IDLE", "IDLE",  cond="wait")
+        cfg.add_edge("FETCH", "PROCESS")
+        cfg.add_edge("PROCESS", "IDLE")
+        cfg.set_entry("IDLE")
+        return Program({"main": cfg})
+
+    def test_custom_full_order(self):
+        """Full custom order is respected in FSMLayout."""
+        layout = fsm.linearize(
+            self._make_prog(),
+            strategy="custom",
+            order=["IDLE", "FETCH", "PROCESS"],
+        )
+        assert [s.block.id for s in layout.slots] == ["IDLE", "FETCH", "PROCESS"]
+
+    def test_custom_different_order(self):
+        """Non-default custom order changes slot ordering."""
+        layout = fsm.linearize(
+            self._make_prog(),
+            strategy="custom",
+            order=["IDLE", "PROCESS", "FETCH"],
+        )
+        assert [s.block.id for s in layout.slots] == ["IDLE", "PROCESS", "FETCH"]
+
+    def test_custom_partial_order_appends_missing_in_rpo(self):
+        """Missing blocks are appended in RPO after the preference list."""
+        layout = fsm.linearize(
+            self._make_prog(),
+            strategy="custom",
+            order=["IDLE"],
+        )
+        ids = [s.block.id for s in layout.slots]
+        assert ids[0] == "IDLE"
+        assert set(ids[1:]) == {"FETCH", "PROCESS"}
+
+    def test_custom_unknown_block_raises(self):
+        """Unknown block id in order raises ValueError."""
+        with pytest.raises(ValueError, match="unknown block"):
+            fsm.linearize(
+                self._make_prog(),
+                strategy="custom",
+                order=["IDLE", "GHOST"],
+            )
+
+    def test_custom_unreachable_block_raises(self):
+        """Unreachable block in order raises ValueError."""
+        cfg = CFG()
+        for bid in ("IDLE", "FETCH", "orphan"):
+            cfg.add_block(bid)
+        cfg.add_edge("IDLE", "FETCH")
+        cfg.set_entry("IDLE")
+        with pytest.raises(ValueError, match="unreachable block"):
+            fsm.linearize(
+                Program({"main": cfg}),
+                strategy="custom",
+                order=["IDLE", "orphan"],
+            )
+
+    def test_custom_without_order_raises(self):
+        """strategy='custom' without order raises ValueError."""
+        with pytest.raises(ValueError, match="'order' parameter"):
+            fsm.linearize(self._make_prog(), strategy="custom")
+
+    def test_custom_exits_preserved(self):
+        """FSMSlot exits are correct under custom ordering."""
+        layout = fsm.linearize(
+            self._make_prog(),
+            strategy="custom",
+            order=["IDLE", "FETCH", "PROCESS"],
+        )
+        idle_slot = next(s for s in layout.slots if s.block.id == "IDLE")
+        assert {e.target for e in idle_slot.exits} == {"FETCH", "IDLE"}
+
+    def test_existing_rpo_unchanged(self):
+        """RPO strategy behaviour is unaffected."""
+        prog = self._make_prog()
+        ids_default = [s.block.id for s in fsm.linearize(prog).slots]
+        ids_rpo     = [s.block.id for s in fsm.linearize(prog, strategy="rpo").slots]
+        assert ids_default == ids_rpo

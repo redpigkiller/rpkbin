@@ -230,6 +230,7 @@ Hook 由三部分構成：
 
 - `Hook.log_matches(pattern)`
 - `Hook.data_equals(key, value)`
+- `Hook.on_data_change(key)`（context: `key`, `old`, `new`）
 - `Hook.elapsed_exceeds(seconds)`
 - `Hook.on_start()`
 - `Hook.on_done()`
@@ -257,6 +258,8 @@ Hook 由三部分構成：
 > [!NOTE]
 > **同步 Hook 連鎖觸發**
 > Hook action 是同步反應的。若在 action 中使用 `Hook.action_set_data()` 更新資料，且該更新命中了其他的 `data_equals` hook，則後續的 hook 會在同一個 call stack 中立即連鎖觸發。請務必注意避免在使用 `policy="always"` 時造成無窮迴圈。
+
+`policy="every_n"` 通常是計算每個 Hook 實例的匹配次數。對於具有多個獨立來源的雜亂 log，可以傳入 `throttle_key=lambda ctx: ...` 來為每個 key 區分並保留獨立的計數器。
 
 經驗法則：
 
@@ -398,6 +401,21 @@ job.add_hook(
         when=Hook.data_equals("progress", "done"),
         action=Hook.action_emit("phase", "simulation finished"),
         policy="once",
+    )
+)
+```
+
+若要在解析值發生變化時做出反應，請使用 `Hook.on_data_change(...)`：
+
+```python
+job.add_hook(
+    Hook(
+        when=Hook.on_data_change("state"),
+        action=lambda job, ctx: job.emit(
+            "transition",
+            f"{ctx['old']} -> {ctx['new']}",
+        ),
+        policy="always",
     )
 )
 ```

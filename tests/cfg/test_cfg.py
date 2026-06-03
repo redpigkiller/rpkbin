@@ -279,6 +279,119 @@ class TestLinearize:
         assert len(order) == 5
 
 
+# ---------------------------------------------------------------------------
+# CFG.linearize custom order
+# ---------------------------------------------------------------------------
+
+class TestLinearizeCustomOrder:
+    """Tests for strategy='custom' (preference order) in CFG.linearize()."""
+
+    def _make_chain(self):
+        """entry -> A -> B -> C (linear chain)."""
+        cfg = CFG()
+        for bid in ("entry", "A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("entry", "A")
+        cfg.add_edge("A", "B")
+        cfg.add_edge("B", "C")
+        cfg.set_entry("entry")
+        return cfg
+
+    def test_custom_full_order(self):
+        """Exact full order is returned as-is (all reachable blocks listed)."""
+        cfg = self._make_chain()
+        result = cfg.linearize("custom", order=["entry", "A", "B", "C"])
+        assert result == ["entry", "A", "B", "C"]
+
+    def test_custom_full_order_reversed(self):
+        """Preference order is respected even when reversed."""
+        cfg = self._make_chain()
+        result = cfg.linearize("custom", order=["entry", "C", "B", "A"])
+        assert result == ["entry", "C", "B", "A"]
+
+    def test_custom_partial_order_appends_missing_in_rpo(self):
+        """Blocks not in order are appended after in RPO order."""
+        cfg = self._make_chain()
+        # Only specify entry and C; A and B must be appended in RPO order.
+        result = cfg.linearize("custom", order=["entry", "C"])
+        assert result[0] == "entry"
+        assert result[1] == "C"
+        # A and B follow in RPO order (A before B)
+        remaining = result[2:]
+        assert set(remaining) == {"A", "B"}
+        assert remaining.index("A") < remaining.index("B")
+
+    def test_custom_only_reachable_blocks_in_output(self):
+        """Orphan blocks (unreachable from entry) do not appear in result."""
+        cfg = self._make_chain()
+        cfg.add_block("orphan")  # not connected
+        result = cfg.linearize("custom", order=["entry", "A", "B", "C"])
+        assert "orphan" not in result
+        assert len(result) == 4  # only the 4 reachable blocks
+
+    def test_custom_partial_order_only_reachable_appended(self):
+        """Orphan is not appended even when order is partial."""
+        cfg = self._make_chain()
+        cfg.add_block("orphan")
+        result = cfg.linearize("custom", order=["entry"])
+        assert "orphan" not in result
+        assert len(result) == 4
+
+    def test_custom_no_duplicate_blocks(self):
+        """Each reachable block appears exactly once."""
+        cfg = self._make_chain()
+        # Duplicate in order list — should be deduplicated.
+        result = cfg.linearize("custom", order=["entry", "A", "A", "B", "C"])
+        assert result.count("A") == 1
+        assert len(result) == 4
+
+    def test_custom_unknown_block_raises(self):
+        """Block id not in CFG raises ValueError."""
+        cfg = self._make_chain()
+        with pytest.raises(ValueError, match="unknown block"):
+            cfg.linearize("custom", order=["entry", "GHOST", "A", "B", "C"])
+
+    def test_custom_unreachable_block_raises(self):
+        """Block in CFG but not reachable from entry raises ValueError."""
+        cfg = self._make_chain()
+        cfg.add_block("orphan")
+        with pytest.raises(ValueError, match="unreachable block"):
+            cfg.linearize("custom", order=["entry", "orphan", "A", "B", "C"])
+
+    def test_custom_requires_order_parameter(self):
+        """strategy='custom' without order raises ValueError."""
+        cfg = self._make_chain()
+        with pytest.raises(ValueError, match="'order' parameter"):
+            cfg.linearize("custom")
+
+    def test_custom_single_block_order(self):
+        """Single-block order with remaining blocks appended by RPO."""
+        cfg = self._make_chain()
+        result = cfg.linearize("custom", order=["B"])
+        assert result[0] == "B"
+        # Remaining: entry, A, C in RPO order
+        assert set(result[1:]) == {"entry", "A", "C"}
+
+    # Regression: existing strategies must not be affected
+    def test_existing_rpo_unchanged(self):
+        """RPO strategy is unaffected by the new order parameter."""
+        cfg = self._make_chain()
+        result = cfg.linearize("rpo")
+        assert result == ["entry", "A", "B", "C"]
+
+    def test_existing_trace_unchanged(self):
+        """Trace strategy is unaffected by the new order parameter."""
+        cfg = self._make_chain()
+        result = cfg.linearize("trace")
+        assert result == ["entry", "A", "B", "C"]
+
+    def test_existing_topological_unchanged(self):
+        """Topological strategy is unaffected by the new order parameter."""
+        cfg = self._make_chain()
+        result = cfg.linearize("topological")
+        assert result == ["entry", "A", "B", "C"]
+
+
 class TestEdgeCases:
     def test_empty_cfg(self):
         cfg = CFG()

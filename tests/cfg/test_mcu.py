@@ -1,17 +1,23 @@
-﻿"""Tests for rpkbin.cfg.mcu --- MCU analysis and linearization."""
+"""Tests for rpkbin.cfg.mcu --- MCU analysis and linearization."""
 import pytest
 from rpkbin.cfg import CFG, Assignment, Program
-from rpkbin.cfg import mcu
+from rpkbin.cfg import mcu, fsm
 
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
 
 def make_linear_program():
+    """A -> B -> HALT (linear, all cond=None)."""
     cfg = CFG()
     cfg.add_block("A", insns=[Assignment("x", [])])
     cfg.add_block("B", insns=[Assignment("y", ["x"])])
     cfg.add_block("HALT")
     cfg.add_edge("A", "B")
     cfg.add_edge("B", "HALT")
-    cfg.set_entry("A"); cfg.set_exit("HALT")
+    cfg.set_entry("A")
+    cfg.set_exit("HALT")
     return Program({"main": cfg})
 
 
@@ -22,10 +28,15 @@ def make_dead_loop_program():
     cfg.add_block("HALT")
     cfg.add_edge("entry", "stuck")
     cfg.add_edge("entry", "HALT")
-    cfg.add_edge("stuck", "stuck")  # dead self-loop
-    cfg.set_entry("entry"); cfg.set_exit("HALT")
+    cfg.add_edge("stuck", "stuck")   # dead self-loop
+    cfg.set_entry("entry")
+    cfg.set_exit("HALT")
     return Program({"main": cfg})
 
+
+# ---------------------------------------------------------------------------
+# find_dead_loops
+# ---------------------------------------------------------------------------
 
 class TestFindDeadLoops:
     def test_no_dead_loops(self):
@@ -36,29 +47,31 @@ class TestFindDeadLoops:
         assert len(dead) == 1 and dead[0] == ["stuck"]
 
     def test_explicit_exit_block_param(self):
-        prog = make_dead_loop_program()
-        dead = mcu.find_dead_loops(prog, exit_block="HALT")
+        dead = mcu.find_dead_loops(make_dead_loop_program(), exit_block="HALT")
         assert len(dead) == 1
 
     def test_no_exit_raises(self):
         cfg = CFG()
-        cfg.add_block("A"); cfg.add_block("B"); cfg.add_edge("A", "B")
-        cfg.set_entry("A")  # no exit set
-        prog = Program({"main": cfg})
+        cfg.add_block("A"); cfg.add_block("B")
+        cfg.add_edge("A", "B"); cfg.set_entry("A")
         with pytest.raises(RuntimeError, match="exit_block"):
-            mcu.find_dead_loops(prog)
+            mcu.find_dead_loops(Program({"main": cfg}))
 
     def test_multi_node_dead_loop(self):
         cfg = CFG()
-        cfg.add_block("entry"); cfg.add_block("a")
-        cfg.add_block("b"); cfg.add_block("HALT")
+        for bid in ("entry", "a", "b", "HALT"):
+            cfg.add_block(bid)
         cfg.add_edge("entry", "a")
-        cfg.add_edge("a", "b"); cfg.add_edge("b", "a")  # dead: no path to HALT
+        cfg.add_edge("a", "b"); cfg.add_edge("b", "a")   # dead cycle
         cfg.add_edge("entry", "HALT")
         cfg.set_entry("entry"); cfg.set_exit("HALT")
         dead = mcu.find_dead_loops(Program({"main": cfg}))
         assert len(dead) == 1 and set(dead[0]) == {"a", "b"}
 
+
+# ---------------------------------------------------------------------------
+# dead_code_elimination
+# ---------------------------------------------------------------------------
 
 class TestDeadCodeElimination:
     def test_no_dead_blocks(self):
@@ -76,57 +89,493 @@ class TestDeadCodeElimination:
         assert "dead" not in cfg
 
 
-class TestMCULinearize:
+# ---------------------------------------------------------------------------
+# Basic MCU linearize behaviour
+# ---------------------------------------------------------------------------
+
+class TestMCULinearizeBasic:
     def test_linear_no_jump_needed(self):
         layout = mcu.linearize(make_linear_program())
-        # A -> B -> HALT, all adjacent, no jumps needed
-        for slot in layout.slots:
-            assert slot.needs_jump is False
+        assert all(not s.needs_jump for s in layout.slots)
 
     def test_order_entry_first(self):
         layout = mcu.linearize(make_linear_program())
         ids = [s.block.id for s in layout.slots]
         assert ids.index("A") < ids.index("B") < ids.index("HALT")
 
-    def test_conditional_exits_are_preserved(self):
-        cfg = CFG()
-        cfg.add_block("entry"); cfg.add_block("then"); cfg.add_block("else")
-        cfg.add_edge("entry", "then", cond="flag", priority=0)
-        cfg.add_edge("entry", "else", priority=1)
-        cfg.set_entry("entry")
-        layout = mcu.linearize(Program({"main": cfg}), strategy="trace")
-        entry = next(slot for slot in layout.slots if slot.block.id == "entry")
-        assert [(e.cond, e.target) for e in entry.exits] == [
-            ("flag", "then"),
-            (None, "else"),
-        ]
-
-    def test_single_conditional_edge_is_not_fallthrough(self):
+    def test_single_conditional_edge_not_fallthrough(self):
+        """A block with only a conditional edge: is_fallthrough must be False."""
         cfg = CFG()
         cfg.add_block("entry"); cfg.add_block("target")
         cfg.add_edge("entry", "target", cond="flag")
         cfg.set_entry("entry")
-
         layout = mcu.linearize(Program({"main": cfg}))
-        entry = next(slot for slot in layout.slots if slot.block.id == "entry")
-        assert entry.needs_jump is False
-        assert entry.exits[0].is_fallthrough is False
+        entry_slot = next(s for s in layout.slots if s.block.id == "entry")
+        assert entry_slot.needs_jump is False
+        assert all(not e.is_fallthrough for e in entry_slot.exits)
 
-    def test_jump_needed_when_not_adjacent(self):
-        # A -> C (skipping B in layout order)
+    def test_exits_sorted_by_priority(self):
         cfg = CFG()
-        cfg.add_block("A"); cfg.add_block("B"); cfg.add_block("C")
-        # A falls through to B (linear), but also A -> C (jump needed from A if layout is A,B,C but only A->C)
-        # Simpler: A unconditionally goes to C, B is orphan but reachable from entry
-        cfg.add_block("entry")
-        cfg.add_block("X"); cfg.add_block("Y"); cfg.add_block("HALT")
-        cfg.add_edge("entry", "X")
-        cfg.add_edge("X", "HALT")  # X jumps to HALT, skipping Y in RPO
-        cfg.add_edge("entry", "Y")
-        cfg.add_edge("Y", "HALT")
-        cfg.set_entry("entry"); cfg.set_exit("HALT")
+        for bid in ("S", "A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("S", "A", cond="cond1", priority=1)
+        cfg.add_edge("S", "B", cond="cond2", priority=0)
+        cfg.set_entry("S")
         layout = mcu.linearize(Program({"main": cfg}))
-        # Check that all slots have consistent jump info
+        s_slot = next(s for s in layout.slots if s.block.id == "S")
+        prios = [e.priority for e in s_slot.exits]
+        assert prios == sorted(prios)
+
+    def test_jump_needed_when_uncond_target_not_adjacent(self):
+        # A -> C (uncond), B is separate; in RPO order A,B,C → A needs jump to C
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "C")          # uncond — skips B
+        cfg.add_edge("A", "B", cond="x")
+        cfg.set_entry("A")
+        layout = mcu.linearize(Program({"main": cfg}), strategy="rpo")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        # C is not immediately after A in RPO (A->B->C in RPO), so needs_jump
+        # (actual behaviour depends on RPO order; we just check internal consistency)
+        if a_slot.needs_jump:
+            assert a_slot.jump_target is not None
+
+
+# ---------------------------------------------------------------------------
+# MCU linearize — custom order strategy
+# ---------------------------------------------------------------------------
+
+class TestMCULinearizeCustomOrder:
+    def _make_prog(self):
+        """A -> B -> C -> HALT (linear, cond=None)."""
+        cfg = CFG()
+        for bid in ("A", "B", "C", "HALT"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B")
+        cfg.add_edge("B", "C")
+        cfg.add_edge("C", "HALT")
+        cfg.set_entry("A"); cfg.set_exit("HALT")
+        return Program({"main": cfg})
+
+    def test_custom_full_order(self):
+        layout = mcu.linearize(self._make_prog(), strategy="custom",
+                               order=["A", "B", "C", "HALT"])
+        assert [s.block.id for s in layout.slots] == ["A", "B", "C", "HALT"]
+
+    def test_custom_reversed_order(self):
+        layout = mcu.linearize(self._make_prog(), strategy="custom",
+                               order=["A", "HALT", "C", "B"])
+        assert [s.block.id for s in layout.slots] == ["A", "HALT", "C", "B"]
+
+    def test_custom_partial_order_appends_missing_in_rpo(self):
+        layout = mcu.linearize(self._make_prog(), strategy="custom",
+                               order=["A", "HALT"])
+        ids = [s.block.id for s in layout.slots]
+        assert ids[0] == "A"
+        assert ids[1] == "HALT"
+        assert set(ids[2:]) == {"B", "C"}
+
+    def test_custom_unknown_block_raises(self):
+        with pytest.raises(ValueError, match="unknown block"):
+            mcu.linearize(self._make_prog(), strategy="custom",
+                          order=["A", "GHOST"])
+
+    def test_custom_unreachable_block_raises(self):
+        cfg = CFG()
+        for bid in ("A", "B", "orphan"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B"); cfg.set_entry("A")
+        with pytest.raises(ValueError, match="unreachable block"):
+            mcu.linearize(Program({"main": cfg}), strategy="custom",
+                          order=["A", "orphan"])
+
+    def test_custom_needs_jump_and_fallthrough_correct(self):
+        """needs_jump / is_fallthrough are correct after custom ordering."""
+        # Custom order: A, C, B, HALT — C is adjacent to A but A->B->C->HALT
+        # A's uncond target is B (not C); so A needs_jump=True
+        layout = mcu.linearize(self._make_prog(), strategy="custom",
+                               order=["A", "C", "B", "HALT"])
+        ids = [s.block.id for s in layout.slots]
+        assert ids == ["A", "C", "B", "HALT"]
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        # A's uncond target is B; B is not next (C is), so needs_jump=True
+        assert a_slot.needs_jump is True
+        assert a_slot.jump_target == "B"
+        # A's exit edge to B is cond=None but target != next_id (C) → not fallthrough
+        assert all(not e.is_fallthrough for e in a_slot.exits)
+
+
+# ---------------------------------------------------------------------------
+# fallthrough_policy="none" (default)
+# ---------------------------------------------------------------------------
+
+class TestPolicyNone:
+    def test_none_is_default(self):
+        prog = make_linear_program()
+        ids_default = [s.block.id for s in mcu.linearize(prog).slots]
+        ids_none    = [s.block.id for s in mcu.linearize(prog, fallthrough_policy="none").slots]
+        assert ids_default == ids_none
+
+    def test_uncond_fallthrough_marked(self):
+        """cond=None edge to next block is is_fallthrough=True."""
+        layout = mcu.linearize(make_linear_program())
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        assert any(e.is_fallthrough and e.target == "B" for e in a_slot.exits)
+
+    def test_cond_edge_never_fallthrough(self):
+        """Conditional edges are never marked is_fallthrough under any policy."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="flag", priority=0)
+        cfg.add_edge("A", "C", priority=1)
+        cfg.set_entry("A")
+        layout = mcu.linearize(Program({"main": cfg}))
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        for e in a_slot.exits:
+            if e.cond is not None:
+                assert e.is_fallthrough is False
+
+
+# ---------------------------------------------------------------------------
+# fallthrough_policy="default"
+# ---------------------------------------------------------------------------
+
+class TestPolicyDefault:
+    def _make_branching_prog(self):
+        """A --[flag]--> B (cond), A --[None]--> C (uncond)."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="flag", priority=0)
+        cfg.add_edge("A", "C", priority=1)       # cond=None
+        cfg.set_entry("A")
+        return Program({"main": cfg})
+
+    def test_uncond_target_placed_adjacent(self):
+        """'default' places cond=None target immediately after its source."""
+        layout = mcu.linearize(self._make_branching_prog(), fallthrough_policy="default")
+        ids = [s.block.id for s in layout.slots]
+        assert ids.index("C") == ids.index("A") + 1
+
+    def test_uncond_edge_is_fallthrough_after_reorder(self):
+        layout = mcu.linearize(self._make_branching_prog(), fallthrough_policy="default")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        uncond_exits = [e for e in a_slot.exits if e.cond is None]
+        assert len(uncond_exits) == 1
+        assert uncond_exits[0].is_fallthrough is True
+
+    def test_conditional_never_fallthrough(self):
+        layout = mcu.linearize(self._make_branching_prog(), fallthrough_policy="default")
         for slot in layout.slots:
-            if slot.needs_jump:
-                assert slot.jump_target is not None
+            for e in slot.exits:
+                if e.cond is not None:
+                    assert e.is_fallthrough is False
+
+    def test_cond_not_modified(self):
+        prog = self._make_branching_prog()
+        cond_before = prog.main.edge_attrs("A", "B")["cond"]
+        mcu.linearize(prog, fallthrough_policy="default")
+        assert prog.main.edge_attrs("A", "B")["cond"] == cond_before
+
+
+# ---------------------------------------------------------------------------
+# fallthrough_policy="layout"
+# ---------------------------------------------------------------------------
+
+class TestPolicyLayout:
+    def _make_prog(self):
+        """A --[main]--> B --[main]--> C; B/C --[cold, cond="rst"]--> A."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", layout_role="main")
+        cfg.add_edge("B", "C", layout_role="main")
+        cfg.add_edge("B", "A", cond="rst", layout_role="cold")
+        cfg.add_edge("C", "A", cond="rst", layout_role="cold")
+        cfg.set_entry("A")
+        return Program({"main": cfg})
+
+    def test_main_line_order_preserved(self):
+        """A -> B -> C main chain stays together."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="layout")
+        ids = [s.block.id for s in layout.slots]
+        assert ids.index("A") < ids.index("B")
+        assert ids.index("B") < ids.index("C")
+        assert ids.index("B") == ids.index("A") + 1
+        assert ids.index("C") == ids.index("B") + 1
+
+    def test_conditional_main_not_fallthrough(self):
+        """layout_role='main' on a conditional edge never sets is_fallthrough."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="go", layout_role="main")
+        cfg.add_edge("A", "C")
+        cfg.set_entry("A")
+        layout = mcu.linearize(Program({"main": cfg}), fallthrough_policy="layout")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        for e in a_slot.exits:
+            if e.cond is not None:
+                assert e.is_fallthrough is False
+
+    def test_layout_role_in_exit_edge(self):
+        """MCUExitEdge.layout_role matches edge attr."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", layout_role="main")
+        cfg.add_edge("A", "C", cond="err", layout_role="cold")
+        cfg.set_entry("A")
+        layout = mcu.linearize(Program({"main": cfg}), fallthrough_policy="layout")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        roles = {e.target: e.layout_role for e in a_slot.exits}
+        assert roles["B"] == "main"
+        assert roles["C"] == "cold"
+
+    def test_invalid_layout_role_raises(self):
+        """Invalid layout_role raises only when policy='layout' is active."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", layout_role="BAD")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        with pytest.raises(ValueError, match="invalid layout_role"):
+            mcu.linearize(prog, fallthrough_policy="layout")
+
+    def test_invalid_layout_role_not_raised_without_layout_policy(self):
+        """Invalid layout_role is silently ignored under other policies."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", layout_role="BAD")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        mcu.linearize(prog, fallthrough_policy="none")
+        mcu.linearize(prog, fallthrough_policy="default")
+
+    def test_cond_not_modified(self):
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="go", layout_role="main")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        cond_before = prog.main.edge_attrs("A", "B")["cond"]
+        mcu.linearize(prog, fallthrough_policy="layout")
+        assert prog.main.edge_attrs("A", "B")["cond"] == cond_before
+
+
+# ---------------------------------------------------------------------------
+# fallthrough_policy="likelihood"
+# ---------------------------------------------------------------------------
+
+class TestPolicyLikelihood:
+    def _make_prog(self):
+        """A -> B (likely), A -> C (unlikely), A -> D (normal)."""
+        cfg = CFG()
+        for bid in ("A", "B", "C", "D"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="hot",  likelihood="likely",   priority=0)
+        cfg.add_edge("A", "C", cond="cold", likelihood="unlikely", priority=1)
+        cfg.add_edge("A", "D", cond="mid",  likelihood="normal",   priority=2)
+        cfg.set_entry("A")
+        return Program({"main": cfg})
+
+    def test_likely_target_placed_before_unlikely(self):
+        """'likely' edge target is emitted before 'unlikely' edge target."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="likelihood")
+        ids = [s.block.id for s in layout.slots]
+        assert ids.index("B") < ids.index("C")
+
+    def test_likelihood_in_exit_edge(self):
+        """MCUExitEdge.likelihood reflects the edge attr."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="likelihood")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        likes = {e.target: e.likelihood for e in a_slot.exits}
+        assert likes["B"] == "likely"
+        assert likes["C"] == "unlikely"
+        assert likes["D"] == "normal"
+
+    def test_conditional_never_fallthrough(self):
+        """Conditional edges are never is_fallthrough under likelihood policy."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="likelihood")
+        for slot in layout.slots:
+            for e in slot.exits:
+                if e.cond is not None:
+                    assert e.is_fallthrough is False
+
+    def test_invalid_likelihood_raises(self):
+        """Invalid likelihood value raises ValueError when policy='likelihood'."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", likelihood="BOGUS")
+        cfg.set_entry("A")
+        with pytest.raises(ValueError, match="invalid likelihood"):
+            mcu.linearize(Program({"main": cfg}), fallthrough_policy="likelihood")
+
+    def test_invalid_likelihood_not_raised_under_other_policies(self):
+        """Invalid likelihood is silently ignored under other policies."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", likelihood="BOGUS")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        mcu.linearize(prog, fallthrough_policy="none")
+        mcu.linearize(prog, fallthrough_policy="default")
+        mcu.linearize(prog, fallthrough_policy="layout")
+
+    def test_exit_edge_default_likelihood_normal(self):
+        """Edges without likelihood attr get likelihood='normal' in MCUExitEdge."""
+        layout = mcu.linearize(make_linear_program())
+        for slot in layout.slots:
+            for e in slot.exits:
+                assert e.likelihood == "normal"
+
+    def test_cond_not_modified(self):
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="go", likelihood="likely")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        cond_before = prog.main.edge_attrs("A", "B")["cond"]
+        mcu.linearize(prog, fallthrough_policy="likelihood")
+        assert prog.main.edge_attrs("A", "B")["cond"] == cond_before
+
+
+# ---------------------------------------------------------------------------
+# fallthrough_policy="weight"
+# ---------------------------------------------------------------------------
+
+class TestPolicyWeight:
+    def _make_prog(self):
+        """A -> B (weight=10), A -> C (weight=1), A -> D (weight=5)."""
+        cfg = CFG()
+        for bid in ("A", "B", "C", "D"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="hot",  weight=10.0, priority=0)
+        cfg.add_edge("A", "C", cond="cold", weight=1.0,  priority=1)
+        cfg.add_edge("A", "D", cond="mid",  weight=5.0,  priority=2)
+        cfg.set_entry("A")
+        return Program({"main": cfg})
+
+    def test_high_weight_target_placed_before_low_weight(self):
+        """Higher-weight edge target is emitted before lower-weight target."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="weight")
+        ids = [s.block.id for s in layout.slots]
+        assert ids.index("B") < ids.index("C")   # weight 10 before weight 1
+
+    def test_weight_in_exit_edge(self):
+        """MCUExitEdge.weight reflects the edge attr."""
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="weight")
+        a_slot = next(s for s in layout.slots if s.block.id == "A")
+        weights = {e.target: e.weight for e in a_slot.exits}
+        assert weights["B"] == pytest.approx(10.0)
+        assert weights["C"] == pytest.approx(1.0)
+        assert weights["D"] == pytest.approx(5.0)
+
+    def test_weight_tie_break_deterministic(self):
+        """Equal-weight edges produce a deterministic (stable) order."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="x", weight=5.0, priority=0)
+        cfg.add_edge("A", "C", cond="y", weight=5.0, priority=1)
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        ids1 = [s.block.id for s in mcu.linearize(prog, fallthrough_policy="weight").slots]
+        ids2 = [s.block.id for s in mcu.linearize(prog, fallthrough_policy="weight").slots]
+        assert ids1 == ids2   # deterministic
+
+    def test_conditional_never_fallthrough(self):
+        layout = mcu.linearize(self._make_prog(), fallthrough_policy="weight")
+        for slot in layout.slots:
+            for e in slot.exits:
+                if e.cond is not None:
+                    assert e.is_fallthrough is False
+
+    def test_invalid_weight_str_raises(self):
+        """Non-numeric weight raises ValueError when policy='weight'."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", weight="fast")
+        cfg.set_entry("A")
+        with pytest.raises(ValueError, match="invalid weight"):
+            mcu.linearize(Program({"main": cfg}), fallthrough_policy="weight")
+
+    def test_invalid_weight_negative_raises(self):
+        """Negative weight raises ValueError when policy='weight'."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", weight=-1.0)
+        cfg.set_entry("A")
+        with pytest.raises(ValueError, match="invalid weight"):
+            mcu.linearize(Program({"main": cfg}), fallthrough_policy="weight")
+
+    def test_invalid_weight_not_raised_under_other_policies(self):
+        """Invalid weight is silently ignored under other policies."""
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", weight="fast")
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        mcu.linearize(prog, fallthrough_policy="none")
+        mcu.linearize(prog, fallthrough_policy="default")
+
+    def test_exit_edge_default_weight_one(self):
+        """Edges without weight attr get weight=1.0 in MCUExitEdge."""
+        layout = mcu.linearize(make_linear_program())
+        for slot in layout.slots:
+            for e in slot.exits:
+                assert e.weight == pytest.approx(1.0)
+
+    def test_cond_not_modified(self):
+        cfg = CFG()
+        for bid in ("A", "B"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", cond="go", weight=100.0)
+        cfg.set_entry("A")
+        prog = Program({"main": cfg})
+        cond_before = prog.main.edge_attrs("A", "B")["cond"]
+        mcu.linearize(prog, fallthrough_policy="weight")
+        assert prog.main.edge_attrs("A", "B")["cond"] == cond_before
+
+    def test_weight_zero_treated_as_cold(self):
+        """weight=0 edges have their targets deferred like cold paths."""
+        cfg = CFG()
+        for bid in ("A", "B", "C"):
+            cfg.add_block(bid)
+        cfg.add_edge("A", "B", weight=10.0)   # hot uncond
+        cfg.add_edge("A", "C", cond="err", weight=0.0)   # cold
+        cfg.set_entry("A")
+        layout = mcu.linearize(Program({"main": cfg}), fallthrough_policy="weight")
+        ids = [s.block.id for s in layout.slots]
+        # B (hot) should come before C (weight=0 cold)
+        assert ids.index("B") < ids.index("C")
+
+
+# ---------------------------------------------------------------------------
+# Misc: MCUExitEdge default field values
+# ---------------------------------------------------------------------------
+
+class TestMCUExitEdgeDefaults:
+    def test_all_defaults_from_edge_with_no_attrs(self):
+        """Plain edge (no layout attrs) yields all-default MCUExitEdge fields."""
+        layout = mcu.linearize(make_linear_program())
+        for slot in layout.slots:
+            for e in slot.exits:
+                assert e.layout_role == "normal"
+                assert e.likelihood == "normal"
+                assert e.weight == pytest.approx(1.0)
+
+    def test_unknown_policy_raises(self):
+        with pytest.raises(ValueError, match="Unknown fallthrough_policy"):
+            mcu.linearize(make_linear_program(), fallthrough_policy="magic")

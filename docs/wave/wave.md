@@ -232,6 +232,7 @@ Common conditions:
 
 - `Hook.log_matches(pattern)`
 - `Hook.data_equals(key, value)`
+- `Hook.on_data_change(key)` (context: `key`, `old`, `new`)
 - `Hook.elapsed_exceeds(seconds)`
 - `Hook.on_start()`
 - `Hook.on_done()`
@@ -259,6 +260,10 @@ Common actions:
 > [!NOTE]
 > **Synchronous Hook Chaining**
 > Hook actions are reactive and synchronous. If an action uses `Hook.action_set_data()` and that update satisfies another `data_equals` hook, the second hook will trigger immediately in the same call stack. Be careful to avoid creating infinite feedback loops, especially when using `policy="always"`.
+
+`policy="every_n"` normally counts matches per Hook instance. For noisy logs
+with multiple independent sources, pass `throttle_key=lambda ctx: ...` to keep
+separate counters per key.
 
 Rule of thumb:
 
@@ -406,6 +411,21 @@ job.add_hook(
         when=Hook.data_equals("progress", "done"),
         action=Hook.action_emit("phase", "simulation finished"),
         policy="once",
+    )
+)
+```
+
+To react whenever a parsed value changes, use `Hook.on_data_change(...)`:
+
+```python
+job.add_hook(
+    Hook(
+        when=Hook.on_data_change("state"),
+        action=lambda job, ctx: job.emit(
+            "transition",
+            f"{ctx['old']} -> {ctx['new']}",
+        ),
+        policy="always",
     )
 )
 ```

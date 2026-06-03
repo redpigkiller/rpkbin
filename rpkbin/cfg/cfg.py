@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from copy import deepcopy
 from typing import Any, Generator, Literal
 
+
 import networkx as nx
 
 from .block import BasicBlock, Insn
@@ -707,15 +708,28 @@ class CFG:
 
     def linearize(
         self,
-        strategy: Literal["rpo", "topological", "trace"] = "rpo",
+        strategy: Literal["rpo", "topological", "trace", "custom"] = "rpo",
         start: str | None = None,
+        order: list[str] | None = None,
     ) -> list[str]:
         """Return an ordered list of block ids suitable for code ordering.
 
         Args:
             strategy: ``"rpo"`` (default) — Reverse Post-Order; handles cycles.
                       ``"topological"`` — raises if the graph contains a cycle.
+                      ``"trace"``       — priority-guided trace order.
+                      ``"custom"``      — use *order* as a preference list.
+                        Blocks in *order* are emitted first (in the given
+                        sequence), followed by any reachable blocks not covered
+                        by *order* (appended in RPO order).  Only blocks
+                        reachable from *start* appear in the result.
             start:    Entry block (defaults to ``self._entry``).
+            order:    Required when *strategy* is ``"custom"``; ignored
+                      otherwise.  Must be a list of block ids that exist in
+                      the CFG **and** are reachable from *start*.  Raises
+                      :class:`ValueError` if any id is unknown or unreachable.
+                      Reachable blocks not listed in *order* are appended in
+                      RPO order after the preference list.
         """
         if strategy == "rpo":
             return [bb.id for bb in self.reverse_postorder(start)]
@@ -733,8 +747,57 @@ class CFG:
                     "Cannot use topological strategy: CFG contains a cycle. "
                     "Use strategy='rpo' instead."
                 ) from exc
+        elif strategy == "custom":
+            return self._custom_linearize(start, order)
         else:
             raise ValueError(f"Unknown linearize strategy: {strategy!r}")
+
+    def _custom_linearize(
+        self,
+        start: str | None,
+        order: list[str] | None,
+    ) -> list[str]:
+        """Implement the ``"custom"`` linearization strategy.
+
+        *order* is a *preference* list: blocks in it are emitted first (in
+        sequence), then any remaining reachable blocks are appended in RPO
+        order.  Only blocks reachable from *start* appear in the result.
+        """
+        if order is None:
+            raise ValueError(
+                "strategy='custom' requires the 'order' parameter."
+            )
+        root = start or self._start()
+        reachable: set[str] = nx.descendants(self._g, root) | {root}
+
+        # Validate every id in order: must exist and be reachable.
+        for bid in order:
+            if bid not in self._g:
+                raise ValueError(
+                    f"custom order contains unknown block {bid!r}."
+                )
+            if bid not in reachable:
+                raise ValueError(
+                    f"custom order contains unreachable block {bid!r} "
+                    f"(not reachable from {root!r})."
+                )
+
+        # Emit preferred blocks first (deduplicate while preserving order).
+        result: list[str] = []
+        seen: set[str] = set()
+        for bid in order:
+            if bid not in seen:
+                result.append(bid)
+                seen.add(bid)
+
+        # Append remaining reachable blocks in RPO order.
+        rpo_ids = [bb.id for bb in self.reverse_postorder(root)]
+        for bid in rpo_ids:
+            if bid not in seen:
+                result.append(bid)
+                seen.add(bid)
+
+        return result
 
     # ------------------------------------------------------------------
     # Display

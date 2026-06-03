@@ -85,6 +85,11 @@ class TestHookWhen:
         assert when.key == "result"
         assert when.value == "pass"
 
+    def test_on_data_change_factory(self):
+        when = Hook.on_data_change("state")
+        assert when.type == "on_data_change"
+        assert when.key == "state"
+
     def test_elapsed_exceeds_factory(self):
         when = Hook.elapsed_exceeds(5.0)
         assert when.type == "elapsed_exceeds"
@@ -152,6 +157,27 @@ class TestHookFire:
         for t in threads:
             t.join()
         assert count[0] == 1
+
+    def test_every_n_throttle_key_counts_independently(self):
+        seen = []
+        hook = Hook(
+            when=Hook.log_matches(r"x"),
+            action=lambda j, ctx: seen.append(ctx["name"]),
+            policy="every_n",
+            n=2,
+            throttle_key=lambda ctx: ctx["name"],
+        )
+        for name in ["a", "b", "a", "a", "b", "b"]:
+            hook._fire(None, {"name": name})
+        assert seen == ["a", "b"]
+
+    def test_throttle_key_requires_every_n_policy(self):
+        with pytest.raises(ValueError, match="throttle_key"):
+            Hook(
+                when=Hook.log_matches(r"x"),
+                action=lambda j, ctx: None,
+                throttle_key=lambda ctx: ctx["name"],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +400,57 @@ class TestDataEqualsHook:
 # ---------------------------------------------------------------------------
 # WaveJobMixin — emit() and events
 # ---------------------------------------------------------------------------
+
+class TestDataChangeHook:
+    def test_fires_on_first_value(self):
+        seen = []
+        job = WaveFuncJob("test", lambda: None)
+        job.add_hook(Hook(
+            when=Hook.on_data_change("state"),
+            action=lambda j, ctx: seen.append(ctx),
+            policy="always",
+        ))
+        job.update_parsed_data({"state": "IDLE"})
+        assert seen == [{"key": "state", "old": None, "new": "IDLE"}]
+
+    def test_fires_only_when_value_changes(self):
+        seen = []
+        job = WaveFuncJob("test", lambda: None)
+        job.add_hook(Hook(
+            when=Hook.on_data_change("state"),
+            action=lambda j, ctx: seen.append((ctx["old"], ctx["new"])),
+            policy="always",
+        ))
+        job.update_parsed_data({"state": "IDLE"})
+        job.update_parsed_data({"state": "IDLE"})
+        job.update_parsed_data({"state": "TRAINING"})
+        assert seen == [(None, "IDLE"), ("IDLE", "TRAINING")]
+
+    def test_fires_via_parser_path(self):
+        seen = []
+        job = WaveFuncJob("test", lambda: None)
+        job.add_parser(lambda line: {"state": line.split("=", 1)[1]} if line.startswith("STATE=") else {})
+        job.add_hook(Hook(
+            when=Hook.on_data_change("state"),
+            action=lambda j, ctx: seen.append(ctx["new"]),
+            policy="always",
+        ))
+        job._handle_log(job, "STATE=IDLE")
+        job._handle_log(job, "STATE=IDLE")
+        job._handle_log(job, "STATE=TRAINING")
+        assert seen == ["IDLE", "TRAINING"]
+
+    def test_ignores_other_keys(self):
+        seen = []
+        job = WaveFuncJob("test", lambda: None)
+        job.add_hook(Hook(
+            when=Hook.on_data_change("state"),
+            action=lambda j, ctx: seen.append(ctx),
+            policy="always",
+        ))
+        job.update_parsed_data({"other": "x"})
+        assert seen == []
+
 
 class TestEmit:
     def test_emit_appends_event(self):
@@ -744,6 +821,19 @@ class TestHookCopy:
         for _ in range(3):
             copied._fire(None, {})
         assert count[0] == 2  # triggered once more via the copy
+
+    def test_copy_preserves_throttle_key(self):
+        throttle_key = lambda ctx: ctx["name"]
+        original = Hook(
+            when=Hook.log_matches(r"X"),
+            action=lambda j, ctx: None,
+            policy="every_n",
+            n=2,
+            throttle_key=throttle_key,
+        )
+        copied = original.copy()
+        assert copied.throttle_key is throttle_key
+        assert copied._fire_counts_by_key == {}
 
     def test_copy_does_not_affect_original(self):
         count = [0]

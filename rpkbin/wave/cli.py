@@ -213,7 +213,13 @@ def _render_wave_template(name: str, profile: str) -> str:
 
 @click.group()
 def main() -> None:
-    """Wave - lightweight job batch runner with real-time monitoring."""
+    """Wave - A lightweight workflow layer for scheduling, executing, and monitoring batch jobs.
+
+    Wave executes shell commands, pseudo-terminal (PTY) processes, and Python functions
+    in a batch runner. It supports log parsers, reactive hooks, and resource/concurrency
+    constraints. Active jobs can be monitored via a live interactive full-screen dashboard TUI
+    (default) or controlled through a headless REPL environment.
+    """
     pass
 
 
@@ -223,25 +229,25 @@ def main() -> None:
     "--no-tui",
     is_flag=True,
     default=False,
-    help="CI mode: run headless without opening the TUI.",
+    help="CI/headless mode: execute the batch without launching the full-screen TUI.",
 )
 @click.option(
     "--workers",
     type=click.IntRange(min=1),
     default=None,
-    help="Override max_workers set in the wave file.",
+    help="Override the maximum concurrent workers configured in the wave file.",
 )
 @click.option(
     "--perf",
     is_flag=True,
     default=False,
-    help="Enable lightweight perf/debug counters.",
+    help="Collect and print lightweight performance and TUI refresh diagnostics on exit.",
 )
 @click.option(
     "--tui-profile",
     type=click.Choice(TUI_PROFILE_NAMES),
     default=None,
-    help="Apply a coarse TUI performance profile.",
+    help="Coarse performance profile (lite/normal/heavy) to scale TUI refresh rates and tail limits.",
 )
 def cmd_run(
     wave_file: str,
@@ -250,7 +256,21 @@ def cmd_run(
     perf: bool,
     tui_profile: str | None,
 ) -> None:
-    """Load WAVE_FILE and run the job batch."""
+    """Load WAVE_FILE and run the job batch.
+
+    This command loads a declarative Python wave file, schedules all registered
+    jobs, and executes them according to their dependencies, resource limits,
+    priorities, and hooks.
+    
+    By default, it launches a live interactive full-screen dashboard TUI.
+    In non-interactive terminals or when --no-tui is passed, it runs headless.
+
+    Examples:
+
+      rpk-wave run my_flow.py
+
+      rpk-wave run my_flow.py --no-tui --workers 4
+    """
     raise SystemExit(run(wave_file, no_tui=no_tui, workers=workers, perf=perf, tui_profile=tui_profile))
 
 
@@ -260,21 +280,32 @@ def cmd_run(
     "--force", "-f",
     is_flag=True,
     default=False,
-    help="Overwrite existing file.",
+    help="Overwrite the file if it already exists.",
 )
 @click.option(
     "--profile",
     type=click.Choice(_INIT_PROFILES),
     default="minimal",
     show_default=True,
-    help="Starter template profile.",
+    help=(
+        "Starter template profile. "
+        "minimal: basic setup with two jobs; "
+        "parser: adds a stateless RegexParser; "
+        "full: adds stateful parser and hooks; "
+        "pty: adds POSIX PtyJob."
+    ),
 )
 def cmd_init(name: str, force: bool, profile: str) -> None:
     """Generate a starter wave file named NAME.wave.py.
 
-    Example:
-        rpk-wave init hello
-        rpk-wave init hello --profile parser
+    This generates a declarative template python script that configures a Wave
+    session and registers starter jobs, which can then be extended and run.
+
+    Examples:
+
+      rpk-wave init hello
+
+      rpk-wave init hello --profile parser
     """
     # Strip .wave.py / .py suffix if the user accidentally included it
     stem = name
@@ -322,17 +353,20 @@ def _find_wave_docs_src() -> "Path | None":
     "--force", "-f",
     is_flag=True,
     default=False,
-    help="Overwrite destination even when it already has content.",
+    help="Overwrite the destination directory even if it already contains files.",
 )
 def cmd_export_docs(dest: str, force: bool) -> None:
-    """Copy Wave documentation to DEST directory.
+    """Export Wave Markdown documentation to the DEST directory.
 
-    Creates DEST if it does not exist.  Refuses to write when DEST already
-    contains files unless --force is given.
+    Creates DEST if it does not exist. Copies wave.md (English) and wave_zh.md
+    (Traditional Chinese) into the 'wave' subdirectory inside DEST.
+    Refuses to write when destination already contains files unless --force is given.
 
-    Example:
-        rpk-wave export-docs ./wave_docs
-        rpk-wave export-docs ./wave_docs --force
+    Examples:
+
+      rpk-wave export-docs ./docs
+
+      rpk-wave export-docs ./docs --force
     """
     dest_path = Path(dest)
 

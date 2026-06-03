@@ -74,10 +74,35 @@ Available strategies:
 | `rpo` | You want a stable general-purpose order that handles loops. |
 | `trace` | You want branch chains kept close together for readable emitted code. |
 | `topological` | You know the flow is a DAG and want a strict topological order. |
+| `custom` | You want to specify a preferred order for blocks. |
+
+#### Custom Order Strategy
+
+You can specify a preferred order for blocks using `strategy="custom"`:
+
+```python
+order = cfg.linearize(strategy="custom", order=["entry", "B", "C"])
+```
+
+Rules for the `custom` strategy:
+- `order` is a preference list, not a hard override.
+- The output only contains blocks reachable from the start node (or CFG entry).
+- Each reachable block appears exactly once in the resulting list.
+- Specifying an unknown block id in `order` raises `ValueError`.
+- Specifying an unreachable block id in `order` raises `ValueError`.
+- Any reachable blocks omitted from `order` will be appended at the end sorted by RPO.
 
 All strategies start at `start` or the CFG entry and return only reachable
 blocks. Use `find_unreachable()` to inspect blocks that are not part of the
 main flow.
+
+### Choosing Between CFG, FSM, and MCU Linearization
+
+Depending on your target output style, choose the appropriate linearization tool:
+
+- **`cfg.linearize()`**: Use this when you only need a list of reachable block IDs in a specific order (e.g., topological, trace, custom, or RPO), without transition metadata or jump instructions.
+- **`fsm.linearize()`**: Use this for state machines, transition tables, or state dispatching code emission where you need to map states to slots and handle exits based on priority.
+- **`mcu.linearize()`**: Use this for assembly-like or sequential MCU code emission where physical block ordering, jump resolution (`needs_jump`, `jump_target`), and physical fallthrough detection (`is_fallthrough`) are required.
 
 ---
 
@@ -336,6 +361,20 @@ layout = fsm.linearize(program, strategy="rpo")
 FSM sink SCCs are cycles from which the reset state is unreachable. Regular
 loops are fine; trap cycles are suspicious.
 
+#### FSM Custom Order
+
+You can specify a preferred order for FSM states using `strategy="custom"`:
+
+```python
+layout = fsm.linearize(program, strategy="custom", order=["IDLE", "FETCH", "DONE"])
+```
+
+Notes:
+- FSM layout is oriented towards states and transitions.
+- The `custom` order only affects the slot emission sequence (which state comes first in the generated list).
+- Outgoing transitions (exits) of each state slot are still sorted by their edge priority.
+- FSM linearization does **not** use the MCU fallthrough policy.
+
 ### MCU
 
 Use `rpkbin.cfg.mcu` when the main flow is expected to eventually reach a halt
@@ -362,6 +401,7 @@ instruction selection remain the emitter's job.
 
 ```python
 for slot in layout.slots:
+    emit_label(slot.block.id)
     emit_block(slot.block)
     for edge in slot.exits:
         if edge.cond is not None:
@@ -369,6 +409,79 @@ for slot in layout.slots:
     if slot.needs_jump:
         emit_jump(slot.jump_target)
 ```
+
+- Emitter notes:
+  - The code generator (emitter) remains responsible for choosing target-specific branch mnemonics (e.g., `jmp`, `jne`, `beq`).
+  - The `MCULayout` itself does not emit assembly code.
+  - The `MCULayout` does not perform condition inversion (e.g. converting `cond="x"` to `cond="not x"`).
+
+#### Fallthrough Policies and Layout Hints
+
+You can customize block reordering by setting `fallthrough_policy` and providing layout hints on edges.
+
+```python
+layout = mcu.linearize(
+    program,
+    strategy="trace",
+    fallthrough_policy="layout",
+)
+```
+
+Available `fallthrough_policy` values:
+- `"none"`: Default. Maintains the base strategy order without reordering based on edge attributes.
+- `"default"`: Prefers placing the target of unconditional edges (`cond is None`) next.
+- `"layout"`: Reorders based on edge `layout_role` attribute (`"main"` > `"normal"` > `"cold"`).
+- `"likelihood"`: Reorders based on edge `likelihood` attribute (`"likely"` > `"normal"` > `"unlikely"`).
+- `"weight"`: Reorders based on edge `weight` attribute (higher weight takes precedence).
+
+> [!IMPORTANT]
+> **Heuristic Nature**
+> These policies use conservative greedy heuristics. They prioritize block order preferences but do not guarantee a globally optimal layout.
+> - The policies **only** affect block placement preferences.
+> - They **never** modify the original CFG structure.
+> - They **never** modify edge conditions.
+> - They **never** perform branch inversion.
+
+#### Edge Layout Attributes
+
+You can attach layout attributes to edges when defining your graph. The API signature for `add_edge()` does not change because it supports arbitrary keyword arguments via `**attrs`:
+
+```python
+# Layout roles: "main", "normal", "cold"
+cfg.add_edge("A", "B", cond=None, layout_role="main")
+cfg.add_edge("A", "RESET", cond="fail", layout_role="cold")
+
+# Likelihoods: "likely", "normal", "unlikely"
+cfg.add_edge("B", "C", cond=None, likelihood="likely")
+cfg.add_edge("B", "RESET", cond="timeout", likelihood="unlikely")
+
+# Weights: Any non-negative int/float
+cfg.add_edge("C", "D", cond=None, weight=10.0)
+cfg.add_edge("C", "RESET", cond="error", weight=1.0)
+```
+
+Validation of layout attributes occurs only when `mcu.linearize()` is invoked with the corresponding policy. If not explicitly specified, attributes default to:
+- `layout_role = "normal"`
+- `likelihood = "normal"`
+- `weight = 1.0`
+
+#### Physical Fallthrough Rule
+
+> [!WARNING]
+> **Important Physical Fallthrough Condition**
+> An edge in `MCULayout` is marked as physical fallthrough (`MCUExitEdge.is_fallthrough=True`) **only** when:
+> 1. The edge condition is `None` (`edge.cond is None`).
+> 2. The edge target is the next physical slot (`edge.target` is the adjacent next block in the layout).
+> 
+> Conditional edges are **never** marked as physical fallthrough, even if their target block is placed immediately adjacent in the layout. No condition inversion is performed.
+> 
+> Layout hints like `layout_role="main"`, `likelihood="likely"`, or a high `weight` represent **block ordering preferences only** and do not guarantee a physical fallthrough.
+
+#### Safety and Compatibility
+
+- The default `fallthrough_policy` is `"none"` to prevent any breaking changes to existing setups.
+- The default behavior for standard strategies (`"rpo"`, `"trace"`, `"topological"`) remains unchanged.
+- Custom block ordering and fallthrough reordering policies are strictly opt-in.
 
 ---
 

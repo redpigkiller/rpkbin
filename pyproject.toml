@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.1.6"
+version = "0.1.7"
 description = "Personal collection of small scripts and helpers for work."
 readme = "README.md"
 authors = [
