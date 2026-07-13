@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.1.7"
+version = "0.1.8"
 description = "Personal collection of small scripts and helpers for work."
 readme = "README.md"
 authors = [
@@ -14,6 +14,7 @@ license = { text = "MIT" }
 requires-python = ">=3.8"
 dependencies = [
     "click>=8.3.1",
+    "numpy>=1.21",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,6 +24,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+jax   = ["jax>=0.4"]
 cfg   = ["networkx>=3.6.1"]
 excel = ["openpyxl>=3.1.5", "xlrd>=2.0.2", "rapidfuzz>=3.14.3"]
 wave  = ["textual>=8.0.2", "prompt_toolkit>=3.0.52", "rich>=14.2.0"]
@@ -45,6 +47,11 @@ rpk-wave = "rpkbin.wave.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rpkbin*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "experimental: mark a test case as experimental (M2/M3 feature, may raise NotImplementedError).",
+]
 
 [tool.setuptools]
 include-package-data = true

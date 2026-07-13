@@ -7,7 +7,7 @@
 以純 NumPy（`int64`）為預設後端，選用 JAX 後端可獲得 XLA 加速（CPU/GPU/TPU），不依賴任何外部定點函式庫。
 
 核心特色：**兩層 API**（operator 便利層 / 函式型 pipeline 層）的清楚分工、**五種硬體對齊 rounding mode**
-（含 Xilinx DSP48 的 convergent rounding）、明確的 **format tracking**，以及 **可選 JAX 後端**以透明切換運算加速。
+（含 Xilinx DSP48 的 convergent rounding）、明確的 **format tracking**，以及適合固定 shape／format pipeline 的 **可選 JAX 後端**。
 
 ---
 
@@ -16,6 +16,8 @@
 ```python
 import rpkbin.numbv as nbv
 ```
+
+安裝 `rpkbin` 時會預設安裝 NumPy；若要使用選用的 JAX 後端，請安裝 `pip install 'rpkbin[jax]'`。
 
 ### 1. 定義格式（Format）
 
@@ -157,8 +159,8 @@ Format(width, frac, signed=True, rounding="trunc", overflow="saturate")
 
 | 函式 | 說明 |
 |------|------|
-| `nbv.scalar(value, *, fmt)` | 從實數建立 scalar NumBV |
-| `nbv.array(data, *, fmt)` | 從 list 或 ndarray 建立 array NumBV |
+| `nbv.scalar(value, *, fmt)` | 建立 scalar NumBV；拒絕 array 輸入 |
+| `nbv.array(data, *, fmt)` | 建立 array NumBV；拒絕 scalar 輸入 |
 | `nbv.zeros(*, fmt, shape=None)` | 全零 NumBV |
 | `nbv.ones(*, fmt, shape=None)` | 量化 1.0 NumBV |
 | `nbv.full(fill, *, fmt, shape=None)` | 填滿 NumBV |
@@ -189,7 +191,7 @@ Format(width, frac, signed=True, rounding="trunc", overflow="saturate")
 | `a - b`, `a -= b` | 減法 |
 | `a * b`, `a *= b` | 乘法 |
 | `-a`, `abs(a)` | 取負 / 絕對值 |
-| `==`, `!=`, `<`, `<=`, `>`, `>=` | 比較（frac 對齊後比較） |
+| `==`, `!=`, `<`, `<=`, `>`, `>=` | NumBV 間先對齊 frac；Python 數值 literal 依實際數值比較 |
 
 > 有號與無號 NumBV 混合運算時，runtime 會 raise `TypeError`。
 
@@ -227,21 +229,23 @@ safe = nbv.infer_mul_format(fmt_a, fmt_b)   # full-precision 乘法 format
 
 ## Backend 選擇（NumPy / JAX）
 
-在建立任何 NumBV **之前**呼叫一次 `set_backend()`，後續所有操作自動使用選定後端。
+backend 是 process-global；必須在建立第一個 NumBV **之前**選定，之後不可切換成不同 backend。
 
 ```python
 import rpkbin.numbv as nbv
 
 nbv.set_backend("numpy")  # 預設，永遠可用
-nbv.set_backend("jax")    # XLA 加速（需先 pip install jax）
+nbv.set_backend("jax")    # XLA 加速（需先 pip install 'rpkbin[jax]'）
 
 print(nbv.get_backend())  # 'numpy' 或 'jax'
 ```
 
 **JAX 後端特性：**
 - `jax_enable_x64` 自動啟用（確保 int64/float64 正確運作）
-- `NumBV` 自動註冊為 JAX PyTree，可透明搭配 `@jax.jit` 使用
+- `NumBV` 自動註冊為 JAX PyTree，可用於固定 shape／format 的 `@jax.jit` pipeline
 - 所有 bit-true 操作結果在 numpy 與 JAX 間完全一致（bit-identical）
+
+NumBV 的 raw leaf 是整數，因此不支援以 `jax.grad` 對 fixed-point pipeline 微分。`sum()`／`dot()` 的 Python loop 也可能增加 JIT 編譯成本。
 
 ```python
 import jax
@@ -347,10 +351,22 @@ a + b
 
 Bit-true 精度必須透過明確的 format 追蹤維護，NumPy ufuncs 會繞過此機制。
 
+### Python literal 的算術與比較語意
+
+```python
+y = a + 0.1     # 0.1 先量化到 a.fmt
+same = a == 0.1 # 直接依實際數值比較，不先 saturate 或 wrap
+```
+
+算術 operator 會將 Python literal 量化到左 operand 的 format；comparison literal 則依數值比較。
+
+### `clip()` 會量化 bounds
+
+`clip(lo, hi)` 會依目前 format 的 rounding mode 量化 bounds；超出可表示範圍的 bounds 會 clamp 到 `min_raw`／`max_raw`，不套用 wrap。
+
 ### Backend 切換時機
 
-`set_backend()` 必須在建立任何 NumBV 物件**之前**呼叫。
-切換後建立的物件使用新 backend；已建立的物件仍保有原始 `_raw` 型別。
+`set_backend()` 必須在建立任何 NumBV 物件**之前**呼叫。建立第一個物件後，要求不同 backend 會 raise `RuntimeError`；重複設定目前 backend 則是安全的 no-op。
 最安全的做法是在程式進入點呼叫一次，之後不再更改。
 ---
 

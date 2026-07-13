@@ -15,6 +15,8 @@ If you are new here, start with the task you want to solve:
 | Simulate fixed-point arithmetic | [NumBV](docs/numbv/numbv.md) |
 | Extract structured data from Excel files | [Excel Extractor](docs/excel_extractor/excel_extractor.md) |
 | Sketch or validate low-level control flow | [CFG](docs/cfg/cfg.md) |
+| Compile high-level IR (HIR) to pseudo ASM for MCU targets | [Codegen](docs/codegen/codegen.md) |
+
 
 ## Core Features
 
@@ -27,10 +29,10 @@ MapBV allows you to define a hierarchy of bit-fields that stay synchronized auto
 [Learn more in MapBV Documentation](docs/mapbv/mapbv.md)
 
 ### 2. NumBV — Bit-True Fixed-Point Arithmetic
-Bit-exact fixed-point simulation for DSP pipeline verification. Pure NumPy, no external dependency.
+Bit-exact fixed-point simulation for DSP pipeline verification. Pure NumPy, with no external fixed-point dependency.
 - **Two-layer API**: Operator layer (`+`, `*`) for convenience; function layer (`nbv.add()`, `nbv.mul()`) for explicit pipeline staging.
 - **Five Rounding Modes**: `trunc`, `round`, `round_half_even` (convergent, Xilinx DSP48), `ceil`, `round_to_zero`.
-- **Unified Operations**: One `NumBV` class handles both scalar and array computations. Backed by NumPy by default, with an optional drop-in JAX backend for transparent XLA hardware acceleration.
+- **Unified Operations**: One `NumBV` class handles both scalar and array computations. Backed by NumPy by default, with an optional JAX backend for XLA acceleration.
 
 [Learn more in NumBV Documentation](docs/numbv/numbv.md)
 
@@ -70,7 +72,16 @@ A workflow layer built on top of Job Manager for declaring and observing long-ru
 
 [Wave Documentation](docs/wave/wave.md)
 
+### 7. Codegen — MCU Compiler Backend Framework
+A target-agnostic compiler backend that translates High-level IR (HIR) to pseudo assembly. Supports pattern rewrite optimizations, graph-coloring register allocation, and safe variable spilling.
+- **HIR Lowering**: Lowers structured control flow (if/while/for/poll) and volatile memory loads/stores.
+- **Physical Register Alias Resolution**: Supports overlapping registers (e.g. 16-bit register composed of two 8-bit aliases).
+- **Safe Variable Spilling**: Automatically spills live variables to configured SRAM locations when registers are exhausted.
+
+[Codegen Documentation](docs/codegen/codegen.md)
+
 ## Quick Start: Wave
+
 
 Install Wave support:
 
@@ -114,8 +125,11 @@ rpk-wave run hello.wave.py --no-tui
 ## Installation
 
 ```bash
-# Core only (zero dependencies)
+# Core (installs NumPy)
 pip install -e .
+
+# Optional NumBV JAX backend
+pip install -e .[jax]
 
 # Install specific features
 pip install -e .[wave]   # Installs textual, prompt_toolkit, rich

@@ -1,4 +1,4 @@
-﻿"""Interprocedural analysis utilities for CFG Programs.
+"""Interprocedural analysis utilities for CFG Programs.
 
 This module provides analysis functions that operate across multiple CFGs
 (i.e. across function boundaries) using the :class:`~rpkbin.cfg.program.Program`
@@ -29,13 +29,15 @@ def/use derivation
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import FrozenSet
+from typing import FrozenSet, TYPE_CHECKING
 
 import networkx as nx
 
 from .block import Assignment, CallRef, Insn, OtherInsn
 from .cfg import CFG
-from .program import Program
+
+if TYPE_CHECKING:
+    from .program import Program
 
 
 # ---------------------------------------------------------------------------

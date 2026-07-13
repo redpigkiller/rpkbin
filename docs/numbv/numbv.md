@@ -10,7 +10,7 @@ It uses pure NumPy (`int64`) by default and optionally accelerates via JAX (XLA)
 It features a **two-layer API** separating everyday convenience from bit-exact pipeline staging,
 **five hardware-aligned rounding modes** (including Xilinx DSP48's convergent rounding),
 **explicit format tracking** through every arithmetic step, and an **optional JAX backend**
-for transparent computation acceleration.
+for acceleration when its execution constraints fit the pipeline.
 
 ---
 
@@ -19,6 +19,9 @@ for transparent computation acceleration.
 ```python
 import rpkbin.numbv as nbv
 ```
+
+NumPy is installed by default with `pip install rpkbin`. For the optional JAX
+backend, install `pip install 'rpkbin[jax]'`.
 
 ### 1. Defining a Format
 
@@ -162,8 +165,8 @@ Format(width, frac, signed=True, rounding="trunc", overflow="saturate")
 
 | Function | Description |
 |----------|-------------|
-| `nbv.scalar(value, *, fmt)` | Create scalar NumBV from real value |
-| `nbv.array(data, *, fmt)` | Create array NumBV from list or ndarray |
+| `nbv.scalar(value, *, fmt)` | Create scalar NumBV; arrays are rejected |
+| `nbv.array(data, *, fmt)` | Create array NumBV; scalars are rejected |
 | `nbv.zeros(*, fmt, shape=None)` | All-zeros NumBV |
 | `nbv.ones(*, fmt, shape=None)` | Ones (quantized 1.0) |
 | `nbv.full(fill, *, fmt, shape=None)` | Fill NumBV |
@@ -194,7 +197,7 @@ Format(width, frac, signed=True, rounding="trunc", overflow="saturate")
 | `a - b`, `a -= b` | Subtraction |
 | `a * b`, `a *= b` | Multiplication |
 | `-a`, `abs(a)` | Negate / absolute value |
-| `==`, `!=`, `<`, `<=`, `>`, `>=` | Comparison (frac-aligned) |
+| `==`, `!=`, `<`, `<=`, `>`, `>=` | NumBV comparison is frac-aligned; Python numeric literals compare by value |
 
 > Mixing `signed` and `unsigned` NumBVs raises `TypeError` at runtime.
 
@@ -240,15 +243,18 @@ use the chosen backend automatically.
 import rpkbin.numbv as nbv
 
 nbv.set_backend("numpy")   # default — always available
-nbv.set_backend("jax")     # XLA acceleration (requires: pip install jax)
+nbv.set_backend("jax")     # XLA acceleration (requires: pip install 'rpkbin[jax]')
 
 print(nbv.get_backend())   # 'numpy' or 'jax'
 ```
 
 **JAX backend features:**
 - `jax_enable_x64` is enabled automatically (ensures correct int64/float64 behaviour)
-- `NumBV` is registered as a JAX PyTree, enabling transparent use with `@jax.jit`
+- `NumBV` is registered as a JAX PyTree for fixed-format `@jax.jit` pipelines
 - All bit-true results are **bit-identical** between NumPy and JAX
+
+`jax.grad` does not apply to NumBV integer raw leaves. `jax.jit` support is for
+fixed-shape, fixed-format pipelines; Python-loop reductions may increase compilation cost.
 
 ```python
 import jax
@@ -284,7 +290,7 @@ Practical rule of thumb:
 For a simple local benchmark, run:
 
 ```bash
-RUN_NUMBV_BENCHMARK=1 pytest tests/test_numbv_benchmark.py -q -s
+RUN_NUMBV_BENCHMARK=1 pytest tests/numbv/test_numbv_benchmark.py -q -s
 ```
 
 ---
@@ -390,6 +396,9 @@ y2 = a * 0.1   # same rule
 This is convenient for quick experiments, but in bit-true verification it can hide where quantization happened.
 If the exact staging matters, convert constants explicitly with `nbv.scalar(..., fmt=...)` or use the function API.
 
+Comparisons are different: `a == 1000` compares the real numeric value and does
+not quantize, saturate, or wrap `1000` first.
+
 ### `clip()` quantizes the bounds too
 
 ```python
@@ -401,10 +410,9 @@ That keeps clipping bit-true, but the effective threshold is the nearest represe
 
 ### Backend switch timing
 
-`set_backend()` must be called **before** creating any NumBV objects.
-Objects created after the switch use the new backend; previously created objects
-retain their original `_raw` type. The safest pattern is to call it once at
-the program entry point and not change it again.
+The backend is process-global. `set_backend()` must be called **before** creating
+any NumBV objects; after the first object, selecting a different backend raises
+`RuntimeError`. Calling it again with the current backend is a safe no-op.
 
 ---
 

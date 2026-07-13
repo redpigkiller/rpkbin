@@ -52,6 +52,23 @@ linearization time; :meth:`~rpkbin.cfg.CFG.add_edge` accepts them verbatim.
     need **not** sum to 1 — they are treated as relative scores, not
     probabilities.  Defaults to ``1.0`` when not set.
 
+    **Cold deferral threshold**: an edge's target is treated as *cold* when
+    its ``weight`` is strictly less than
+    ``_WEIGHT_COLD_FRACTION * max(weights from the same source)``.
+    The fraction is ``0.1`` by default.  Edges with ``weight=0`` are always
+    cold.  If all outgoing edges from a block have equal weight, none are
+    deferred.
+
+``weight`` (used by ``fallthrough_policy="cond_aware_weight"``)
+    Same ``weight`` attribute and validation rules as ``"weight"``.
+    The difference is in successor selection: ``cond=None`` (unconditional)
+    edges are **always** preferred over conditional ones regardless of their
+    weight, so the uncond target is placed immediately after its source block
+    whenever possible.  Weight is used only as a secondary ranking among
+    conditional edges and among multiple unconditional edges (unusual, but
+    supported).  This policy minimises explicit ``JUMP`` instructions while
+    still routing hot conditional paths close together.
+
 Physical fallthrough rule
 --------------------------
 Regardless of any layout hint or fallthrough policy, an :class:`MCUExitEdge`
@@ -66,6 +83,7 @@ is performed.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -86,6 +104,12 @@ _VALID_LIKELIHOODS: frozenset[str] = frozenset({"likely", "normal", "unlikely"})
 # Ordering maps: lower rank → preferred first.
 _LAYOUT_ROLE_RANK: dict[str, int] = {"main": 0, "normal": 1, "cold": 2}
 _LIKELIHOOD_RANK: dict[str, int] = {"likely": 0, "normal": 1, "unlikely": 2}
+
+# Fraction of the per-source maximum weight below which an edge target is
+# considered "cold" for deferral purposes under the weight-based policies.
+# E.g. 0.1 means: if an edge's weight < 10% of the heaviest edge from the
+# same source, defer its target to the cold section.
+_WEIGHT_COLD_FRACTION: float = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +276,9 @@ def _successor_score(
         return (like_rank, prio, base_pos, dst)
     elif policy == "weight":
         return (weight_rank, like_rank, role_rank, prio, base_pos, dst)
+    elif policy == "cond_aware_weight":
+        cond_rank = 0 if attrs.get("cond") is None else 1
+        return (cond_rank, weight_rank, prio, base_pos, dst)
     else:
         # "default": unconditional edges first, then priority, then base_pos
         cond_rank = 0 if attrs.get("cond") is None else 1
@@ -283,6 +310,20 @@ def _best_successor(
         return None
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
+
+
+def _src_max_weight(cfg: CFG, bid: str) -> float:
+    """Return the maximum ``weight`` among all outgoing edges of *bid*.
+
+    Returns ``1.0`` (the default weight) when the block has no outgoing edges
+    or when no edge carries a ``weight`` attribute.
+    """
+    weights = [
+        float(attrs["weight"])
+        for _, _, attrs in cfg.out_edges(bid)
+        if isinstance(attrs.get("weight"), (int, float))
+    ]
+    return max(weights) if weights else 1.0
 
 
 def _greedy_reorder(
@@ -329,6 +370,8 @@ def _greedy_reorder(
     cold_targets: set[str] = set()
 
     for bid in base_order:
+        # Per-source maximum weight — used for relative cold-threshold.
+        src_max_w = _src_max_weight(cfg, bid) if policy in ("weight", "cond_aware_weight") else 1.0
         for _, dst, attrs in cfg.out_edges(bid):
             if policy == "layout":
                 role = attrs.get("layout_role", "normal")
@@ -342,14 +385,14 @@ def _greedy_reorder(
                     hot_targets.add(dst)
                 elif like == "unlikely":
                     cold_targets.add(dst)
-            elif policy == "weight":
-                # Use median-ish heuristic: weight < 0.5 of max weight from
-                # that src counts as cold.  Simple: weight=0 → cold.
-                w = float(attrs.get("weight", 1.0))
-                if w > 0:
-                    hot_targets.add(dst)
-                else:
+            elif policy in ("weight", "cond_aware_weight"):
+                raw_w = attrs.get("weight", 1.0)
+                w = float(raw_w) if isinstance(raw_w, (int, float)) else 1.0
+                threshold = _WEIGHT_COLD_FRACTION * src_max_w
+                if w < threshold:
                     cold_targets.add(dst)
+                else:
+                    hot_targets.add(dst)
             else:
                 # "default": no deferral — all successors treated equally
                 hot_targets.add(dst)
@@ -500,7 +543,7 @@ def linearize(
     strategy: Literal["rpo", "topological", "trace", "custom"] = "rpo",
     order: list[str] | None = None,
     fallthrough_policy: Literal[
-        "none", "default", "layout", "likelihood", "weight"
+        "none", "default", "layout", "likelihood", "weight", "cond_aware_weight"
     ] = "none",
 ) -> MCULayout:
     """Linearize the main MCU flow and produce an :class:`MCULayout`.
@@ -526,6 +569,18 @@ def linearize(
     All policies are conservative greedy passes and do **not** guarantee a
     globally optimal layout.
 
+    **Choosing a policy**:
+
+    * Use ``"default"`` or ``"cond_aware_weight"`` when the primary goal is
+      **minimising explicit JUMP instructions**.  Both always try to place the
+      ``cond=None`` successor immediately after its source block.
+    * Use ``"layout"``, ``"likelihood"``, or ``"weight"`` when the primary
+      goal is **I-Cache locality** — putting hot blocks physically close
+      together.  Note that these policies may pull conditional-edge targets
+      forward even when doing so cannot create a fallthrough, and may
+      therefore increase the number of explicit JUMP instructions compared
+      with ``"default"``.
+
     Args:
         program:  The program whose main CFG is linearized.
         strategy: Block ordering strategy.  ``"rpo"`` (default) handles
@@ -538,17 +593,28 @@ def linearize(
             * ``"none"`` (default) — no adjustments; preserves existing
               behaviour exactly.
             * ``"default"`` — prefer placing each block's ``cond=None``
-              successor immediately after it.
+              successor immediately after it.  Only unconditional edges are
+              considered for successor chaining.
             * ``"layout"`` — rank successors by ``layout_role``
-              (``"main"`` > ``"normal"`` > ``"cold"``).  Validates
-              ``layout_role`` values and raises :class:`ValueError` on
-              invalid ones.
+              (``"main"`` > ``"normal"`` > ``"cold"``).  All successors
+              (conditional and unconditional) are ranked; optimises for
+              I-Cache locality.  Validates ``layout_role`` values.
             * ``"likelihood"`` — rank successors by ``likelihood``
-              (``"likely"`` > ``"normal"`` > ``"unlikely"``).  Validates
+              (``"likely"`` > ``"normal"`` > ``"unlikely"``).  All successors
+              ranked; optimises for I-Cache locality.  Validates
               ``likelihood`` values.
             * ``"weight"`` — rank successors by ``weight`` (higher = hotter).
-              Validates ``weight`` values (must be ``int``/``float``,
-              ``>= 0``).
+              All successors ranked; optimises for I-Cache locality.
+              Cold-deferral threshold: a target is deferred when its ``weight``
+              is less than ``_WEIGHT_COLD_FRACTION`` (10 %) of the maximum
+              outgoing weight from the same source.
+              Validates ``weight`` values (must be ``int``/``float``, ``>= 0``).
+            * ``"cond_aware_weight"`` — like ``"weight"`` but ``cond=None``
+              edges are **always** preferred over conditional ones regardless
+              of weight, so physical fallthroughs are maximised.  Weight
+              serves only as a secondary ranking among edges of equal
+              conditionality.  Uses the same cold-deferral threshold and
+              validation as ``"weight"``.
 
     Returns:
         :class:`MCULayout` with slots in emission order.
@@ -560,22 +626,42 @@ def linearize(
     cfg = program.main
     ordered_ids = cfg.linearize(strategy=strategy, order=order)
 
+    # Warn if custom order places a non-entry block first.
+    if (
+        strategy == "custom"
+        and ordered_ids
+        and cfg._entry is not None
+        and ordered_ids[0] != cfg._entry
+    ):
+        warnings.warn(
+            f"mcu.linearize: custom order places block {ordered_ids[0]!r} first, "
+            f"but the CFG entry is {cfg._entry!r}. "
+            "If your backend uses the first physical slot as the program entry "
+            "point, this will cause incorrect execution. "
+            "Put the entry block first in the custom order to suppress this warning.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Validate and apply fallthrough policy.
     if fallthrough_policy == "none":
         pass  # no reordering
-    elif fallthrough_policy in ("default", "layout", "likelihood", "weight"):
+    elif fallthrough_policy in (
+        "default", "layout", "likelihood", "weight", "cond_aware_weight"
+    ):
         # Per-policy validation (only attributes used by the active policy).
         if fallthrough_policy == "layout":
             _validate_attr(cfg, ordered_ids, "layout_role", _VALID_LAYOUT_ROLES)
         elif fallthrough_policy == "likelihood":
             _validate_attr(cfg, ordered_ids, "likelihood", _VALID_LIKELIHOODS)
-        elif fallthrough_policy == "weight":
+        elif fallthrough_policy in ("weight", "cond_aware_weight"):
             _validate_weights(cfg, ordered_ids)
         ordered_ids = _greedy_reorder(cfg, ordered_ids, fallthrough_policy)
     else:
         raise ValueError(
             f"Unknown fallthrough_policy {fallthrough_policy!r}. "
-            "Valid values: 'none', 'default', 'layout', 'likelihood', 'weight'."
+            "Valid values: 'none', 'default', 'layout', 'likelihood', "
+            "'weight', 'cond_aware_weight'."
         )
 
     # Build MCULayout slots.

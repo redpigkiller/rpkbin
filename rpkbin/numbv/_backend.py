@@ -6,8 +6,7 @@ Supported backends:
                           Requires:  pip install jax
 
 Call :func:`set_backend` *once* at the top of your script, **before**
-creating any NumBV objects.  Switching backends after creating objects is
-undefined behaviour.
+creating any NumBV objects. Switching afterward raises ``RuntimeError``.
 
 Example::
 
@@ -20,7 +19,6 @@ Example::
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as _np
@@ -43,8 +41,7 @@ _IS_INSTANTIATED: bool = False  # guard against switching after init
 
 
 def mark_instantiated() -> None:
-    """Internal. Mark that at least one NumBV object has been created.
-    Used to warn if `set_backend` is called too late."""
+    """Internal. Mark that at least one NumBV object has been created."""
     global _IS_INSTANTIATED
     _IS_INSTANTIATED = True
 
@@ -63,8 +60,7 @@ def set_backend(name: str) -> None:
     * JAX requires ``pip install jax``.
     * When JAX is selected, ``jax_enable_x64`` is automatically set to
       ``True`` so that ``int64`` / ``float64`` work correctly.
-    * Registers ``NumBV`` as a JAX PyTree on first call, enabling
-      transparent use with ``@jax.jit``, ``jax.vmap``, etc.
+    * Registers ``NumBV`` as a JAX PyTree on first call.
 
     Examples
     --------
@@ -81,12 +77,13 @@ def set_backend(name: str) -> None:
             "Choose 'numpy' (default) or 'jax'."
         )
 
-    if _IS_INSTANTIATED and name != _BACKEND:
-        warnings.warn(
-            f"set_backend('{name}') called after NumBV objects were already created. "
-            "Changing backends now is undefined behaviour and may crash.",
-            UserWarning,
-            stacklevel=2,
+    if name == _BACKEND:
+        return
+
+    if _IS_INSTANTIATED:
+        raise RuntimeError(
+            "Cannot change NumBV backend after creating NumBV objects; "
+            "set the backend before creating any objects."
         )
 
     if name == "numpy":
@@ -132,8 +129,7 @@ def _register_jax_pytree() -> None:
     """Register NumBV with JAX's pytree system.
 
     After registration:
-    * ``@jax.jit`` can trace through NumBV objects transparently.
-    * ``jax.vmap`` / ``jax.grad`` work on pipelines that use NumBV.
+    * ``@jax.jit`` can use NumBV as a PyTree when its static format is known.
     * ``_raw`` is the traced (dynamic) leaf; ``_fmt`` is the static
       compile-time constant used as a JIT cache key.
 

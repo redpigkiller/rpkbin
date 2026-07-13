@@ -248,3 +248,94 @@ class TestFunctionOrder:
         program = self._make_program(["main"])
         with pytest.raises(ValueError, match="Unknown"):
             program.function_order("magic")  # type: ignore[arg-type]
+
+    # -- strategy: bottom_up --------------------------------------------------
+
+    def test_bottom_up_callee_before_caller(self):
+        """bottom_up places callees before their callers."""
+        program = self._make_call_program()
+        result = program.function_order("bottom_up")
+        # 'c' is called by 'a', which is called by 'main' -> c before a before main
+        assert result.index("c") < result.index("a")
+        assert result.index("a") < result.index("main")
+
+    def test_bottom_up_entry_is_last_among_reachable(self):
+        """The entry function appears last among reachable functions."""
+        program = self._make_call_program()
+        result = program.function_order("bottom_up")
+        reachable = {"main", "a", "b", "c"}
+        reachable_in_result = [fn for fn in result if fn in reachable]
+        assert reachable_in_result[-1] == "main"
+
+    def test_bottom_up_unreachable_appended_in_insertion_order(self):
+        """Functions not reachable from entry are appended at the end."""
+        program = self._make_call_program()
+        result = program.function_order("bottom_up")
+        assert "orphan" in result
+        assert set(result) == {"main", "a", "b", "c", "orphan"}
+        # orphan is unreachable so it should come after all reachable functions
+        reachable = {"main", "a", "b", "c"}
+        last_reachable_idx = max(result.index(fn) for fn in reachable)
+        assert result.index("orphan") > last_reachable_idx
+
+    def test_bottom_up_all_functions_present_exactly_once(self):
+        program = self._make_call_program()
+        result = program.function_order("bottom_up")
+        assert sorted(result) == sorted(program.cfgs.keys())
+
+    def test_bottom_up_single_function_program(self):
+        program = self._make_program(["main"])
+        result = program.function_order("bottom_up")
+        assert result == ["main"]
+
+    # -- strategy: alphabetical -----------------------------------------------
+
+    def test_alphabetical_sorts_by_name(self):
+        """alphabetical returns all functions sorted lexicographically."""
+        program = self._make_program(["zebra", "alpha", "main", "beta"], entry="main")
+        result = program.function_order("alphabetical")
+        assert result == sorted(["zebra", "alpha", "main", "beta"])
+
+    def test_alphabetical_all_functions_present(self):
+        program = self._make_call_program()
+        result = program.function_order("alphabetical")
+        assert sorted(result) == sorted(program.cfgs.keys())
+
+    def test_alphabetical_deterministic_regardless_of_insertion_order(self):
+        """alphabetical is independent of dict insertion order."""
+        p1 = self._make_program(["z", "a", "m"], entry="m")
+        p2 = self._make_program(["m", "z", "a"], entry="m")
+        assert p1.function_order("alphabetical") == p2.function_order("alphabetical")
+        assert p1.function_order("alphabetical") == ["a", "m", "z"]
+
+    def test_bottom_up_dag_dependency(self):
+        """bottom_up correctly orders a DAG call graph where multiple callers share a callee."""
+        from rpkbin.cfg import CallRef
+
+        main = CFG()
+        main.add_block("m", insns=[CallRef("a"), CallRef("b")])
+        main.set_entry("m")
+
+        a = CFG()
+        a.add_block("a_body", insns=[CallRef("c")])
+        a.set_entry("a_body")
+
+        b = CFG()
+        b.add_block("b_body", insns=[CallRef("c")])
+        b.set_entry("b_body")
+
+        c = CFG()
+        c.add_block("c_body")
+        c.set_entry("c_body")
+
+        program = Program({"main": main, "a": a, "b": b, "c": c})
+        result = program.function_order("bottom_up")
+
+        # c must be emitted before both of its callers a and b
+        assert result.index("c") < result.index("a")
+        assert result.index("c") < result.index("b")
+        # callers must be emitted before entry (main)
+        assert result.index("a") < result.index("main")
+        assert result.index("b") < result.index("main")
+
+

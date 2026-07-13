@@ -20,6 +20,9 @@ Covers all spec §16.5 test requirements:
  17.  Acceptance Test ??FIR pipeline end-to-end
 """
 
+import subprocess
+import sys
+
 import pytest
 import numpy as np
 
@@ -213,6 +216,11 @@ class TestFactory:
         a = from_bits(0xFFFF, fmt=Format(16, 12, signed=True))
         assert int(a.raw) == -1  # sign-extended, not clipped
 
+    def test_from_bits_signed_63_bit_patterns(self):
+        fmt = Format(63, 0, signed=True)
+        assert int(from_bits(1 << 62, fmt=fmt).raw) == -(1 << 62)
+        assert int(from_bits((1 << 63) - 1, fmt=fmt).raw) == -1
+
     def test_from_bits_strict_array_raises(self):
         with pytest.raises(ValueError):
             from_bits([0x00, 0x1FF], fmt=Format(8, 0, signed=False), strict=True)
@@ -254,6 +262,15 @@ class TestAttributes:
     def test_bin_scalar(self):
         a = from_bits(0b00000001, fmt=Format(8, 4))
         assert a.bin == "0b00000001"
+
+    def test_hex_bin_preserve_array_shape(self):
+        fmt = Format(8, 0, signed=False)
+        assert array([1, 2], fmt=fmt).hex == ["0x01", "0x02"]
+        assert from_bits([[1, 2], [3, 4]], fmt=fmt).bin == [
+            ["0b00000001", "0b00000010"],
+            ["0b00000011", "0b00000100"],
+        ]
+        assert from_bits([[[1]]], fmt=fmt).hex == [[["0x01"]]]
 
     def test_shape_scalar(self):
         assert scalar(1.0, fmt=Format(16, 12)).shape == ()
@@ -326,6 +343,27 @@ class TestRounding:
         assert self._q(-1.9, "round_to_zero") == -1.0  # toward zero = -1 not -2
         assert self._q(0.5,  "round_to_zero") == 0.0
         assert self._q(-0.5, "round_to_zero") == 0.0
+
+    def test_extreme_float_applies_overflow_policy_before_int64_cast(self):
+        assert float(scalar(1e300, fmt=Format(8, 0)).val) == 127
+        assert float(scalar(-1e300, fmt=Format(8, 0)).val) == -128
+        assert int(scalar(1e300, fmt=Format(8, 0, overflow="wrap")).raw) == 0
+
+    @pytest.mark.parametrize("signed", [True, False])
+    def test_saturate_63_bit_extreme_float_stays_in_range(self, signed):
+        fmt = Format(63, 0, signed=signed)
+        assert int(scalar(1e300, fmt=fmt).raw) == fmt.max_raw
+        assert int(scalar(-1e300, fmt=fmt).raw) == fmt.min_raw
+
+    @pytest.mark.parametrize("overflow", ["saturate", "wrap"])
+    def test_nan_is_rejected(self, overflow):
+        with pytest.raises(ValueError, match="NaN"):
+            scalar(float("nan"), fmt=Format(8, 0, overflow=overflow))
+
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+    def test_wrap_infinity_is_rejected(self, value):
+        with pytest.raises(ValueError, match="infinity"):
+            scalar(value, fmt=Format(8, 0, overflow="wrap"))
 
 
 # ?��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��???# 5. quantize
@@ -465,6 +503,21 @@ class TestClip:
         a = scalar(1.0, fmt=self.fmt)
         with pytest.raises(ValueError):
             a.clip(2.0, 1.0)
+
+    def test_clip_bounds_clamp_without_wrap(self):
+        fmt = Format(8, 0, overflow="wrap")
+        assert float(scalar(5, fmt=fmt).clip(-1000, 1000).val) == 5
+        assert float(scalar(5, fmt=fmt).clip(1000, 2000).val) == 127
+        assert float(scalar(5, fmt=fmt).clip(-2000, -1000).val) == -128
+
+    def test_clip_fractional_bounds_and_array(self):
+        fmt = Format(8, 1, rounding="round")
+        result = array([-3, 0, 3], fmt=fmt).clip(-0.26, 0.26)
+        assert np.allclose(result.val, [-0.5, 0, 0.5])
+
+    def test_clip_extreme_bounds_clamp_before_int64_cast(self):
+        fmt = Format(8, 0, overflow="wrap")
+        assert float(scalar(5, fmt=fmt).clip(-1e300, 1e300).val) == 5
 
 
 # ?��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��???# 8. with_bits
@@ -1112,97 +1165,61 @@ class TestProtocol:
 # ?��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��???# TestBackend ??backend switching (numpy / JAX)
 # ?��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��???
 class TestBackend:
-    """Verify set_backend() / get_backend() API and numpy ??JAX switching."""
+    """Backend choices are isolated because the production backend is process-global."""
 
-    fmt = Format(16, 12)
+    @staticmethod
+    def run(backend: str) -> None:
+        script = f'''import rpkbin.numbv as nbv
+nbv.set_backend({backend!r})
+assert nbv.get_backend() == {backend!r}
+a = nbv.scalar(1.5, fmt=nbv.Format(16, 12))
+assert abs(float(a.val) - 1.5) < 1 / 4096
+'''
+        subprocess.run([sys.executable, "-c", script], check=True)
 
-    def setup_method(self):
-        """Always reset to numpy before each test."""
-        import rpkbin.numbv as nbv
-        nbv.set_backend("numpy")
+    def test_numpy_backend(self):
+        self.run("numpy")
 
-    def teardown_method(self):
-        """Ensure numpy backend is restored after each test."""
-        import rpkbin.numbv as nbv
-        nbv.set_backend("numpy")
+    def test_jax_backend(self):
+        pytest.importorskip("jax")
+        script = '''import jax
+import numpy as np
+import rpkbin.numbv as nbv
+nbv.set_backend("jax")
+fmt = nbv.Format(8, 0, overflow="wrap")
+assert nbv.scalar(127, fmt=fmt) != 1000
+assert np.array_equal(nbv.array([1, 2], fmt=fmt).hex, ["0x01", "0x02"])
+quantize = jax.jit(lambda x: nbv.scalar(x, fmt=fmt))
+assert int(quantize(5.0).raw) == 5
+try:
+    nbv.scalar([1], fmt=fmt)
+except ValueError:
+    pass
+else:
+    raise AssertionError("scalar accepted an array")
+try:
+    nbv.array(1, fmt=fmt)
+except ValueError:
+    pass
+else:
+    raise AssertionError("array accepted a scalar")
+'''
+        subprocess.run([sys.executable, "-c", script], check=True)
 
-    # ---- numpy backend (sanity) --------------------------------------------
+    def test_same_backend_is_safe_after_creation(self):
+        nbv.set_backend(nbv.get_backend())
+        scalar(1.0, fmt=Format(16, 12))
+        nbv.set_backend(nbv.get_backend())
 
-    def test_default_backend_is_numpy(self):
-        import rpkbin.numbv as nbv
-        assert nbv.get_backend() == "numpy"
+    def test_switch_after_creation_raises(self):
+        scalar(1.0, fmt=Format(16, 12))
+        other = "jax" if nbv.get_backend() == "numpy" else "numpy"
+        with pytest.raises(RuntimeError, match="before creating"):
+            nbv.set_backend(other)
 
-    def test_set_backend_numpy_noop(self):
-        import rpkbin.numbv as nbv
-        nbv.set_backend("numpy")
-        a = scalar(1.5, fmt=self.fmt)
-        assert abs(float(a.val) - 1.5) < 1 / 4096
-
-    def test_set_backend_unknown_raises(self):
-        import rpkbin.numbv as nbv
+    def test_unknown_backend_raises(self):
         with pytest.raises(ValueError, match="Unknown backend"):
             nbv.set_backend("numba")
-
-    # ---- JAX backend -------------------------------------------------------
-
-    def test_set_backend_jax_switches(self):
-        """set_backend('jax') should switch to JAX and produce correct values."""
-        jax = pytest.importorskip("jax")
-        import rpkbin.numbv as nbv
-        nbv.set_backend("jax")
-        assert nbv.get_backend() == "jax"
-
-        a = scalar(1.5, fmt=self.fmt)
-        b = scalar(0.5, fmt=self.fmt)
-        c = a + b
-        assert abs(float(c.val) - 2.0) < 1 / 4096
-
-    def test_jax_raw_is_jax_array(self):
-        """With JAX backend, _raw should be a jax.Array."""
-        jax = pytest.importorskip("jax")
-        import rpkbin.numbv as nbv
-        nbv.set_backend("jax")
-        a = scalar(1.0, fmt=self.fmt)
-        assert type(a._raw).__module__.startswith("jax")
-
-    def test_jax_array_factory(self):
-        """Array NumBV created under JAX produces correct values."""
-        pytest.importorskip("jax")
-        import rpkbin.numbv as nbv
-        nbv.set_backend("jax")
-        a = array([0.25, 0.5, 0.75], fmt=self.fmt)
-        vals = list(float(x) for x in a.val.tolist())
-        assert vals == pytest.approx([0.25, 0.5, 0.75], abs=1 / 4096)
-
-    def test_jax_dot_product(self):
-        """dot() under JAX produces bit-identical result to numpy."""
-        pytest.importorskip("jax")
-        import rpkbin.numbv as nbv
-        acc_fmt = Format(32, 22)
-
-        # Compute under numpy first
-        nbv.set_backend("numpy")
-        x_np = array([1.0, 0.5, -0.5], fmt=self.fmt)
-        h_np = array([0.25, 0.25, 0.25], fmt=self.fmt)
-        y_np = float(nbv.dot(x_np, h_np, acc_fmt=acc_fmt).val)
-
-        # Compute under JAX
-        nbv.set_backend("jax")
-        x_jx = array([1.0, 0.5, -0.5], fmt=self.fmt)
-        h_jx = array([0.25, 0.25, 0.25], fmt=self.fmt)
-        y_jx = float(nbv.dot(x_jx, h_jx, acc_fmt=acc_fmt).val)
-
-        assert y_np == pytest.approx(y_jx, abs=1e-9)
-
-    def test_numpy_to_jax_reset(self):
-        """After switching to JAX, switching back to numpy works correctly."""
-        pytest.importorskip("jax")
-        import rpkbin.numbv as nbv
-        nbv.set_backend("jax")
-        nbv.set_backend("numpy")
-        assert nbv.get_backend() == "numpy"
-        a = scalar(1.5, fmt=self.fmt)
-        assert isinstance(a._raw, np.ndarray)
 
 
 # ?��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��??��???# TestSerialization ??to_dict / from_dict / to_json / from_json
@@ -1256,3 +1273,43 @@ class TestSerialization:
         a = from_bits(0xABCD, fmt=Format(16, 8, signed=False))
         b = NumBV.from_dict(a.to_dict())
         assert int(a.bits) == int(b.bits)
+
+
+class TestComparisonLiterals:
+    def test_ints_are_not_quantized_or_wrapped(self):
+        value = scalar(127, fmt=Format(8, 0, overflow="wrap"))
+        assert value != 1000
+        assert value < 1000
+        assert value > -1000
+
+    def test_negative_and_fractional_literals_compare_as_values(self):
+        value = scalar(-1.5, fmt=Format(8, 1, overflow="wrap"))
+        assert value == -1.5
+        assert value != -1
+        assert value < -1.25
+
+    def test_float_literal_comparison_preserves_large_raw_precision(self):
+        value = from_bits((1 << 53) + 1, fmt=Format(63, 0, signed=False))
+        assert value != float(1 << 53)
+        assert value > float(1 << 53)
+
+    def test_array_comparison_and_unsupported_operands(self):
+        value = array([0, 1, 2], fmt=Format(8, 0, overflow="wrap"))
+        assert np.array_equal(value == 1000, [False, False, False])
+        assert value != object()
+        with pytest.raises(TypeError):
+            value < object()
+
+
+class TestFactoryDimensions:
+    fmt = Format(8, 0)
+
+    @pytest.mark.parametrize("value", [[1, 2], np.array([1, 2])])
+    def test_scalar_rejects_arrays(self, value):
+        with pytest.raises(ValueError, match=r"array\(\)"):
+            scalar(value, fmt=self.fmt)
+
+    @pytest.mark.parametrize("value", [1, np.array(1)])
+    def test_array_rejects_scalars(self, value):
+        with pytest.raises(ValueError, match=r"scalar\(\)"):
+            array(value, fmt=self.fmt)

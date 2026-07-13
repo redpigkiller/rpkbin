@@ -110,6 +110,11 @@ class TestLinkingAndDetach:
         assert reg0.value == 0xA
         assert reg1.value == 0xB
 
+    def test_link_rejects_overlapping_writable_bits(self):
+        reg = var("REG", 4)
+        with pytest.raises(ValueError, match="overlapping"):
+            concat("DUP", reg[3:0], reg[3:0])
+
     def test_detach_snapshots_value(self):
         reg = var("REG", 8, 0x42)
         sram = var("SRAM", 8)
@@ -176,6 +181,12 @@ class TestLogicAndShiftOps:
         assert (0x0F & a).value_eq(0x0B)
         assert (0x0F | a).value_eq(0xAF)
         assert (0x0F ^ a).value_eq(0xA4)
+
+    def test_oversized_int_operands_are_masked_consistently(self):
+        a = var("A", 4, 0xA)
+        assert (a & 0x100).value_eq(0)
+        assert (a | 0x100).value_eq(0xA)
+        assert (a ^ 0x100).value_eq(0xA)
 
     def test_slice_ops(self):
         a = var("A", 16, 0xABCD)
@@ -254,6 +265,14 @@ class TestEqualityAndHashing:
 
 
 class TestFormattingAndConversion:
+    def test_linked_layout_uses_destination_ranges(self):
+        high = var("HIGH", 8, 0xA0)[7:4]
+        low = var("LOW", 8, 0x03)[1:0]
+        layout = str(concat("WORD", high, const(0, 2), low))
+        assert "[7:4] 0xA  <- HIGH[7:4]" in layout
+        assert "[3:2] 0x0  <- Constant" in layout
+        assert "[1:0] 0x3  <- LOW[1:0]" in layout
+
     def test_len_returns_width(self):
         assert len(var("A", 16)) == 16
         assert len(var("A", 16)[7:0]) == 8
@@ -316,6 +335,10 @@ class TestExceptionsAndWarnings:
         reg = var("REG", 16)
         with pytest.raises(TypeError, match="Cannot call link.*on a SLICE"):
             reg[7:0].link(var("A", 8))
+
+    def test_const_link_not_supported(self):
+        with pytest.raises(TypeError, match="only VAR"):
+            const(0, 8).link(var("A", 8))
 
     def test_write_to_const_warns(self):
         c = const(0x0, 4)

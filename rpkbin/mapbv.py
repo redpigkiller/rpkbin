@@ -76,11 +76,6 @@ class _BVBase(ABC):
     # -- formatting ---------------------------------------------------------
 
     def __and__(self, other: MapBV | MapBVExpr | int) -> "MapBVExpr":
-        if isinstance(other, int) and other >= (1 << self.width):
-            max_val = (1 << self.width) - 1
-            raise ValueError(
-                f"Operand 0x{other:X} exceeds MapBV width {self.width} (max 0x{max_val:X})"
-            )
         w = self.width if isinstance(other, int) else max(self.width, other.width)
         return MapBVExpr("&", [self, other], w)
 
@@ -335,20 +330,33 @@ class MapBV(_BVBase):
             visited.add(id(child))
             child._collect_linked(visited)  # pylint: disable=protected-access
 
+    def _write_targets(self) -> list[tuple[int, int] | None]:
+        """Return underlying writable bits in LSB-first order."""
+        if self._kind == "CONST":
+            return [None] * self._width
+        if self._parent is not None:
+            start = self._low - self._parent.low
+            return self._parent._write_targets()[start:start + self._width]
+        if self._link_bv_list:
+            return [
+                target
+                for child in reversed(self._link_bv_list)
+                for target in child._write_targets()
+            ]
+        return [(id(self), bit) for bit in range(self._width)]
+
     def link(self, *parts: MapBV, _force: bool = False) -> None:
         """Define this MapBV as a concatenation of *parts* (MSB → LSB order).
 
         The total width of all parts must equal ``self.width``.
         Re-linking a MapBV that is already linked emits a warning.
 
-        Only valid on VAR MapBVs. Calling this on a SLICE raises TypeError;
-        create an explicit VAR to represent the sub-region instead.
+        Only valid on VAR MapBVs. Calling this on a CONST or SLICE raises
+        TypeError; create an explicit VAR to represent the mapping instead.
         """
-        if self._kind == "SLICE":
+        if self._kind != "VAR":
             raise TypeError(
-                "Cannot call link() on a SLICE MapBV. "
-                "Create an explicit var() to represent the sub-region, "
-                "then link() that instead."
+                f"Cannot call link() on a {self._kind} MapBV; only VAR MapBVs can be linked."
             )
 
         for p in parts:
@@ -365,6 +373,9 @@ class MapBV(_BVBase):
                 f"Link width mismatch: parts total {total} bits, "
                 f"but {self._name} is {self._width} bits"
             )
+        targets = [target for p in parts for target in p._write_targets() if target is not None]
+        if len(targets) != len(set(targets)):
+            raise ValueError("Linked parts contain overlapping writable bits")
         if self._link_bv_list and _force is False:
             warnings.warn(
                 f"MapBV '{self._name}' is already linked. "
@@ -450,10 +461,12 @@ class MapBV(_BVBase):
             return header + "\n  (no link)"
 
         # Build (prefix, source_name) pairs first to compute alignment width
-        items = [
-            (f"  [{child.high}:{child.low}] {child.to_hex()}", child.name)
-            for child in self._link_bv_list
-        ]
+        offset = self.width
+        items = []
+        for child in self._link_bv_list:
+            high, low = offset - 1, offset - child.width
+            items.append((f"  [{high}:{low}] {child.to_hex()}", child.name))
+            offset = low
         col = max(len(prefix) for prefix, _ in items)
         lines = [header] + [f"{prefix:<{col}}  <- {name}" for prefix, name in items]
         return "\n".join(lines)

@@ -84,7 +84,7 @@ print(sram_b.to_hex())     # → Retains its snapshotted value, unaffected by re
 
 ### 5. Logic Operators & Symbolic What-Ifs
 
-`MapBV` intuitively supports familiar logic operations (`&`, `|`, `^`, `~`, `<<`, `>>`). You can also perform hypothesis runs—temporarily replacing certain register values via a context dictionary `eval`—without scrambling the authentic states of your variables.
+`MapBV` intuitively supports familiar logic operations (`&`, `|`, `^`, `~`, `<<`, `>>`). Integer operands are masked to the expression width. You can also perform hypothesis runs—temporarily replacing certain register values via a context dictionary `eval`—without scrambling the authentic states of your variables.
 
 ```python
 # Logic operations (returns an expr node)
@@ -129,13 +129,14 @@ Every instance holds the following readable attributes:
 #### 1. Slicing (`SLICE` and `__getitem__`)
 - **Syntax**: `bv[high:low]` or single-bit `bv[bit]`.
 - Note that slices are **inclusive** on both ends. Thus, `[7:0]` spans exactly 8 bits.
-- **Restriction**: You **cannot call `.link()`** on a sliced `MapBV` (one with `kind`=`SLICE`). To construct mappings that target a subset, define a primary `var()` and link it, keeping architectures hierarchical.
+- **Restriction**: Only a `VAR` can call `.link()`; `CONST` and `SLICE` nodes cannot become mapping targets. To construct mappings that target a subset, define a primary `var()` and link it, keeping architectures hierarchical.
 
 #### 2. Linking (`link` and `detach`)
 Besides using `concat()` to combine sources out of the gate, you can call parameter linkages manually.
 - **`link(*parts)`**:
   - Connects several `MapBV` objects (passed MSB → LSB) onto the caller variable.
   - The caller must possess a `width` equal to the sum widths of all the `parts`. Violating this throws a `ValueError`.
+  - Writable bits in `parts` must not overlap; ambiguous bidirectional mappings raise `ValueError`.
   - Circular references and cross-linking preventions are strictly enforced.
   - Doing this redundantly on a variable already holding connections throws a `UserWarning` and destructively overwrites the mapping.
 - **`detach()`**:

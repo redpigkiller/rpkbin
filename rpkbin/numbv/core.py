@@ -25,10 +25,11 @@ Function layer (pipeline-explicit) — caller controls output format::
 
 Backend selection
 -----------------
-Call ``set_backend()`` once before creating objects::
+Choose the process-global backend before creating objects; changing it afterward
+raises ``RuntimeError``::
 
     nbv.set_backend("numpy")  # default, always available
-    nbv.set_backend("jax")    # XLA acceleration (needs: pip install jax)
+    nbv.set_backend("jax")    # XLA acceleration (needs: pip install 'rpkbin[jax]')
 
 Rounding modes
 --------------
@@ -42,6 +43,7 @@ Rounding modes
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from typing import Literal, Any, Iterator
 
@@ -212,10 +214,11 @@ class Format:
     def replace(self, **changes: Any) -> "Format":
         """Return a new Format with the given fields replaced.
 
-        Examples
-        --------
-        >>> fmt2 = fmt.replace(width=32, frac=22)
-        >>> fmt3 = fmt.replace(rounding="round_half_even")
+    Examples
+    --------
+    >>> fmt = Format(16, 12)
+    >>> fmt2 = fmt.replace(width=32, frac=22)
+    >>> fmt3 = fmt.replace(rounding="round_half_even")
         """
         fields = {
             "width":    self.width,
@@ -273,7 +276,8 @@ def _apply_overflow(
     if is_wrap:
         raw = raw & mask  # mask is Python int — works for numpy and JAX
         if is_signed:
-            raw = xp.where(raw > hi, raw - wrap_offset, raw)
+            sign_offset = (hi + 1)
+            raw = xp.where(raw > hi, raw - sign_offset - sign_offset, raw)
     else:
         raw = xp.clip(raw, lo, hi)
     return raw.astype("int64")
@@ -336,6 +340,8 @@ def _apply_rounding_shift(
 def _float_to_raw(
     values: NDArray[np.float64],
     fmt: Format,
+    *,
+    overflow: bool = True,
 ) -> NDArray[np.int64]:
     """Convert float64 array to int64 raw using fmt's rounding + overflow.
 
@@ -350,31 +356,61 @@ def _float_to_raw(
         errors before quantization.  Use :func:`from_bits` for bit-exact
         initialization at very high fractional precision.
     """
-    xp    = get_xp()
-    scale = float(fmt.scale)
-    scaled = xp.asarray(values, dtype="float64") * scale
+    xp = get_xp()
+    values = xp.asarray(values, dtype="float64")
+    is_tracer = False
+    if get_backend() == "jax":
+        import jax  # noqa: PLC0415
+        is_tracer = isinstance(values, jax.core.Tracer)
+    if not is_tracer and bool(xp.any(xp.isnan(values))):
+        raise ValueError("Cannot quantize NaN.")
+    scaled = values * float(fmt.scale)
+    if (
+        not is_tracer
+        and overflow
+        and fmt.overflow == "wrap"
+        and bool(xp.any(xp.isinf(scaled)))
+    ):
+        raise ValueError("Cannot quantize infinity with overflow='wrap'.")
 
     mode = fmt.rounding
     if mode == "trunc":
-        raw = xp.floor(scaled).astype("int64")
+        raw = xp.floor(scaled)
     elif mode == "round":
-        raw = xp.floor(scaled + 0.5).astype("int64")
+        raw = xp.floor(scaled + 0.5)
     elif mode == "round_half_even":
         # Use the backend's built-in banker's rounding on float, then convert
-        raw = xp.round(scaled).astype("int64")
+        raw = xp.round(scaled)
     elif mode == "ceil":
-        raw = xp.ceil(scaled).astype("int64")
+        raw = xp.ceil(scaled)
     elif mode == "round_to_zero":
-        raw = xp.fix(scaled).astype("int64")  # fix() truncates toward zero
+        raw = xp.fix(scaled)  # fix() truncates toward zero
     else:
         raise ValueError(f"Unknown rounding mode: {mode!r}")
 
-    return _apply_overflow(
-        raw,
-        fmt._lo, fmt._hi, fmt._mask, fmt._wrap_offset,
-        fmt.overflow == "wrap",
-        fmt.signed,
-    )
+    if overflow:
+        if fmt.overflow == "wrap":
+            raw = xp.mod(raw, fmt._wrap_offset).astype("int64")
+            return _apply_overflow(
+                raw,
+                fmt._lo, fmt._hi, fmt._mask, fmt._wrap_offset,
+                True,
+                fmt.signed,
+            )
+    hi_float = float(fmt._hi)
+    safe_hi = math.nextafter(hi_float, -math.inf) if hi_float > fmt._hi else hi_float
+    saturated = xp.clip(raw, fmt._lo, safe_hi).astype("int64")
+    return xp.where(raw > safe_hi, fmt._hi, saturated).astype("int64")
+
+
+def _format_bits(bits: NDArray[np.int64], prefix: str, width: int, spec: str) -> "str | list[Any]":
+    """Return scalar or shape-preserving nested Python strings for bit patterns."""
+    def format_value(value: Any) -> "str | list[Any]":
+        if isinstance(value, list):
+            return [format_value(item) for item in value]
+        return f"{prefix}{int(value):0{width}{spec}}"
+
+    return format_value(np.asarray(bits, dtype=np.int64).tolist())
 
 
 def _requantize_raw(
@@ -495,22 +531,14 @@ class NumBV:
         return self._raw.ndim == 0
 
     @property
-    def hex(self) -> "str | list[str]":
-        """Hex string(s), e.g. ``'0x00C0'``."""
-        ndigits = (self._fmt.width + 3) // 4
-        b = self.bits
-        if b.ndim == 0:
-            return f"0x{int(b):0{ndigits}X}"
-        return [f"0x{int(v):0{ndigits}X}" for v in b]
+    def hex(self) -> "str | list[Any]":
+        """Hex string, or nested ``list[str]`` matching an array's shape."""
+        return _format_bits(self.bits, "0x", (self._fmt.width + 3) // 4, "X")
 
     @property
-    def bin(self) -> "str | list[str]":
-        """Binary string(s), e.g. ``'0b0000000011000000'``."""
-        w = self._fmt.width
-        b = self.bits
-        if b.ndim == 0:
-            return f"0b{int(b):0{w}b}"
-        return [f"0b{int(v):0{w}b}" for v in b]
+    def bin(self) -> "str | list[Any]":
+        """Binary string, or nested ``list[str]`` matching an array's shape."""
+        return _format_bits(self.bits, "0b", self._fmt.width, "b")
 
     # ---- reshape / copy ---------------------------------------------------
 
@@ -568,10 +596,10 @@ class NumBV:
         TypeError
             If called on a scalar (0-d) NumBV.
 
-        Examples
-        --------
-        >>> for coeff in h:
-        ...     acc = nbv.mac(acc, x_i, coeff, acc_fmt=acc_fmt)
+        Example::
+
+            for coeff in h:
+                acc = mac(acc, x_i, coeff, acc_fmt=acc_fmt)
         """
         if self.is_scalar:
             raise TypeError(
@@ -787,8 +815,8 @@ class NumBV:
             raise ValueError(f"clip(): lo ({lo}) must be <= hi ({hi})")
         xp     = get_xp()
         fmt    = self._fmt
-        lo_raw = _float_to_raw(xp.asarray(lo, dtype="float64"), fmt)
-        hi_raw = _float_to_raw(xp.asarray(hi, dtype="float64"), fmt)
+        lo_raw = _float_to_raw(xp.asarray(lo, dtype="float64"), fmt, overflow=False)
+        hi_raw = _float_to_raw(xp.asarray(hi, dtype="float64"), fmt, overflow=False)
         clipped = xp.clip(self._raw, lo_raw, hi_raw).astype("int64")
         return NumBV._from_raw(clipped, fmt)
 
@@ -814,9 +842,10 @@ def _bits_to_raw(
     xp   = get_xp()
     bits = (bits & fmt._mask).astype("int64")  # Python int mask
     if fmt.signed:
+        sign_offset = fmt._hi + 1
         bits = xp.where(
             bits > fmt._hi,
-            bits - fmt._wrap_offset,
+            bits - sign_offset - sign_offset,
             bits,
         ).astype("int64")
     return bits
@@ -1010,16 +1039,13 @@ def _cmp_align(
     b: "NumBV | int | float",
 ) -> "tuple[NDArray[np.int64], NDArray[np.int64]]":
     """Align a and b to same frac for comparison, checking signedness."""
-    xp = get_xp()
     if isinstance(b, NumBV):
         _check_signedness(a, b, "compare")
         max_frac = max(a._fmt.frac, b._fmt.frac)
         a_aligned = (a._raw << (max_frac - a._fmt.frac)) if max_frac > a._fmt.frac else a._raw
         b_aligned = (b._raw << (max_frac - b._fmt.frac)) if max_frac > b._fmt.frac else b._raw
         return a_aligned.astype("int64"), b_aligned.astype("int64")
-    else:
-        b_raw = _float_to_raw(xp.asarray(b, dtype="float64"), a._fmt)
-        return a._raw, b_raw
+    raise TypeError
 
 
 def _scalar_or_arr(result: NDArray) -> "bool | NDArray":
@@ -1031,33 +1057,88 @@ def _scalar_or_arr(result: NDArray) -> "bool | NDArray":
 def _cmp_op(a: NumBV, b: "NumBV | int | float", op_name: str) -> "bool | NDArray":
     """Apply a comparison using the current backend's function."""
     xp = get_xp()
-    aligned = _cmp_align(a, b)
     fn = getattr(xp, op_name)
-    return _scalar_or_arr(fn(*aligned))
+    if isinstance(b, NumBV):
+        return _scalar_or_arr(fn(*_cmp_align(a, b)))
+    if isinstance(b, (int, np.integer)):
+        return _cmp_raw(a, int(b) * a._fmt.scale, op_name)
+    if isinstance(b, (float, np.floating)):
+        value = float(b)
+        if math.isnan(value):
+            return _scalar_or_arr(xp.full(a.shape, op_name == "not_equal", dtype=bool))
+        if math.isinf(value):
+            result = (
+                op_name in ("less", "less_equal", "not_equal")
+                if value > 0
+                else op_name in ("greater", "greater_equal", "not_equal")
+            )
+            return _scalar_or_arr(xp.full(a.shape, result, dtype=bool))
+        numerator, denominator = value.as_integer_ratio()
+        raw, remainder = divmod(numerator * a._fmt.scale, denominator)
+        if op_name == "equal":
+            return _scalar_or_arr(xp.full(a.shape, False, dtype=bool)) if remainder else _cmp_raw(a, raw, op_name)
+        if op_name == "not_equal":
+            return _scalar_or_arr(xp.full(a.shape, True, dtype=bool)) if remainder else _cmp_raw(a, raw, op_name)
+        if op_name == "less":
+            return _cmp_raw(a, raw, "less" if remainder == 0 else "less_equal")
+        if op_name == "less_equal":
+            return _cmp_raw(a, raw, "less_equal")
+        if op_name == "greater":
+            return _cmp_raw(a, raw, "greater")
+        return _cmp_raw(a, raw, "greater_equal" if remainder == 0 else "greater")
+    raise TypeError
 
 
-def _eq_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "equal")
+def _cmp_raw(a: NumBV, raw: int, op_name: str) -> "bool | NDArray":
+    """Compare raw values without narrowing a Python integer to int64."""
+    xp = get_xp()
+    if raw < a._fmt.min_raw:
+        result = op_name in ("greater", "greater_equal", "not_equal")
+    elif raw > a._fmt.max_raw:
+        result = op_name in ("less", "less_equal", "not_equal")
+    else:
+        return _scalar_or_arr(getattr(xp, op_name)(a._raw, raw))
+    return _scalar_or_arr(xp.full(a.shape, result, dtype=bool))
 
 
-def _ne_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "not_equal")
+def _is_cmp_operand(value: object) -> bool:
+    return isinstance(value, (NumBV, int, np.integer, float, np.floating))
 
 
-def _lt_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "less")
+def _eq_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "equal")  # type: ignore[arg-type]
 
 
-def _le_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "less_equal")
+def _ne_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "not_equal")  # type: ignore[arg-type]
 
 
-def _gt_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "greater")
+def _lt_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "less")  # type: ignore[arg-type]
 
 
-def _ge_dunder(self: NumBV, other: "NumBV | int | float") -> "bool | NDArray":
-    return _cmp_op(self, other, "greater_equal")
+def _le_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "less_equal")  # type: ignore[arg-type]
+
+
+def _gt_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "greater")  # type: ignore[arg-type]
+
+
+def _ge_dunder(self: NumBV, other: object) -> "bool | NDArray":
+    if not _is_cmp_operand(other):
+        return NotImplemented
+    return _cmp_op(self, other, "greater_equal")  # type: ignore[arg-type]
 
 
 NumBV.__eq__ = _eq_dunder   # type: ignore[assignment]
@@ -1087,6 +1168,8 @@ def scalar(value: "int | float", *, fmt: Format) -> NumBV:
     """
     xp  = get_xp()
     raw = _float_to_raw(xp.asarray(value, dtype="float64"), fmt)
+    if raw.ndim != 0:
+        raise ValueError("scalar() requires a scalar input; use array() for array inputs.")
     return NumBV._from_raw(raw, fmt)
 
 
@@ -1101,10 +1184,12 @@ def array(data: "ArrayLike", *, fmt: Format) -> NumBV:
     Examples
     --------
     >>> a = array([0.5, 1.0, 1.5], fmt=Format(16, 12))
-    >>> b = array(np.linspace(0, 1, 512), fmt=fmt)
+    >>> b = array(np.linspace(0, 1, 512), fmt=Format(16, 12))
     """
     xp  = get_xp()
     raw = _float_to_raw(xp.asarray(data, dtype="float64"), fmt)
+    if raw.ndim == 0:
+        raise ValueError("array() requires an array input; use scalar() for scalar inputs.")
     return NumBV._from_raw(raw, fmt)
 
 
@@ -1113,6 +1198,7 @@ def zeros(*, fmt: Format, shape: "int | tuple | None" = None) -> NumBV:
 
     Examples
     --------
+    >>> fmt = Format(16, 12)
     >>> a = zeros(fmt=fmt)            # scalar
     >>> b = zeros(fmt=fmt, shape=64)  # array
     """
@@ -1129,7 +1215,7 @@ def ones(*, fmt: Format, shape: "int | tuple | None" = None) -> NumBV:
 
     Examples
     --------
-    >>> a = ones(fmt=fmt)
+    >>> a = ones(fmt=Format(16, 12))
     """
     return full(1.0, fmt=fmt, shape=shape)
 
@@ -1144,7 +1230,7 @@ def full(
 
     Examples
     --------
-    >>> a = full(0.5, fmt=fmt, shape=256)
+    >>> a = full(0.5, fmt=Format(16, 12), shape=256)
     """
     xp       = get_xp()
     fill_raw = _float_to_raw(xp.asarray(fill_value, dtype="float64"), fmt)
@@ -1258,8 +1344,10 @@ def mul(
 
     Examples
     --------
+    >>> fmt = Format(16, 12)
+    >>> a, b = scalar(0.5, fmt=fmt), scalar(0.25, fmt=fmt)
     >>> p = mul(a, b)                   # full-precision
-    >>> y = mul(a, b, out_fmt=Q16_12)   # full-precision → quantize
+    >>> y = mul(a, b, out_fmt=fmt)      # full-precision → quantize
     """
     total_w = a._fmt.width + b._fmt.width
     if total_w > 63:
@@ -1310,6 +1398,7 @@ def sum(x: NumBV, *, acc_fmt: Format) -> NumBV:  # noqa: A001
 
     Examples
     --------
+    >>> products = array([0.25, 0.5], fmt=Format(16, 12))
     >>> total = sum(products, acc_fmt=Format(32, 22))
     """
     if x.is_scalar:
@@ -1351,7 +1440,9 @@ def dot(
 
     Examples
     --------
-    >>> y = dot(x, h, acc_fmt=Format(32, 22), out_fmt=Format(16, 12))
+    >>> fmt = Format(16, 12)
+    >>> x, h = array([0.5], fmt=fmt), array([0.25], fmt=fmt)
+    >>> y = dot(x, h, acc_fmt=Format(32, 22), out_fmt=fmt)
     """
     if a.size != b.size:
         raise ValueError(f"dot(): length mismatch: {a.size} vs {b.size}")
@@ -1398,7 +1489,9 @@ def mac(
 
     Examples
     --------
-    >>> acc = mac(acc, x_i, h_i, acc_fmt=Format(32, 22))
+    >>> fmt, acc_fmt = Format(16, 12), Format(32, 22)
+    >>> acc = zeros(fmt=acc_fmt)
+    >>> acc = mac(acc, scalar(0.5, fmt=fmt), scalar(0.25, fmt=fmt), acc_fmt=acc_fmt)
     """
     product = mul(a, b, out_fmt=acc_fmt)
     return add(acc, product, out_fmt=acc_fmt)

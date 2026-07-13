@@ -24,8 +24,6 @@ from rpkbin.numbv.core import (
     infer_add_format,
     infer_mul_format,
 )
-# Re-export sum under nbv namespace without shadowing Python builtins
-from rpkbin.numbv import core as nbv  # noqa: F401
 from rpkbin.numbv._backend import set_backend, get_backend
 
 __all__ = [
@@ -35,7 +33,6 @@ __all__ = [
     "add", "sub", "mul", "neg", "sum",
     "dot", "mac",
     "infer_add_format", "infer_mul_format",
-    "nbv",
     # Backend control
     "set_backend", "get_backend",
 ]
