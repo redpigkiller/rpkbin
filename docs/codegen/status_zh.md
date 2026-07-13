@@ -18,6 +18,9 @@
 ## Experimental
 
 - Spill/reload path 與複雜 live-range translation 仍取決於 target，尚需更廣泛驗證。
+- `rpkbin.codegen.cegis.minimize_cegis` 提供 solver-free、target-neutral 的
+  cost-budget / counterexample 控制迴圈；solver、候選語意與完整驗證仍由離線
+  consumer 提供，預設 codegen pipeline 不會呼叫它。
 
 ## Trigger-based / not planned
 
