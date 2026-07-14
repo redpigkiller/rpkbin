@@ -50,6 +50,15 @@ HIR
 提供 `RegisterModel` 時，pipeline 會依 target register file 驗證並執行暫存器分配；
 傳入 `None` 會略過兩者。Spill 支援仍取決於 target model。
 
+## 離線 bounded-region semantics
+
+`rpkbin.codegen.region_semantics` 可以找出小型、pure、acyclic、
+single-entry/single-exit 的 LIR region，並具體執行其 fixed-width 語意。
+遇到 call、volatile memory、raw assembly、loop、signedness 不明的
+relational `BrCmp` 或不支援的 expression 時會 fail closed。這個 API 供
+離線 rule mining、differential check 與 target experiment 使用；它不包含
+solver、ISA、instruction cost 或 production rewrite policy。
+
 ## 延伸文件
 
 - [Frontend / external DSL frontend 接入指南](frontend_integration_zh.md)

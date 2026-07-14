@@ -51,6 +51,15 @@ Supplying a `RegisterModel` enables validation against the target register file
 and register allocation. Passing `None` skips both; spill support remains
 dependent on the target model.
 
+## Offline bounded-region semantics
+
+`rpkbin.codegen.region_semantics` discovers small pure, acyclic,
+single-entry/single-exit LIR regions and executes their fixed-width semantics
+concretely.  It fails closed on calls, volatile memory, raw assembly, loops,
+ambiguous relational `BrCmp`, and unsupported expressions.  This API is for
+offline rule mining, differential checks, and target experiments; it contains
+no solver, ISA, instruction cost, or production rewrite policy.
+
 ## Further reading
 
 - [HIR reference](hir.md)
