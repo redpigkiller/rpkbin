@@ -486,7 +486,7 @@ class WaveJobMixin:
         with self._wave_lock:
             is_skip = self._wave_skipped
         super().cancel()  # type: ignore[misc]
-        if was_active:
+        if was_active and self.status == "cancelled":  # type: ignore[attr-defined]
             self._handle_on_cancel(skipped=is_skip)
 
     # ------------------------------------------------------------------

@@ -112,7 +112,13 @@ def _rewrite_expr_once(
     if isinstance(expr, BinOp):
         expr = BinOp(expr.op, _rewrite_expr_once(expr.left, patterns, applied), _rewrite_expr_once(expr.right, patterns, applied), expr.width)
     elif isinstance(expr, Cmp):
-        expr = Cmp(expr.op, _rewrite_expr_once(expr.left, patterns, applied), _rewrite_expr_once(expr.right, patterns, applied), expr.width)
+        expr = Cmp(
+            expr.op,
+            _rewrite_expr_once(expr.left, patterns, applied),
+            _rewrite_expr_once(expr.right, patterns, applied),
+            expr.width,
+            expr.signed,
+        )
     elif isinstance(expr, Extend):
         expr = Extend(expr.kind, _rewrite_expr_once(expr.value, patterns, applied), expr.width)
 

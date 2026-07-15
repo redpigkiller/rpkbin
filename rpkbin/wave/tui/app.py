@@ -60,14 +60,10 @@ from rpkbin.wave.tui.refresh import (
     tail_sync_start as _tail_sync_start_model,
 )
 from rpkbin.wave.tui.view_models import (
-    _DEFAULT_DASHBOARD_COLUMNS,
-    _DATA_SNAPSHOT_FAILED,
     build_info_text as _build_info_text_model,
     build_row_cells as _build_row_cells_model,
     command_identifier_for_job as _command_identifier_for_job_model,
-    dashboard_cell as _dashboard_cell_model,
     dashboard_column_labels as _dashboard_column_labels_model,
-    builtin_dashboard_cell as _builtin_dashboard_cell_model,
     resolve_dashboard_columns as _resolve_dashboard_columns_model,
 )
 from rpkbin.wave.runner import _handle_cmd, _parse_repl_line, _active_jobs, _find_job
@@ -535,18 +531,6 @@ class WaveApp(App):
 
     def _dashboard_column_labels(self) -> list[str]:
         return _dashboard_column_labels_model(self._dashboard_columns)
-
-    def _dashboard_cell(
-        self,
-        job,
-        column: dict[str, str],
-        *,
-        _data: dict | object | None = None,
-    ) -> str:
-        return _dashboard_cell_model(job, column, logger, data=_data)
-
-    def _builtin_dashboard_cell(self, job, key: str) -> str:
-        return _builtin_dashboard_cell_model(job, key, logger)
 
     def _job_row_key(self, job) -> str:
         """Return the stable DataTable row key for *job*."""

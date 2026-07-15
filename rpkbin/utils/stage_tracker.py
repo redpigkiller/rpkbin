@@ -149,10 +149,8 @@ class StageTracker:
 
         self._stage_order: dict[str, list[str]] = {}
 
-        self.console_enabled = True
-        self.file_enabled = True
-
         self._entered = False
+        self._used = False
 
         self.add_console_handler()
 
@@ -186,25 +184,27 @@ class StageTracker:
                 raise UsageError(f"Stage '{name}' already exists")
 
     def _check_stage_health(self, stage: str):
-        issues = self._issues.get(stage, [])
+        with self._issues_lock:
+            issues = list(self._issues.get(stage, []))
         errors = [
             i for i in issues if i.level in (ErrorLevel.ERROR, ErrorLevel.CRITICAL)
         ]
         if errors:
-            raise StageFailedError(stage, errors)
+            raise StageFailedError(stage, issues)
 
-    def _finalize_stage(self):
+    def _finalize_stage(self, check_health: bool = True):
         stage = self.current_stage
         if stage:
-            self._check_stage_health(stage)
-
-            if self._track_time and stage in self._stage_start:
-                with self._issues_lock:
-                    self._stage_time[stage] = (
-                        time.perf_counter() - self._stage_start[stage]
-                    )
-
-            self.current_stage = None
+            try:
+                if check_health:
+                    self._check_stage_health(stage)
+            finally:
+                if self._track_time and stage in self._stage_start:
+                    with self._issues_lock:
+                        self._stage_time[stage] = (
+                            time.perf_counter() - self._stage_start[stage]
+                        )
+                self.current_stage = None
 
     def _make_stage_name(self, name: str) -> str:
         """Create a thread-aware stage name."""
@@ -236,8 +236,8 @@ class StageTracker:
         if self._mode != TrackerMode.FLAT:
             raise UsageError("begin_stage() only valid in flat mode")
 
-        self._check_unique_stage(name)
         self._finalize_stage()
+        self._check_unique_stage(name)
 
         self.current_stage = name
         with self._issues_lock:
@@ -290,18 +290,11 @@ class StageTracker:
 
         try:
             yield
-        except BaseException as e:
-            raise e
+        except BaseException:
+            self._finalize_stage(check_health=False)
+            raise
         else:
-            self._check_stage_health(self.current_stage)
-        finally:
-            stage = self.current_stage
-            if self._track_time and stage in self._stage_start:
-                with self._issues_lock:
-                    self._stage_time[stage] = (
-                        time.perf_counter() - self._stage_start[stage]
-                    )
-            self.current_stage = None
+            self._finalize_stage()
 
     # ------------------------------------------------
     # checkpoint
@@ -364,10 +357,9 @@ class StageTracker:
         self._log(ErrorLevel.CRITICAL, msg, True, **kw)
 
         stage = self.current_stage or "System"
-        issues = self._issues.get(stage, [])
+        with self._issues_lock:
+            issues = list(self._issues.get(stage, []))
 
-        # Removed clearing current_stage and time calculation.
-        # Raise error directly, let __exit__ or _finalize_stage handle cleanup.
         raise StageFailedError(stage, issues, f"Fatal error in stage '{stage}': {msg}")
 
     def _log_system(self, msg, level="DEBUG"):
@@ -440,7 +432,6 @@ class StageTracker:
 
     def get_issues(self, stage: str | None = None, level: ErrorLevel | str | list | None = None) -> list[Issue]:
         """Get accumulated issues, optionally filtered by stage or level."""
-        self._check_entered()
         with self._issues_lock:
             if stage:
                 issues = list(self._issues.get(stage, []))
@@ -480,7 +471,13 @@ class StageTracker:
     # summary
     # ------------------------------------------------
 
-    def summary(self, title: str = "EXECUTION SUMMARY", raise_errors: bool = True) -> bool:
+    def summary(
+        self,
+        title: str = "EXECUTION SUMMARY",
+        raise_errors: bool = True,
+        *,
+        _failed: bool = False,
+    ) -> bool:
         """
         Generate and print an execution summary report.
 
@@ -498,14 +495,11 @@ class StageTracker:
             StageFailedError: If raise_errors is True and errors exist.
         """
 
-        deferred_exc = None
         if self._mode == TrackerMode.FLAT and self.current_stage:
             try:
                 self._finalize_stage()
-            except StageFailedError as e:
-                # Record the final stage error, do not swallow it as Warning
-                self._log_system(f"Stage '{e.stage}' finalized with {e.error_count} error(s)", "ERROR")
-                deferred_exc = e
+            except StageFailedError:
+                pass
 
         issues = self.get_issues()
         errors = [
@@ -513,6 +507,7 @@ class StageTracker:
             if i.level in (ErrorLevel.ERROR, ErrorLevel.CRITICAL)
         ]
 
+        failed = _failed or bool(errors)
         if not self._use_plain and self._console:
             self._console.print(Panel(f"[bold cyan]{title}[/]", expand=False))
             
@@ -556,7 +551,7 @@ class StageTracker:
                 self._console.print("[dim italic]No recorded issues.[/]")
 
             self._console.print("")
-            if errors:
+            if failed:
                 self._console.print(f"❌ [bold red]FAILED ({len(errors)} critical/errors found)[/]")
             else:
                 self._console.print("✅ [bold green]SUCCESS[/]")
@@ -580,42 +575,44 @@ class StageTracker:
                 print("No recorded issues.")
 
             print("-" * 60)
-            if errors:
+            if failed:
                 print(f"FAILED: {len(errors)} critical/errors found.")
             else:
                 print("SUCCESS")
             print("=" * 60)
 
-        # After printing report, if there's an error in flat mode's final stage, raise it here
-        if deferred_exc and raise_errors:
-            raise deferred_exc
+        if errors and raise_errors:
+            stage = errors[0].stage if len({i.stage for i in errors}) == 1 else errors[-1].stage
+            raise StageFailedError(stage, self.get_issues(stage=stage))
 
-        return len(errors) == 0
+        return not failed
 
     # ------------------------------------------------
     # context manager support
     # ------------------------------------------------
 
     def __enter__(self):
+        if self._entered:
+            raise UsageError("StageTracker is already active; nested use is not supported")
+        if self._used:
+            raise UsageError("StageTracker instances cannot be reused")
         self._entered = True
+        self._used = True
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            # Re-record time for current stage in flat mode (context mode's finally already handles this)
-            if self._mode == TrackerMode.FLAT:
-                stage = self.current_stage
-                if stage and self._track_time and stage in self._stage_start:
-                    with self._issues_lock:
-                        self._stage_time[stage] = (
-                            time.perf_counter() - self._stage_start[stage]
-                        )
-                self.current_stage = None
-
-            self.summary(
-                title=f"EXECUTION FAILED ({exc_type.__name__})", raise_errors=False
-            )
-        else:
-            self.summary(title="EXECUTION SUMMARY", raise_errors=True)
+        try:
+            if exc_type is not None:
+                if self._mode == TrackerMode.FLAT:
+                    self._finalize_stage(check_health=False)
+                self.summary(
+                    title=f"EXECUTION FAILED ({exc_type.__name__})",
+                    raise_errors=False,
+                    _failed=True,
+                )
+            else:
+                self.summary(title="EXECUTION SUMMARY", raise_errors=True)
+        finally:
+            self._entered = False
 
         return False

@@ -140,6 +140,8 @@ class Hook:
         n: int = 1,
         throttle_key: Callable[[dict], object] | None = None,
     ) -> None:
+        if policy not in ("once", "always", "every_n"):
+            raise ValueError(f"Hook: unknown policy {policy!r}")
         if policy == "every_n" and n < 1:
             raise ValueError(f"Hook: n must be >= 1, got {n!r}")
         if throttle_key is not None and policy != "every_n":
@@ -265,6 +267,12 @@ class Hook:
     @staticmethod
     def elapsed_exceeds(seconds: float) -> HookWhen:
         """Trigger when the job has been running for *seconds* or more."""
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or seconds <= 0
+        ):
+            raise ValueError("Hook: elapsed seconds must be > 0")
         return HookWhen(type="elapsed_exceeds", seconds=seconds)
 
     @staticmethod
@@ -295,10 +303,9 @@ class Hook:
     def on_cancel() -> HookWhen:
         """Trigger when the job is cancelled.
 
-        Fired synchronously from :meth:`WaveJobMixin.cancel` **before** the
-        cancel propagates further, so the job's status is already
-        ``CANCELLED`` when the action runs.  Actions should be lightweight;
-        avoid blocking calls.
+        Fired synchronously from :meth:`WaveJobMixin.cancel` after the job has
+        been marked ``CANCELLED`` and its process has been stopped. Actions
+        should be lightweight; avoid blocking calls.
         """
         return HookWhen(type="on_cancel")
 
@@ -334,7 +341,7 @@ class Hook:
         Note: This triggers cancellation by calling the job's ``cancel()``
         method, which in turn calls ``kill()`` directly on the process
         if applicable (e.g., for ``CmdJob``, sending SIGTERM then SIGKILL).
-        This also triggers any ``on_cancel`` hooks before the process is killed.
+        This also triggers any ``on_cancel`` hooks after the process is killed.
         """
         def _action(job, ctx):
             job.cancel()  # type: ignore[attr-defined]

@@ -133,9 +133,11 @@ StageTracker(
 
 `StageTracker` 會在退出 `with` 區塊時結帳並輸出 `summary()` 報表：
 
-- **正常結束 (無例外)：** 將收尾最後一階段狀態，印出 `EXECUTION SUMMARY`；如果發現階段曾收到錯誤訊號，在此時會對外拋出 `StageFailedError`。
+- **正常結束 (無例外)：** 將收尾當前階段，印出 `EXECUTION SUMMARY`；只要任何已追蹤階段（包含 `System`）有 `ERROR` 或 `CRITICAL` issue，就會拋出 `StageFailedError`。
 - **異常結束 (包含 `fatal`)：** 任何異常都會導致印出 `EXECUTION FAILED (例外類型)`，然後原始的異常物件會依原封不動地向外拋出。
 - **未分配的記錄（"System" 階段）：** 如果在第一次 `begin_stage()` 之前，或在任何 `with t.stage()` 區塊外呼叫記錄方法（如 `t.error()`），這些記錄會被分配到 `"System"` 階段。如果 `"System"` 階段累積了 error，追蹤器依然會在最終結束時準確地攔截並報告失敗。
+
+外層 `with` 結束後，workflow 操作會拋出 `UsageError`；`get_issues()` 仍可唯讀查詢。相同 tracker 實例不可巢狀使用，也不可再次進入。
 
 **報表輸出範例：**
 ```text

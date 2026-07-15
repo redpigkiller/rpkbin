@@ -95,6 +95,11 @@ class TestHookWhen:
         assert when.type == "elapsed_exceeds"
         assert when.seconds == 5.0
 
+    @pytest.mark.parametrize("seconds", [0, -1, True])
+    def test_elapsed_exceeds_rejects_invalid_seconds(self, seconds):
+        with pytest.raises(ValueError, match="must be > 0"):
+            Hook.elapsed_exceeds(seconds)
+
     def test_on_done_factory(self):
         when = Hook.on_done()
         assert when.type == "on_done"
@@ -113,6 +118,10 @@ class TestHookWhen:
 
 
 class TestHookFire:
+    def test_rejects_unknown_policy(self):
+        with pytest.raises(ValueError, match="unknown policy"):
+            Hook(Hook.on_start(), lambda job, ctx: None, policy="typo")
+
     def test_once_policy_fires_once(self):
         count = [0]
         hook = Hook(when=Hook.log_matches(r"x"), action=lambda j, ctx: count.__setitem__(0, count[0] + 1), policy="once")
@@ -679,6 +688,23 @@ class TestOnCancelHook:
         job.skip()
 
         assert seen == [True]
+
+    def test_cancel_hook_does_not_fire_if_job_finished_first(self, monkeypatch):
+        from rpkbin.job_manager.func_job import FuncJob
+
+        seen = []
+        job = WaveFuncJob("test", lambda: None)
+        job.add_hook(Hook(Hook.on_cancel(), lambda j, ctx: seen.append(ctx)))
+
+        def finish_instead(self):
+            with self._lock:
+                self._status = DONE
+
+        monkeypatch.setattr(FuncJob, "cancel", finish_instead)
+        job.cancel()
+
+        assert job.status == DONE
+        assert seen == []
 
 
 class TestElapsedExceedsHook:
@@ -1435,7 +1461,7 @@ class TestSession:
         assert sess.failed() == []
         assert [j.name for j in sess.failed(include_skipped=True)] == ["skipme"]
 
-    def test_user_cancelled_job_does_not_fail_session(self):
+    def test_user_cancelled_job_fails_session(self):
         sess = Session()
         job = WaveFuncJob("cancelme", lambda: None)
         job.cancel()
@@ -1444,8 +1470,8 @@ class TestSession:
         sess._stop()
 
         summary = sess.summary()
-        assert summary["outcome"] == "done"
-        assert summary["exit_code"] == 0
+        assert summary["outcome"] == "failed"
+        assert summary["exit_code"] == 1
         assert summary["failed"] == 0
         assert summary["cancelled"] == 1
         assert sess.failed() == []
@@ -1550,18 +1576,24 @@ session.add(job)
     def test_workers_override(self, tmp_path):
         """--workers flag overrides configure() in wave file."""
         wave = tmp_path / "workers.wave.py"
-        self._write_wave(wave, """
+        log_dir = tmp_path / "logs"
+        self._write_wave(wave, f"""
 from rpkbin.wave import session, FuncJob
 
-session.configure(max_workers=1)  # wave file sets 1
-session.add(FuncJob("j", lambda: None))
+session.configure(max_workers=1, resources={{"gpu": 1}}, log_dir={str(log_dir)!r}, timeout=30)
+session.add(FuncJob("j", lambda: None, resources={{"gpu": 1}}))
 """)
         from rpkbin.wave.runner import run
+        from rpkbin.wave.session import session
 
         # workers=4 should override the wave file's configure(max_workers=1)
         assert run(wave, no_tui=True, workers=4) == 0
-        # The manager that was used should have had max_workers=4
-        # (session is reset between runs, so we check via configure override logic)
+        assert session._config == {
+            "max_workers": 4,
+            "resources": {"gpu": 1},
+            "log_dir": str(log_dir),
+            "timeout": 30,
+        }
 
     def test_parsers_and_hooks_run_to_completion(self, tmp_path):
         """Parsers and hooks wired in a wave file actually fire."""
@@ -2309,6 +2341,8 @@ class TestFuncJobCancelWarning:
 
         caplog.set_level(logging.WARNING)
         job = FuncJob("plain", lambda: None)
+        with job._lock:
+            job._status = RUNNING
         job.cancel()
         assert "cannot be force-stopped" in caplog.text
 

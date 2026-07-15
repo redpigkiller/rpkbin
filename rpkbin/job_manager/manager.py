@@ -37,7 +37,14 @@ class JobManager:
         poll_interval: float = 0.5,
     ) -> None:
         self._max_workers = max(1, max_workers)
-        self._resources: dict[str, int | Callable[[], int]] = resources or {}
+        self._resources: dict[str, int | Callable[[], int]] = dict(resources or {})
+        for name, limit in self._resources.items():
+            if not callable(limit) and (
+                not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
+            ):
+                raise ValueError(
+                    f"Resource capacity {name!r} must be a non-negative integer or callable."
+                )
         
         self._log_dir = Path(log_dir) if log_dir else None
         self._max_history = max_history
@@ -76,7 +83,14 @@ class JobManager:
             if max_workers is not None:
                 self._max_workers = max(1, max_workers)
             if resources is not None:
-                self._resources = resources
+                for name, limit in resources.items():
+                    if not callable(limit) and (
+                        not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
+                    ):
+                        raise ValueError(
+                            f"Resource capacity {name!r} must be a non-negative integer or callable."
+                        )
+                self._resources = dict(resources)
             self._cond.notify_all()
 
     def stats(self) -> dict[str, Any]:
@@ -85,7 +99,14 @@ class JobManager:
             capacities = {}
             for res_name, limit_val in self._resources.items():
                 try:
-                    capacities[res_name] = limit_val() if callable(limit_val) else limit_val
+                    capacity = limit_val() if callable(limit_val) else limit_val
+                    if (
+                        not isinstance(capacity, int)
+                        or isinstance(capacity, bool)
+                        or capacity < 0
+                    ):
+                        raise ValueError("capacity must be a non-negative integer")
+                    capacities[res_name] = capacity
                 except Exception:
                     capacities[res_name] = 0
 
@@ -220,21 +241,22 @@ class JobManager:
         """Enqueue a job for execution."""
         # Static Resource Validation (Fail Fast if impossible)
         for res_name, req_val in job.resources.items():
+            if not isinstance(req_val, int) or isinstance(req_val, bool) or req_val < 0:
+                raise ValueError(
+                    f"Resource request {res_name!r} must be a non-negative integer."
+                )
             limit_val = self._resources.get(res_name)
-            if limit_val is not None:
+            if res_name in self._resources:
                 # If static int, we can check capability
-                if isinstance(limit_val, int) and isinstance(req_val, int) and req_val > limit_val:
+                if isinstance(limit_val, int) and req_val > limit_val:
                     raise ValueError(
                         f"Impossible Resource Request: Job requires {req_val} '{res_name}' "
                         f"but JobManager only supports up to {limit_val}."
                     )
                 # If dynamic Callable, we trust it or let it fail at runtime
             else:
-                logger.warning(
-                    "Job %r requests resource %r which is not declared in the manager. "
-                    "The job will never be scheduled unless the resource is added "
-                    "via update_config().",
-                    job.name, res_name,
+                raise ValueError(
+                    f"Job {job.name!r} requests undeclared resource {res_name!r}."
                 )
 
         with self._lock:
@@ -381,10 +403,14 @@ class JobManager:
         capacities = {}
         for res_name, limit_val in self._resources.items():
             try:
-                if callable(limit_val):
-                    capacities[res_name] = limit_val()
-                else:
-                    capacities[res_name] = limit_val
+                capacity = limit_val() if callable(limit_val) else limit_val
+                if (
+                    not isinstance(capacity, int)
+                    or isinstance(capacity, bool)
+                    or capacity < 0
+                ):
+                    raise ValueError("capacity must be a non-negative integer")
+                capacities[res_name] = capacity
             except Exception as e:
                 logger.error("Error computing dynamic resource %r: %s", res_name, e)
                 capacities[res_name] = 0
@@ -521,6 +547,7 @@ class JobManager:
         finally:
             with self._cond:
                 self._jobs_finishing = max(0, self._jobs_finishing - 1)
+                self._cleanup_history()
                 self._cond.notify_all()
 
     def _dispatch_callbacks(self, job: Job) -> None:

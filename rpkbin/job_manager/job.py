@@ -145,15 +145,6 @@ class Job(ABC):
     # ------------------------------------------------------------------
     # Control API (Called by User or Manager)
     # ------------------------------------------------------------------
-    def start(self) -> None:
-        """Mark job as ready to run. Typically used if it was paused or manually controlled."""
-        with self._lock:
-            if self._status not in (PENDING, CANCELLED):
-                return
-            self._status = PENDING
-            self._cancel_event.clear()
-        self._notify_state_change()
-
     def cancel(self) -> None:
         """Cancel the job. Subclasses should respond to cancellation (e.g. killing process)."""
         with self._lock:
@@ -164,20 +155,6 @@ class Job(ABC):
         
         # If the job is running (e.g., subprocess), force it to terminate.
         self.kill()
-        self._notify_state_change()
-
-    def _reset(self) -> None:
-        """Reset the job state and retry count to run again."""
-        with self._lock:
-            self._status = PENDING
-            self._progress = None
-            self._result = None
-            self._error = None
-            self._start_time = None
-            self._end_time = None
-            self._retry_count = 0
-            self._cancel_event.clear()
-            self._output_buffer.clear()
         self._notify_state_change()
 
     def set_progress(self, value: float) -> None:

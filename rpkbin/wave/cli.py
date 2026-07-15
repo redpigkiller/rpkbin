@@ -259,7 +259,7 @@ def cmd_run(
     """Load WAVE_FILE and run the job batch.
 
     This command loads a declarative Python wave file, schedules all registered
-    jobs, and executes them according to their dependencies, resource limits,
+    jobs, and executes them according to their resource limits,
     priorities, and hooks.
     
     By default, it launches a live interactive full-screen dashboard TUI.
@@ -289,7 +289,7 @@ def cmd_run(
     show_default=True,
     help=(
         "Starter template profile. "
-        "minimal: basic setup with two jobs; "
+        "minimal: basic setup with one job; "
         "parser: adds a stateless RegexParser; "
         "full: adds stateful parser and hooks; "
         "pty: adds POSIX PtyJob."

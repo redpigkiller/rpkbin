@@ -131,9 +131,11 @@ All logging methods route through the standard Python `logging` module and condi
 
 The tracker automatically triggers a summary report when the `with` block exits:
 
-- **Normal Exit:** Finalizes the current stage, prints `EXECUTION SUMMARY`, and raises `StageFailedError` if the last stage had errors.
+- **Normal Exit:** Finalizes the current stage, prints `EXECUTION SUMMARY`, and raises `StageFailedError` if any tracked stage (including `System`) has an `ERROR` or `CRITICAL` issue.
 - **Exception Exit:** If any exception occurred (including `fatal`), it prints `EXECUTION FAILED (ExceptionType)` and re-raises the exception.
 - **Unassigned Logs (The "System" Stage):** Any log methods (`t.error()`, `t.warning()`, etc.) called *before* the first `begin_stage()` or outside any `with t.stage()` block are assigned to the `"System"` stage. If an error is logged to `"System"`, the tracker will still accurately report a failure at the end.
+
+After the outer `with` block exits, workflow operations raise `UsageError`; `get_issues()` remains available for read-only inspection. A tracker instance cannot be nested or entered again.
 
 **Example Summary Output:**
 ```text

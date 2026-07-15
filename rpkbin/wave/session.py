@@ -547,7 +547,7 @@ class Session:
 
         if pending_jobs or running_jobs:
             outcome = "running"
-        elif failed_jobs or self._session_timeout_fired:
+        elif failed_jobs or cancelled_jobs or self._session_timeout_fired:
             outcome = "failed"
         else:
             outcome = "done"
@@ -568,7 +568,7 @@ class Session:
             "cancelled": len(cancelled_jobs),
             "skipped": len(skipped_jobs),
             "outcome": outcome,
-            "exit_code": 1 if failed_jobs or self._session_timeout_fired else 0,
+            "exit_code": 1 if failed_jobs or cancelled_jobs or self._session_timeout_fired else 0,
             "done_names": [j.name for j in done_jobs],
             "failed_names": [j.name for j in failed_jobs],
             "skipped_names": [j.name for j in skipped_jobs],

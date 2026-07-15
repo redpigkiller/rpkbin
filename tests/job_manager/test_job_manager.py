@@ -470,6 +470,47 @@ def test_add_rejects_impossible_resource_request():
         with pytest.raises(ValueError, match="Impossible Resource Request"):
             manager.add(job)
 
+def test_add_rejects_undeclared_or_invalid_resource_request():
+    with JobManager() as manager:
+        with pytest.raises(ValueError, match="undeclared resource"):
+            manager.add(FuncJob("typo", lambda: None, resources={"gup": 1}))
+        with pytest.raises(ValueError, match="non-negative integer"):
+            manager.add(FuncJob("negative", lambda: None, resources={"gpu": -1}))
+
+def test_invalid_dynamic_capacity_does_not_kill_scheduler(caplog):
+    capacity = ["bad"]
+    manager = JobManager(resources={"gpu": lambda: capacity[0]}, poll_interval=0.01)
+    job = FuncJob("dynamic", lambda: "ok", resources={"gpu": 1})
+    manager.add(job)
+    manager.start()
+    try:
+        assert not manager.wait(timeout=0.05)
+        assert manager._bg_thread.is_alive()
+        assert job.status == PENDING
+        capacity[0] = 1
+        assert manager.wait(timeout=1.0)
+    finally:
+        manager.stop()
+    assert job.status == DONE
+    assert "capacity must be a non-negative integer" in caplog.text
+
+def test_max_history_is_enforced_when_jobs_finish():
+    manager = JobManager(max_history=1)
+    for i in range(3):
+        manager.add(FuncJob(str(i), lambda: None))
+    manager.start()
+    try:
+        assert manager.wait(timeout=1.0)
+        assert len(manager.jobs()) == 1
+    finally:
+        manager.stop()
+
+def test_cancelling_pending_func_job_does_not_warn(caplog):
+    job = FuncJob("pending", lambda: None)
+    job.cancel()
+    assert job.status == CANCELLED
+    assert "cannot be force-stopped" not in caplog.text
+
 def test_add_rejects_duplicate_job_id():
     jid = uuid.uuid4()
     job1 = FuncJob("a", lambda: 1, job_id=jid)

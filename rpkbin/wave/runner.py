@@ -197,7 +197,12 @@ def run(
     _load_wave_file(wave_file)
 
     if workers is not None:
-        session.configure(max_workers=workers)
+        session.configure(
+            max_workers=workers,
+            resources=session._config["resources"],
+            log_dir=session._config["log_dir"],
+            timeout=session._config["timeout"],
+        )
     if tui_profile is not None:
         _apply_tui_profile(tui_profile)
 

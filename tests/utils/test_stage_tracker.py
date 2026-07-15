@@ -1,9 +1,8 @@
 ﻿import threading
-import time
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from rpkbin.utils.stage_tracker import StageTracker, ErrorLevel, StageFailedError, UsageError, Issue
+from rpkbin.utils.stage_tracker import StageTracker, ErrorLevel, StageFailedError, UsageError
 
 # ---------------------------------------------------------------------------
 # Initialization & Mode Tests
@@ -131,62 +130,139 @@ def test_duplicate_stage_name():
             with t.stage("Same"):
                 pass
 
+def test_flat_stage_failure_clears_current_stage():
+    tracker = StageTracker(mode="flat")
+    with pytest.raises(StageFailedError):
+        with tracker as t:
+            t.begin_stage("A")
+            t.error("bad")
+            with pytest.raises(StageFailedError):
+                t.begin_stage("B")
+            assert t.current_stage is None
+
+    assert tracker.current_stage is None
+
+def test_workflow_operations_rejected_after_exit():
+    with StageTracker(mode="flat") as t:
+        pass
+
+    for operation in (
+        lambda: t.debug("debug"),
+        lambda: t.info("info"),
+        lambda: t.warning("warning"),
+        lambda: t.error("error"),
+        lambda: t.fatal("fatal"),
+        lambda: t.begin_stage("stage"),
+        t.checkpoint,
+    ):
+        with pytest.raises(UsageError):
+            operation()
+
+    with pytest.raises(UsageError):
+        with t.stage("stage"):
+            pass
+
+def test_get_issues_is_readable_after_exit():
+    with StageTracker(mode="flat") as t:
+        t.warning("kept")
+
+    assert [issue.message for issue in t.get_issues()] == ["kept"]
+
+def test_general_exception_summary_is_failed_and_reraised(capsys):
+    with pytest.raises(ValueError, match="boom"):
+        with StageTracker(mode="flat", plain=True):
+            raise ValueError("boom")
+
+    output = capsys.readouterr().out
+    assert "EXECUTION FAILED (ValueError)" in output
+    assert "FAILED:" in output
+    assert "SUCCESS" not in output
+
+def test_summary_title_does_not_control_failure_state(capsys):
+    with StageTracker(mode="flat", plain=True) as t:
+        assert t.summary(
+            title="EXECUTION FAILED (manual)",
+            raise_errors=False,
+        ) is True
+
+    output = capsys.readouterr().out
+    assert "SUCCESS" in output
+    assert "FAILED: 0 critical/errors found." not in output
+
+def test_system_error_fails_normal_exit():
+    with pytest.raises(StageFailedError) as exc_info:
+        with StageTracker(mode="flat", plain=True) as t:
+            t.error("system failure")
+
+    assert exc_info.value.stage == "System"
+
+def test_summary_checks_accumulated_errors(capsys):
+    with pytest.raises(StageFailedError):
+        with StageTracker(mode="flat", plain=True) as t:
+            t.begin_stage("A")
+            t.error("bad")
+            assert t.summary(raise_errors=False) is False
+
+            with pytest.raises(StageFailedError) as exc_info:
+                t.summary(raise_errors=True)
+            assert exc_info.value.stage == "A"
+
+    assert "FAILED:" in capsys.readouterr().out
+
+def test_stage_failed_error_keeps_all_stage_issues():
+    with pytest.raises(StageFailedError) as exc_info:
+        with StageTracker(mode="flat", plain=True) as t:
+            t.begin_stage("A")
+            t.info("context", track=True)
+            t.warning("warning")
+            t.error("error")
+
+    assert [issue.level for issue in exc_info.value.issues] == [
+        ErrorLevel.INFO,
+        ErrorLevel.WARNING,
+        ErrorLevel.ERROR,
+    ]
+    assert exc_info.value.error_count == 1
+
+def test_tracker_cannot_be_nested_or_reused():
+    with StageTracker(mode="flat") as t:
+        with pytest.raises(UsageError, match="already active"):
+            with t:
+                pass
+
+    with pytest.raises(UsageError, match="cannot be reused"):
+        with t:
+            pass
+
 # ---------------------------------------------------------------------------
 # Logging & Issue Querying
 # ---------------------------------------------------------------------------
 
 def test_issue_querying():
-    t = StageTracker(mode="flat")
-    t._entered = True # Bypass entered check for explicit testing
-    t.begin_stage("A")
-    t.debug("d1", track=True)
-    t.info("i1", track=True)
-    try:
-        t.begin_stage("B")
-    except StageFailedError:
-        pass # Expected because A had an error
-        
-    # Manually set Stage B instead, or simply bypass health check for this test
-    # Actually if B failed, current stage is None.
-    # We should catch it, but `t.error("e2")` will go to "System" or None.
-    # Let's bypass health check logic by not entering B with begin_stage, or just clear issues.
-    
-    t.current_stage = None
-    t.clear_issues()
-    t.begin_stage("A")
-    t.debug("d1", track=True)
-    t.info("i1", track=True)
-    t.warning("w1", track=True)
-    t.error("e1")
-    
-    # Inject directly
-    with t._issues_lock:
-        t._issues["B"] = [Issue(ErrorLevel.ERROR, "e2", "B")]
-    
-    # get all
+    with pytest.raises(StageFailedError):
+        with StageTracker(mode="flat") as t:
+            t.begin_stage("A")
+            t.debug("d1", track=True)
+            t.info("i1", track=True)
+            t.warning("w1", track=True)
+            t.error("e1")
+            t.summary(raise_errors=False)
+
+            t.begin_stage("B")
+            t.error("e2")
+
     assert len(t.get_issues()) == 5
-    
-    # get by stage
     assert len(t.get_issues(stage="A")) == 4
-    
-    # get by level
     assert len(t.get_issues(level=ErrorLevel.ERROR)) == 2
     assert len(t.get_issues(level="error")) == 2
-    
-    # get multiple levels
     assert len(t.get_issues(level=["error", "warning"])) == 3
-    
-    # get by stage and level
     assert len(t.get_issues(stage="A", level="error")) == 1
-    
-    t.current_stage = None
-    t.clear_issues()
 
 # ---------------------------------------------------------------------------
 # Thread Safety
 # ---------------------------------------------------------------------------
 
-def thread_worker(tracker, thread_name, raises=False):
+def thread_worker(tracker, raises=False):
     t_name = threading.current_thread().name
     
     # Flat mode is thread-local, each thread should have its own stages
@@ -206,16 +282,15 @@ def thread_worker(tracker, thread_name, raises=False):
         tracker.checkpoint()
 
 def test_threading_isolation():
-    tracker = StageTracker(mode="flat")
-    tracker._entered = True # Bypass check for multi-thread testing
-    
-    t1 = threading.Thread(target=thread_worker, args=(tracker, "T1", False), name="T1")
-    t2 = threading.Thread(target=thread_worker, args=(tracker, "T2", True), name="T2")
-    
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    with pytest.raises(StageFailedError):
+        with StageTracker(mode="flat") as tracker:
+            t1 = threading.Thread(target=thread_worker, args=(tracker, False), name="T1")
+            t2 = threading.Thread(target=thread_worker, args=(tracker, True), name="T2")
+
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
     
     issues = tracker.get_issues()
     assert len(issues) == 3 # 1 warning T1, 1 warning T2, 1 error T2

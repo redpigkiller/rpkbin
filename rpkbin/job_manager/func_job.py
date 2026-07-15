@@ -75,9 +75,9 @@ class FuncJob(Job):
         Note that cancelling a ``FuncJob`` only marks the job as cancelled.
         The underlying Python function keeps running until it returns.
         """
-        was_active = self.status not in ("done", "failed", "cancelled")
+        was_running = self.status == "running"
         super().cancel()
-        if was_active:
+        if was_running and self.status == "cancelled":
             logger.warning(
                 "FuncJob %r was marked cancelled, but its Python function cannot "
                 "be force-stopped and may continue running in the background.",
