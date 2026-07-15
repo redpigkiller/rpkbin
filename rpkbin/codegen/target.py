@@ -103,9 +103,11 @@ class RegisterModel(Protocol):
         Used by the HIR validator to detect aliasing conflicts between
         @hint-annotated variables.
 
-    The allocator currently fails closed on register pressure.  The legacy
-    spill hooks below are retained for compatibility but are not consumed by
-    the production pipeline.
+    General register pressure fails closed.  Targets may separately implement
+    ``CallPreservationModel`` to preserve unbound values at call boundaries;
+    this does not enable expression-tree spilling.  The legacy spill hooks
+    below are retained for compatibility but are not consumed by the
+    production pipeline.
     """
 
     def allocatable_registers(self) -> Sequence[str]:
@@ -173,6 +175,22 @@ class RegisterModel(Protocol):
         """Legacy spill prototype hook; currently not consumed."""
 
 
+class CallPreservationModel(Protocol):
+    """Optional register-model capability for call-boundary preservation.
+
+    Preservation units are opaque to rpkbin.  A target may use a unit to
+    represent one register, an aliased register pair, or another storage group.
+    Saving a unit must not clobber allocated values.  Restore clobbers must list
+    every physical register location overwritten when that unit is restored.
+    """
+
+    def call_preservation_unit(self, reg: str) -> str | None:
+        """Return the unit that can preserve *reg*, or ``None`` if unsupported."""
+
+    def call_preservation_restore_clobbers(self, unit: str) -> Sequence[str]:
+        """Return all physical registers overwritten by restoring *unit*."""
+
+
 def is_physical_register(register_model, reg: str) -> bool:
     """Dispatch to the optional query while preserving legacy models.
 
@@ -210,3 +228,18 @@ def registers_overlap(register_model, lhs: str, rhs: str) -> bool:
         and rhs in ({composite} | set(members))
         for composite, members in register_model.register_aliases()
     )
+
+
+def call_preservation_unit(register_model, reg: str) -> str | None:
+    """Dispatch the optional call-preservation query, failing closed."""
+    query = getattr(register_model, "call_preservation_unit", None)
+    return query(reg) if query else None
+
+
+def call_preservation_restore_clobbers(
+    register_model,
+    unit: str,
+) -> tuple[str, ...] | None:
+    """Return restore clobbers, or ``None`` when the capability is incomplete."""
+    query = getattr(register_model, "call_preservation_restore_clobbers", None)
+    return tuple(query(unit)) if query else None

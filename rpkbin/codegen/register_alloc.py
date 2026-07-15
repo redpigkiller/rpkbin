@@ -13,8 +13,10 @@ Algorithm: greedy graph-colouring, fail-closed on pressure
 2. Compute block live-in/live-out sets and build an interference graph.
 3. Greedy colour: hinted variables first (sorted by hint name), then
    unhinted variables (sorted by name for determinism).
-4. If no compatible register is available, raise RegisterAllocationError.
-5. Apply the assignment: replace every Var/VReg with its physical register.
+4. If that fails only around calls and the target exposes preservation units,
+   try a bounded exact assignment with a validated per-call save/restore plan.
+5. Otherwise raise RegisterAllocationError; general spilling is not implemented.
+6. Apply the assignment: replace every Var/VReg with its physical register.
 
 The old pre-isel spill prototype could overwrite live registers while loading
 spill temporaries.  Register pressure therefore fails closed until spilling is
@@ -26,7 +28,18 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from . import lir
-from .target import RegisterModel, can_allocate, registers_overlap, is_physical_register
+from .target import (
+    RegisterModel,
+    call_preservation_restore_clobbers,
+    call_preservation_unit,
+    can_allocate,
+    is_physical_register,
+    registers_overlap,
+)
+
+
+_MAX_CALL_PRESERVATION_SEARCH_STATES = 250_000
+_MAX_CALL_PRESERVATION_SEARCH_VALUES = 64
 
 
 # ---------------------------------------------------------------------------
@@ -264,13 +277,29 @@ class _Allocator:
         physical_regs.update(hint for hint in names_hints.values() if hint is not None)
         interference, forbidden = _build_interference(self._func, physical_regs)
 
-        # Step 3: greedy colouring
-        assignment = self._greedy_colour(
-            names_hints, interference, forbidden
-        )
+        # Step 3: prefer the existing zero-preservation greedy allocation.
+        preservation_plan: Dict[tuple[str, int], tuple[str, ...]] = {}
+        try:
+            assignment = self._greedy_colour(
+                names_hints, interference, forbidden
+            )
+        except RegisterAllocationError:
+            fallback = self._colour_with_call_preservation(
+                names_hints,
+                interference,
+                forbidden,
+                physical_regs,
+            )
+            if fallback is None:
+                raise
+            assignment, preservation_plan = fallback
 
         # Step 4: replace var names with physical registers
-        new_func = _apply_assignment(self._func, assignment)
+        new_func = _apply_assignment(
+            self._func,
+            assignment,
+            preservation_plan,
+        )
         return new_func, assignment
 
     def _validate_fixed_hints(
@@ -366,6 +395,126 @@ class _Allocator:
                 )
 
         return assignment
+
+    def _colour_with_call_preservation(
+        self,
+        names_hints: Dict[str, Optional[str]],
+        interference: Dict[str, Set[str]],
+        forbidden: Dict[str, Set[str]],
+        physical_regs: Set[str],
+    ) -> tuple[
+        Dict[str, str],
+        Dict[tuple[str, int], tuple[str, ...]],
+    ] | None:
+        """Bounded exact fallback for values live across calls only.
+
+        The normal greedy allocator remains the fast path.  This search ignores
+        call-clobber exclusions while coloring, then accepts an assignment only
+        when the target's optional preservation capability proves every call
+        boundary safe.
+        """
+        if not any(forbidden.values()):
+            return None
+
+        all_regs = tuple(self._rm.allocatable_registers())
+        if not any(call_preservation_unit(self._rm, reg) for reg in all_regs):
+            return None
+
+        fixed = (
+            {name for name, hint in names_hints.items() if hint is not None}
+            if self._fixed_hints
+            else set()
+        )
+        ordered = sorted(
+            names_hints,
+            key=lambda name: (
+                names_hints[name] is None,
+                -len(interference.get(name, ())),
+                name,
+            ),
+        )
+        if len(ordered) > _MAX_CALL_PRESERVATION_SEARCH_VALUES:
+            return None
+        live_after = statement_live_after(self._func)
+        best: tuple[
+            tuple,
+            Dict[str, str],
+            Dict[tuple[str, int], tuple[str, ...]],
+        ] | None = None
+        assignment: Dict[str, str] = {}
+        states = 0
+        exhausted = False
+
+        def search(index: int) -> None:
+            nonlocal best, states, exhausted
+            states += 1
+            if states > _MAX_CALL_PRESERVATION_SEARCH_STATES:
+                exhausted = True
+                return
+            if index == len(ordered):
+                plan = _build_call_preservation_plan(
+                    self._func,
+                    assignment,
+                    fixed,
+                    self._rm,
+                    physical_regs,
+                    live_after,
+                )
+                if plan is None:
+                    return
+                unit_counts = tuple(len(units) for units in plan.values())
+                hint_misses = sum(
+                    hint is not None and assignment[name] != hint
+                    for name, hint in names_hints.items()
+                )
+                score = (
+                    sum(unit_counts),
+                    max(unit_counts, default=0),
+                    hint_misses,
+                    tuple(assignment[name] for name in sorted(assignment)),
+                )
+                if best is None or score < best[0]:
+                    best = score, dict(assignment), plan
+                return
+
+            name = ordered[index]
+            hint = names_hints[name]
+            width = _find_width(self._func, name)
+            if hint is not None and self._fixed_hints:
+                candidates = (hint,)
+            elif hint is not None and hint in all_regs:
+                candidates = (hint, *(reg for reg in all_regs if reg != hint))
+            else:
+                candidates = all_regs
+
+            for reg in candidates:
+                if not can_allocate(self._rm, reg, width):
+                    continue
+                if any(
+                    other in assignment
+                    and registers_overlap(self._rm, reg, assignment[other])
+                    for other in interference.get(name, ())
+                ):
+                    continue
+                crosses_call_effect = any(
+                    registers_overlap(self._rm, reg, effect)
+                    for effect in forbidden.get(name, ())
+                )
+                if crosses_call_effect and (
+                    name in fixed
+                    or call_preservation_unit(self._rm, reg) is None
+                ):
+                    continue
+                assignment[name] = reg
+                search(index + 1)
+                del assignment[name]
+                if exhausted:
+                    return
+
+        search(0)
+        if exhausted or best is None:
+            return None
+        return best[1], best[2]
 
 # ---------------------------------------------------------------------------
 # Step 1: collect all names and hints
@@ -489,6 +638,84 @@ def _build_interference(
             connect(live)
 
     return interference, forbidden
+
+
+def _build_call_preservation_plan(
+    func: lir.Function,
+    assignment: Dict[str, str],
+    fixed: Set[str],
+    register_model: RegisterModel,
+    all_regs: Set[str],
+    live_after: Dict[tuple[str, int], Set[str]],
+) -> Dict[tuple[str, int], tuple[str, ...]] | None:
+    """Validate and return opaque preservation units for each affected call."""
+    plan: Dict[tuple[str, int], tuple[str, ...]] = {}
+
+    for block in func.blocks:
+        for index, stmt in enumerate(block.statements):
+            call = _stmt_call(stmt)
+            if call is None:
+                continue
+            defs, _ = _stmt_defs_uses(stmt)
+            live = live_after[(block.label, index)]
+            live_through = live - defs
+            effects = _call_effect_regs(call, all_regs)
+            units = set(call.preservation_units)
+            saved_by: Dict[str, str] = {}
+
+            for name in live_through:
+                reg = assignment.get(name)
+                if reg is None:
+                    return None
+                if not any(
+                    registers_overlap(register_model, reg, effect)
+                    for effect in effects
+                ):
+                    continue
+                if name in fixed:
+                    return None
+                unit = call_preservation_unit(register_model, reg)
+                if not isinstance(unit, str) or not unit:
+                    return None
+                units.add(unit)
+                saved_by[name] = unit
+
+            for unit in units:
+                restore_clobbers = call_preservation_restore_clobbers(
+                    register_model,
+                    unit,
+                )
+                if restore_clobbers is None:
+                    return None
+
+                # Return-register copies happen before restore.  Restoring a
+                # unit must not overwrite a call-defined value that stays live.
+                for name in live & defs:
+                    reg = assignment.get(name)
+                    if reg is None:
+                        return None
+                    if any(
+                        registers_overlap(register_model, reg, clobber)
+                        for clobber in restore_clobbers
+                    ):
+                        return None
+
+                # Cross-unit restore clobbers would require target-specific
+                # ordering.  The first generic contract rejects them.
+                for name in live_through:
+                    reg = assignment.get(name)
+                    if reg is None:
+                        return None
+                    if any(
+                        registers_overlap(register_model, reg, clobber)
+                        for clobber in restore_clobbers
+                    ) and saved_by.get(name) != unit:
+                        return None
+
+            if units:
+                plan[(block.label, index)] = tuple(sorted(units))
+
+    return plan
 
 
 def _compute_block_liveness(
@@ -643,10 +870,13 @@ def _find_width(func: lir.Function, var_name: str) -> int:
 def _apply_assignment(
     func: lir.Function,
     assignment: Dict[str, str],
+    preservation_plan: Dict[tuple[str, int], tuple[str, ...]] | None = None,
 ) -> lir.Function:
     """Replace all Var/VReg names with assigned physical register names."""
 
-    def _remap_expr(expr):
+    preservation_plan = preservation_plan or {}
+
+    def _remap_expr(expr, call_units: tuple[str, ...] = ()):
         if isinstance(expr, lir.Var):
             new_name = assignment.get(expr.name, expr.name)
             return lir.Var(new_name, expr.width)
@@ -687,16 +917,20 @@ def _apply_assignment(
                 bit_idx=expr.bit_idx,
             )
         elif isinstance(expr, lir.Call):
+            preservation_units = tuple(
+                dict.fromkeys((*expr.preservation_units, *call_units))
+            )
             return lir.Call(
                 name=expr.name,
                 args=tuple(_remap_expr(a) for a in expr.args),
                 arg_regs=expr.arg_regs,
                 return_regs=expr.return_regs,
                 clobbers=expr.clobbers,
+                preservation_units=preservation_units,
             )
         return expr
 
-    def _remap_stmt(stmt):
+    def _remap_stmt(stmt, call_units: tuple[str, ...] = ()):
         if isinstance(stmt, lir.Assign):
             if isinstance(stmt.target, lir.Var):
                 new_name = assignment.get(stmt.target.name, stmt.target.name)
@@ -706,9 +940,12 @@ def _apply_assignment(
                 new_target = lir.Var(new_name, stmt.target.width)
             else:
                 new_target = stmt.target
-            return lir.Assign(target=new_target, value=_remap_expr(stmt.value))
+            return lir.Assign(
+                target=new_target,
+                value=_remap_expr(stmt.value, call_units),
+            )
         elif isinstance(stmt, lir.CallStmt):
-            return lir.CallStmt(call=_remap_expr(stmt.call))
+            return lir.CallStmt(call=_remap_expr(stmt.call, call_units))
         elif isinstance(stmt, lir.CallAssign):
             new_targets = []
             for target in stmt.targets:
@@ -728,7 +965,7 @@ def _apply_assignment(
                     new_targets.append(None)
             return lir.CallAssign(
                 targets=tuple(new_targets),
-                call=_remap_expr(stmt.call),
+                call=_remap_expr(stmt.call, call_units),
                 abi_return_regs=stmt.abi_return_regs,
             )
         elif isinstance(stmt, lir.MemStore):
@@ -772,7 +1009,13 @@ def _apply_assignment(
 
     new_blocks = []
     for block in func.blocks:
-        new_stmts = tuple(_remap_stmt(s) for s in block.statements)
+        new_stmts = tuple(
+            _remap_stmt(
+                stmt,
+                preservation_plan.get((block.label, index), ()),
+            )
+            for index, stmt in enumerate(block.statements)
+        )
         new_term = _remap_term(block.terminator)
         new_blocks.append(lir.Block(
             label=block.label,

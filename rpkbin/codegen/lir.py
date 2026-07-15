@@ -123,6 +123,10 @@ class Call:
     arg_regs: tuple[str | None, ...] = ()
     return_regs: tuple[str | None, ...] = ()
     clobbers: tuple[str, ...] | None = ()
+    # Opaque target-defined save/restore groups selected by register allocation.
+    # Instruction selection must save them before argument moves and restore
+    # them only after all return-register moves are complete.
+    preservation_units: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -687,6 +691,13 @@ def _validate_expr(expr: FullExpr, owner: str) -> None:
                 f"{owner} contains Call with {len(expr.args)} arguments "
                 f"but {len(expr.arg_regs)} ABI registers"
             )
+        if (
+            any(not isinstance(unit, str) or not unit for unit in expr.preservation_units)
+            or len(set(expr.preservation_units)) != len(expr.preservation_units)
+        ):
+            raise ValueError(
+                f"{owner} contains Call with invalid preservation units"
+            )
         for arg in expr.args:
             _validate_expr(arg, owner)
         return
@@ -697,21 +708,14 @@ def _validate_stmt(stmt: Stmt, owner: str) -> None:
     if isinstance(stmt, Assign):
         _validate_expr(stmt.value, owner)
     elif isinstance(stmt, CallStmt):
-        if stmt.call.arg_regs and len(stmt.call.arg_regs) != len(stmt.call.args):
-            raise ValueError(
-                f"{owner} contains CallStmt with {len(stmt.call.args)} arguments "
-                f"but {len(stmt.call.arg_regs)} ABI registers"
-            )
-        for arg in stmt.call.args:
-            _validate_expr(arg, owner)
+        _validate_expr(stmt.call, owner)
     elif isinstance(stmt, CallAssign):
         if stmt.abi_return_regs and len(stmt.abi_return_regs) != len(stmt.targets):
             raise ValueError(
                 f"{owner} contains CallAssign with {len(stmt.targets)} targets "
                 f"but {len(stmt.abi_return_regs)} ABI registers"
             )
-        for arg in stmt.call.args:
-            _validate_expr(arg, owner)
+        _validate_expr(stmt.call, owner)
     elif isinstance(stmt, MemStore):
         _validate_expr(stmt.addr, owner)
         _validate_expr(stmt.value, owner)
