@@ -5,10 +5,10 @@ Layout
 Three top-level tabs:
   DASHBOARD   - live DataTable of all jobs
   JOB DETAIL  - log view (left 60%) + Data/Events/System tabs (right 40%)
-  SYSTEM LOG  - session-level events
+  SESSION LOG - session-level events
 
 Bottom command bar reuses runner._parse_repl_line + runner._handle_cmd verbatim.
-stdout from those helpers is redirected into the SYSTEM LOG tab via
+stdout from those helpers is redirected into the SESSION LOG tab via
 contextlib.redirect_stdout so the terminal stays clean.
 
 Threading
@@ -97,7 +97,7 @@ if TYPE_CHECKING:
 # Operational commands produce a brief confirmation message; the user stays on
 # the current tab and sees a Toast.  All other commands (display-oriented like
 # 'logs', 'status', or unknown verbs whose error we want the user to read)
-# fall through to System Log so the output is clearly visible.
+# fall through to Session Log so the output is clearly visible.
 _OPERATION_CMDS: frozenset[str] = frozenset({"pause", "resume", "stop", "skip", "cancel", "rerun", "action", "session_action", "send-line", "send-key", "send-signal"})
 
 _DATA_EMPTY_ROW_KEY = "__wave_empty_data__"
@@ -208,7 +208,7 @@ class WaveApp(App):
         Binding("ctrl+c", "request_quit", "Quit"),
         Binding("f1", "goto_tab('tab-dashboard')", "Dashboard", show=True),
         Binding("f2", "goto_tab('tab-detail')", "Job Detail", show=True),
-        Binding("f3", "goto_tab('tab-system')", "System Log", show=True),
+        Binding("f3", "goto_tab('tab-system')", "Session Log", show=True),
         Binding("f4", "goto_tab('tab-help')", "Help", show=True),
         # F8 retired: job input bar (i key) replaces the old pre-fill shortcut.
         Binding("f9", "terminal_send_ctrl_c", "Send Ctrl-C", show=False),
@@ -217,7 +217,7 @@ class WaveApp(App):
         Binding("1", "detail_panel('detail-info')", "INFO tab", show=False),
         Binding("2", "detail_panel('detail-data')", "DATA tab", show=False),
         Binding("3", "detail_panel('detail-events')", "EVENTS tab", show=False),
-        Binding("4", "detail_panel('detail-system')", "SYSTEM tab", show=False),
+        Binding("4", "detail_panel('detail-system')", "ERRORS tab", show=False),
         Binding(":", "focus_cmd", "Command", show=False),
         Binding("escape", "unfocus_input", "Back", show=False),
         Binding("left_square_bracket", "previous_detail_job", "Previous Job", show=False),
@@ -319,6 +319,7 @@ class WaveApp(App):
                             yield Input(
                                 placeholder="No job selected",
                                 id="job-input-bar",
+                                disabled=True,
             )
 
                         with Vertical(id="right-panel"):
@@ -333,15 +334,15 @@ class WaveApp(App):
                                         markup=True,
                                         max_lines=self._tui_config["event_log_max_lines"],
                                     )
-                                with TabPane("SYSTEM", id="detail-system"):
+                                with TabPane("ERRORS", id="detail-system"):
                                     yield RichLog(
                                         id="system-job-log",
                                         markup=True,
                                         max_lines=self._tui_config["event_log_max_lines"],
                                     )
 
-            # -- Tab 3: SYSTEM LOG (session-level events + command output)
-            with TabPane("SYSTEM LOG", id="tab-system"):
+            # -- Tab 3: SESSION LOG (session-level events + command output)
+            with TabPane("SESSION LOG", id="tab-system"):
                 yield RichLog(
                     id="session-log",
                     markup=True,
@@ -666,7 +667,7 @@ class WaveApp(App):
             logger.debug("Skipped visible log refresh while TUI widgets were unavailable.", exc_info=True)
 
     def _drain_session_events(self) -> None:
-        """Append new session-level events to the SYSTEM LOG tab."""
+        """Append new session-level events to the SESSION LOG tab."""
         events = self._session.peek_events()
         new_events = events[self._session_event_count:]
         if not new_events:
@@ -784,7 +785,6 @@ class WaveApp(App):
     def _open_detail_for(self, job) -> None:
         """Switch to JOB DETAIL tab and load *job*."""
         self._detail_job = job
-        self._update_detail_header(job)
         if job is not None:
             self._sync_dashboard_selection(job)
         # Reset all incremental sync counters for the new job
@@ -806,18 +806,9 @@ class WaveApp(App):
         self.query_one("#events-log", RichLog).clear()
         self.query_one("#system-job-log", RichLog).clear()
         self.query_one("#data-table", DataTable).clear()
-        self._update_detail_header(job)
-
-        # Update the Job Input Bar placeholder to show the current job name,
-        # truncated to 15 chars so there is always room to type.
         job_input = self.query_one("#job-input-bar", Input)
         job_input.clear()
-        if job is None:
-            job_input.placeholder = "No job selected"
-        else:
-            raw_name = str(getattr(job, "name", ""))
-            truncated = (raw_name[:13] + "\u2026") if len(raw_name) > 15 else raw_name
-            job_input.placeholder = f"[{truncated}] > "
+        self._update_detail_header(job)
 
         if job is not None:
             self._refresh_right_panels(job, force=True)
@@ -880,14 +871,27 @@ class WaveApp(App):
     def _update_detail_header(self, job) -> None:
         """Refresh the one-line JOB DETAIL location/status header."""
         header = self.query_one("#detail-header", Static)
+        job_input = self.query_one("#job-input-bar", Input)
         if job is None:
             header.update("[dim]No job selected. F1 -> choose a job -> Enter.  Jobs: [ ]  Running: { }[/dim]")
+            job_input.disabled = True
+            job_input.placeholder = "No job selected"
             return
 
         jobs = self._session.jobs()
         idx = self._detail_job_index()
         position = f"{idx + 1}/{len(jobs)}" if idx is not None and jobs else "?/?"
         status = getattr(job, "status", "pending")
+        can_input = status == "running" and hasattr(job, "send_input")
+        job_input.disabled = not can_input
+        if can_input:
+            raw_name = str(getattr(job, "name", ""))
+            truncated = (raw_name[:13] + "\u2026") if len(raw_name) > 15 else raw_name
+            job_input.placeholder = f"[{truncated}] > "
+        elif not hasattr(job, "send_input"):
+            job_input.placeholder = "Input unavailable for this job"
+        else:
+            job_input.placeholder = f"Input unavailable while {status}"
         color = _STATUS_COLOR.get(status, "white")
         elapsed = _fmt_elapsed(_job_elapsed_s(job)) or "--:--:--"
         prog = getattr(job, "progress", None)
@@ -962,7 +966,7 @@ class WaveApp(App):
             self._refresh_events_panels(job)
 
     def _refresh_events_panels(self, job) -> None:
-        """Incrementally refresh the EVENTS and SYSTEM sub-tabs."""
+        """Incrementally refresh the EVENTS and ERRORS sub-tabs."""
         all_events = getattr(job, "peek_events", lambda: [])()
         sync_count = self._events_sync_count
 
@@ -995,9 +999,6 @@ class WaveApp(App):
                     sys_log.scroll_end(animate=False)
 
             self._events_sync_count = len(all_events)
-
-    def _format_command_hint(self) -> str:
-        return ""
 
     def _refresh_data_panel(self, job) -> None:
         """Refresh the DATA sub-tab, including a clear empty state."""
@@ -1223,7 +1224,7 @@ class WaveApp(App):
                 return
             # Job not found -> fall through to _handle_cmd for error message
 
-        # -- Default path: run command, capture output to SYSTEM LOG ----
+        # -- Default path: run command, capture output to SESSION LOG ---
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             action = _handle_cmd(parts, self._session)

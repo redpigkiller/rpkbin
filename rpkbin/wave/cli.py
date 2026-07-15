@@ -41,11 +41,7 @@ $imports
 # =====
 # Session
 session.configure(max_workers=4)
-session.configure_tui(dashboard_columns=[
-    "no", "name", "status", "elapsed",
-$dashboard_data_columns
-    "exit_code",
-])
+$tui_config
 $parser
 $hooks
 # =====
@@ -177,6 +173,13 @@ def _render_wave_template(name: str, profile: str) -> str:
         attach_lines.append("job.add_hook(Hook(Hook.on_done(), announce_done))")
     pty = _PTY_TEMPLATE if "pty" in block_set else ""
     has_parser = bool(parser_blocks)
+    tui_config = ""
+    if has_parser:
+        tui_config = '''session.configure_tui(dashboard_columns=[
+    "no", "name", "status", "elapsed",
+    {"label": "Result", "data": "result"},
+    "exit_code",
+])'''
 
     if pty:
         imports.append("os")
@@ -198,7 +201,7 @@ def _render_wave_template(name: str, profile: str) -> str:
     return _WAVE_TEMPLATE.substitute(
         name=name,
         imports=import_suffix,
-        dashboard_data_columns='    {"label": "Result", "data": "result"},' if has_parser else "",
+        tui_config=tui_config,
         command=repr(
             'python -c "print(\'STEP=compile\'); print(\'RESULT=pass\')"'
             if has_parser

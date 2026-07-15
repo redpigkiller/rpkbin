@@ -6,6 +6,7 @@ and an integration test to verify real Excel file loading.
 
 import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -24,7 +25,7 @@ from rpkbin.excel_extractor import (
     MatchOptions,
 )
 from rpkbin.excel_extractor.template import AltNode, _parse_repeat
-from rpkbin.excel_extractor.normalizer import InternalCell, InternalGrid
+from rpkbin.excel_extractor.normalizer import InternalCell, InternalGrid, normalize_value
 from rpkbin.excel_extractor.matcher import TemplateMatcher
 
 
@@ -76,7 +77,7 @@ class TestCellCondition:
     def test_from_pattern_nonempty(self):
         c = CellCondition.from_pattern(r".+")
         assert c.patterns == frozenset([r".+"])
-        assert c.is_merged is False
+        assert c.is_merged is None
 
     def test_from_pattern_empty(self):
         c = CellCondition.from_pattern("")
@@ -149,6 +150,7 @@ class TestTypesConstants:
         assert not self._matches(Types.SPACE, "x")
 
         assert self._matches(Types.ANY, "anything")
+        assert self._matches(Types.ANY, "anything", is_merged=True)
 
     def test_number_bases(self):
         assert self._matches(Types.HEX, "0xFF")
@@ -203,6 +205,14 @@ class TestBlockValidation:
         b = Block(Row(pattern=["A", "B"]), EmptyRow())
         assert len(b.children[1].rules()) == 2
 
+    def test_invalid_orientation_raises(self):
+        with pytest.raises(ValueError):
+            Block(Row(pattern=["A"]), orientation="diagonal")
+
+    def test_empty_pattern_raises(self):
+        with pytest.raises(ValueError):
+            Block(Row(pattern=[]))
+
     def test_alt_node(self):
         alt = Row(pattern=["A"]) | Row(pattern=["B"])
         assert isinstance(alt, AltNode)
@@ -236,6 +246,10 @@ class TestInternalGrid:
         assert t.num_cols == 2
         assert t.get_cell(0, 1).value == "D"
         assert t.get_cell(2, 0).value == "C"
+
+    def test_datetime_and_whitespace_normalization(self):
+        assert normalize_value(datetime(2025, 1, 2, 3, 4, 5)) == "2025-01-02 03:04:05"
+        assert normalize_value("   ") == "   "
 
 
 # ===========================================================================
@@ -379,11 +393,54 @@ class TestPatternMatch:
             [("M", "WrongValue")]  # value is "WrongValue", is_merged=True
         ])
         cond = CellCondition.from_pattern("TargetValue", is_merged=None)
-        block = Block(Row(pattern=[cond]))
+        block = Block(Row(pattern=[cond], normalize=False))
         
         matches = match_blocks(grid, block)
         # Because of the fix, this should be 0. (Previously it wrongly returned 1)
         assert len(matches) == 0
+
+    def test_generic_repeat_can_be_followed_by_specific_row(self):
+        grid = make_grid([["Alice"], ["Total"]])
+        block = Block(
+            Row(pattern=[Types.STR], repeat="+", node_id="data"),
+            Row(pattern=["Total"], node_id="total"),
+        )
+
+        matches = match_blocks(grid, block)
+
+        assert len(matches) == 1
+        assert [row.node_id for row in matches[0].rows] == ["data", "total"]
+
+    def test_more_than_ten_rules_do_not_overcapture_rows(self):
+        block = Block(*(Row(pattern=[f"r{i}"]) for i in range(11)))
+        grid = make_grid([[f"r{i}"] for i in range(11)] + [["r0"]] * 20)
+
+        matches = match_blocks(grid, block)
+
+        assert len(matches) == 1
+        assert len(matches[0].rows) == 11
+        assert matches[0].end == (10, 0)
+
+    def test_regex_normalization_is_applied(self):
+        grid = make_grid([["ABC"]])
+        normalized = Block(Row(pattern=[Types.r(r"[A-Z]+")]))
+        with pytest.warns(UserWarning):
+            assert match_blocks(grid, normalized) == []
+
+        assert len(match_blocks(grid, Block(Row(pattern=[Types.r(r"[A-Z]+")], normalize=False)))) == 1
+
+    def test_fuzzy_matching_only_applies_to_literals(self):
+        matches = match_blocks(
+            make_grid([[123, "Departmnt"]]),
+            Block(Row(pattern=[Types.INT, "Department"], min_similarity=0.8)),
+        )
+        assert len(matches) == 1
+
+    def test_empty_row_can_distinguish_whitespace(self):
+        grid = make_grid([["Header"], ["   "]])
+
+        assert match_blocks(grid, Block(Row(pattern=["Header"]), EmptyRow(allow_whitespace=False))) == []
+        assert len(match_blocks(grid, Block(Row(pattern=["Header"]), EmptyRow()))) == 1
 
     def test_fuzzy_matching(self):
         # "Department" is misspelled as "Departmnt"
@@ -422,6 +479,10 @@ class TestMatchOptions:
         # Ensure it runs without issues
         matches = match_blocks(grid, block, MatchOptions(max_matched_sheets=0))
         assert len(matches) == 1
+
+    def test_negative_max_matched_sheets_raises(self):
+        with pytest.raises(ValueError):
+            MatchOptions(max_matched_sheets=-1)
 
 
 # ===========================================================================
@@ -486,6 +547,14 @@ class TestIntegrationRealExcel:
         assert data_rows[0].cells[1].value == "Alice"
         assert int(data_rows[0].cells[2].value) == 50000
         assert data_rows[2].cells[1].value == "Carol"
+
+    def test_star_scans_all_sheets(self, sample_excel_file):
+        template = Block(Row(pattern=["Dept", "Name", "Salary"]))
+
+        results = match_template(sample_excel_file, template, sheet="*")
+
+        assert len(results.blocks) == 1
+        assert results.blocks[0].sheet_name == "Payroll"
 
     def test_match_template_on_mocked_xls(self, monkeypatch):
         """Mock the xlrd loading mechanism to test .xls logic without binary blobs."""

@@ -23,7 +23,7 @@ class CellCondition:
     is_merged: bool | None = None   # None = don't care
 
     @classmethod
-    def from_pattern(cls, pattern: str, *, is_merged: bool = False) -> "CellCondition":
+    def from_pattern(cls, pattern: str, *, is_merged: bool | None = None) -> "CellCondition":
         if not pattern:
             return cls(frozenset(), is_merged)
         return cls(frozenset([pattern]), is_merged)
@@ -120,7 +120,7 @@ class Types:
     BLANK = CellCondition.from_pattern(pattern=r"^\s*$")
 
     @staticmethod
-    def r(pattern: str, is_merged: bool = False) -> CellCondition:
+    def r(pattern: str, is_merged: bool | None = None) -> CellCondition:
         """Create a CellCondition from a custom regex pattern."""
         return CellCondition.from_pattern(pattern=pattern, is_merged=is_merged)
 

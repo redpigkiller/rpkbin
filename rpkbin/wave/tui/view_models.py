@@ -16,13 +16,9 @@ from rpkbin.wave.tui.formatting import _STATUS_COLOR, _fmt_elapsed, _job_elapsed
 _DEFAULT_DASHBOARD_COLUMNS: tuple[dict[str, str], ...] = (
     {"type": "builtin", "key": "no"},
     {"type": "builtin", "key": "name"},
-    {"type": "builtin", "key": "id"},
     {"type": "builtin", "key": "status"},
     {"type": "builtin", "key": "elapsed"},
-    {"type": "builtin", "key": "progress"},
-    {"type": "builtin", "key": "retries"},
     {"type": "builtin", "key": "exit_code"},
-    {"type": "builtin", "key": "tags"},
 )
 _DATA_SNAPSHOT_FAILED = object()
 
@@ -185,6 +181,18 @@ def build_info_text(job) -> str:
     job_id = getattr(job, "id", None)
     if job_id:
         lines.append(f"[dim]ID: {_escape_markup(str(job_id))}[/dim]")
+
+    command = getattr(job, "cmd", None)
+    if command:
+        lines.append(f"\n[cyan]Command:[/cyan]  {_escape_markup(str(command))}")
+
+    cwd = getattr(job, "cwd", None)
+    if cwd:
+        lines.append(f"[cyan]Working dir:[/cyan]  {_escape_markup(str(cwd))}")
+
+    error = getattr(job, "error", None)
+    if error:
+        lines.append(f"\n[bold red]Error[/bold red]\n[red]{_escape_markup(str(error))}[/red]")
 
     priority = getattr(job, "priority", 0)
     if priority:

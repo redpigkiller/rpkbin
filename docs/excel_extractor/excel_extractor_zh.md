@@ -111,7 +111,7 @@ Row(
     repeat=1,                 # 出現次數範圍 (詳見下文 Repeat)
     node_id=None,             # 為該列打上辨識標籤，結果回傳時好判斷對象 
     normalize=True,           # 自動去除字串頭尾空白與轉小寫進行寬鬆判斷
-    min_similarity=None,      # (搭配 rapidfuzz) 給定 0~1 的相容字串模糊條件
+    min_similarity=None,      # literal 字串的 0~1 模糊比對；Types/regex 仍為精確比對
     match_ratio=None          # (0~1) 例如 0.9，容許列內有 10% 的格子不符合也算過關
 )
 ```

@@ -450,6 +450,18 @@ class TestTuiAutocomplete:
         candidates = self._completions(inp, "stop my")
         assert "my render job" in candidates
 
+    def test_duplicate_job_names_complete_to_ids(self):
+        jobs = [MagicMock(), MagicMock()]
+        jobs[0].name, jobs[0].id = "render", "11111111"
+        jobs[1].name, jobs[1].id = "render", "22222222"
+        inp = self._make_cmd_input(session_jobs=jobs, detail_job=None)
+        inp.value = "stop "
+
+        inp.action_autocomplete()
+
+        assert inp.value == "stop 11111111 "
+        assert inp._cycle_matches == ["11111111", "22222222"]
+
 
 # ---------------------------------------------------------------------------
 # Goal 3 : headless runner _WaveCompleter key/signal completions

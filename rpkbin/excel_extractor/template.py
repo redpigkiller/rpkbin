@@ -14,7 +14,6 @@ repeat = (N, None)  → N or more
 """
 
 from __future__ import annotations
-import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -74,7 +73,7 @@ class TemplateNode(ABC):
     """Abstract base for all template AST nodes.
     
     Notes:
-        - `min_similarity` applies its threshold to all cells in the node (cannot be configured individually per cell).
+        - `min_similarity` applies to literal string cells; regex-based `Types` conditions remain exact.
         - `normalize=True` will lowercase and strip cell values before matching. Please use caution when using regular expressions (`Types.r`) since regex patterns containing uppercase characters may unexpectedly fail.
     """
     repeat: RepeatSpec = 1
@@ -197,6 +196,8 @@ class Block:
         self._expand(self.children)
 
     def _validate(self):
+        if self.orientation not in ("vertical", "horizontal"):
+            raise ValueError("orientation must be 'vertical' or 'horizontal'")
         for child in self.children:
             if not isinstance(child, TemplateNode):
                 raise TypeError(f"Block children must be TemplateNode, got {type(child)}")
@@ -217,6 +218,9 @@ class Block:
                 continue  # skip, will be expanded later
             else:
                 w = len(node.rules())   # Row
+
+            if w == 0:
+                raise ValueError(f"{type(node).__name__} pattern cannot be empty")
 
             if expected is not None and w != expected:
                 raise ValueError(
@@ -242,4 +246,3 @@ class Block:
     def __repr__(self) -> str:
         id_part = f"{self.block_id!r}, " if self.block_id else ""
         return f"Block({id_part}{self.orientation!r}, {len(self.children)} children)"
-    

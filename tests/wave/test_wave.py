@@ -1542,6 +1542,23 @@ class TestRunner:
     def _write_wave(self, path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
 
+    def test_non_interactive_terminal_uses_headless_mode(self, monkeypatch):
+        from rpkbin.wave import runner
+
+        class _Stream:
+            def isatty(self):
+                return False
+
+        called = []
+        monkeypatch.setattr(runner, "_load_wave_file", lambda path: None)
+        monkeypatch.setattr(runner, "_run_headless", lambda: called.append("headless"))
+        monkeypatch.setattr(runner, "_run_tui", lambda: called.append("tui"))
+        monkeypatch.setattr(runner.sys, "stdin", _Stream())
+        monkeypatch.setattr(runner.sys, "stdout", _Stream())
+
+        assert runner.run("unused") == 0
+        assert called == ["headless"]
+
     def test_simple_funcjob_no_tui(self, tmp_path):
         """runner.run() with a FuncJob completes successfully."""
         wave = tmp_path / "simple.wave.py"
@@ -1775,6 +1792,7 @@ class TestCLI:
         assert "CmdJob" in minimal
         assert "add_parser" not in minimal
         assert "PtyJob" not in minimal
+        assert "configure_tui" not in minimal
 
         # full
         full = _render_wave_template("full_test", "full")
@@ -1782,6 +1800,7 @@ class TestCLI:
         assert "full_test" in full
         assert "add_parser" in full
         assert "Hook.on_done" in full
+        assert "configure_tui" in full
 
         # pty
         pty = _render_wave_template("pty_test", "pty")
@@ -2128,9 +2147,23 @@ class TestHeadlessCommandParsing:
             job._status = DONE
             job._result = 0
 
-        assert "Result" not in app._dashboard_column_labels()
-        assert "Exit Code" in app._dashboard_column_labels()
+        assert app._dashboard_column_labels() == ["#", "Name", "Status", "Elapsed", "Exit Code"]
         assert "[cyan]0[/cyan]" in app._build_row_cells(job)
+
+    def test_info_panel_shows_command_cwd_and_error(self):
+        from rpkbin.wave.tui.view_models import build_info_text
+
+        job = WaveCmdJob("broken", "python missing.py", cwd="work")
+        with job._lock:
+            job._status = FAILED
+            job._error = "file not found"
+
+        info = build_info_text(job)
+
+        assert "python missing.py" in info
+        assert "Working dir:" in info
+        assert "work" in info
+        assert "file not found" in info
 
     def test_failed_func_job_without_integer_result_shows_exit_code_one(self):
         from rpkbin.wave.tui.app import WaveApp
@@ -2233,6 +2266,30 @@ class TestHeadlessCommandParsing:
         app._update_detail_header(job)
 
         assert "exit=[/dim][red]1[/red]" in header.value
+        assert header.disabled is True
+        assert header.placeholder == "Input unavailable for this job"
+
+    def test_running_cmd_job_enables_job_input(self):
+        from rpkbin.wave.tui.app import WaveApp
+
+        class _Widget:
+            def update(self, value):
+                self.value = value
+
+        sess = Session()
+        job = WaveCmdJob("interactive-command", "python -i")
+        sess.add(job)
+        with job._lock:
+            job._status = RUNNING
+        app = WaveApp(sess)
+        widget = _Widget()
+        app.query_one = lambda *args, **kwargs: widget  # type: ignore[method-assign]
+        app._detail_job = job
+
+        app._update_detail_header(job)
+
+        assert widget.disabled is False
+        assert widget.placeholder == "[interactive-c…] > "
 
     def test_data_panel_shows_empty_state_until_data_arrives(self):
         from rpkbin.wave.tui.app import WaveApp

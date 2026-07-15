@@ -778,21 +778,21 @@ It is built with [Textual](https://github.com/Textualize/textual) and requires
 
 ```
 ┌─ WAVE ─ my_flow.py ───── 2/8 running  OK 1 done  WAIT 3 pending  FAIL 0 failed ─┐
-│ [DASHBOARD] [JOB DETAIL] [SYSTEM LOG] [HELP]                                     │
+│ [DASHBOARD] [JOB DETAIL] [SESSION LOG] [HELP]                                    │
 │─────────────────────────────────────────────────────────────────────────────────│
 │  Name          Status     Elapsed   Progress  Exit Code  Tags │ build [0f3a21b9]│
 │▶ build         RUNNING    00:02:30   42%                  gpu │ INFO compile... │
 │  lint          DONE       00:01:12             0              │ WARN retry...   │
 │  test-unit     PENDING                                      test│               │
 ├─ wave>  _                        [Tab: autocomplete]  [Enter: submit]           │
-│ [F1] Dashboard  [F2] Job Detail  [F3] System Log  [Ctrl+C] Quit                 │
+│ [F1] Dashboard  [F2] Job Detail  [F3] Session Log  [Ctrl+C] Quit                │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tabs
 
 - **DASHBOARD** — split view with a live job table on the left and a log preview for the highlighted job on the right.
-  - Default table columns: Name / ID / Status / Elapsed / Progress / Retries / Exit Code / Tags.
+  - Default table columns: # / Name / Status / Elapsed / Exit Code.
   - Dashboard columns can be customized from the wave file with `session.configure_tui(...)`.
   - Elapsed is updated every second for running jobs.
   - The right-side log preview follows the highlighted row, so you can scan logs without entering JOB DETAIL.
@@ -804,9 +804,9 @@ It is built with [Textual](https://github.com/Textualize/textual) and requires
     - **INFO** — compact job metadata, including id, status, state, skip flag, and stop policy.
     - **DATA** — key/value table of `job.peek_data()`, updated by upsert. Empty jobs show `(no parsed data)`.
     - **EVENTS** — user-emitted events (`source="user"`) in chronological order.
-    - **SYSTEM** — system-emitted events (`source="system"`), e.g. `parser_error`, `hook_error`; parser/hook errors are highlighted in red and include exception details.
+    - **ERRORS** — system-emitted events (`source="system"`), e.g. `parser_error`, `hook_error`; parser/hook errors are highlighted in red and include exception details.
     - **TERMINAL** — append-only PTY output for `PtyJob` jobs. For non-PTY jobs, shows a "not supported" message. This is a fake-terminal view, not a full terminal emulator.
-- **SYSTEM LOG** — session-level events and the output of all command-bar commands.
+- **SESSION LOG** — session-level events and the output of all command-bar commands.
 - **HELP** — inline keyboard shortcut and command reference.
 
 ### Navigating to a Job's Detail
@@ -844,7 +844,7 @@ In TUI mode, `show <job>` / `logs <job>` / `data <job>` / `events <job>` open **
 
 The bottom `wave>` input is always visible regardless of which tab is active.
 It accepts the same commands as the headless REPL (see below).
-All `print()` output from commands is redirected to the **SYSTEM LOG** tab so
+All `print()` output from commands is redirected to the **SESSION LOG** tab so
 the TUI layout stays intact.
 
 Additional TUI-only keyboard bindings:
@@ -853,7 +853,7 @@ Additional TUI-only keyboard bindings:
 | --- | --- |
 | `F1` | Switch to DASHBOARD |
 | `F2` | Switch to JOB DETAIL |
-| `F3` | Switch to SYSTEM LOG |
+| `F3` | Switch to SESSION LOG |
 | `F4` | Switch to HELP |
 | `i` | Focus the inline Job Input Bar in JOB DETAIL; sends text plus newline to the current job |
 | `F9` | Send Ctrl-C to the current PTY job from JOB DETAIL |
@@ -1201,7 +1201,7 @@ It provides a stable snapshot with fields such as:
 | Problem | Cause & Solution |
 |---|---|
 | Parser didn't fire | Confirm the job is a `CmdJob`, the log line actually matches, and the parser returns a non-empty `dict`. |
-| Where are hook/parser errors? | Wave emits `parser_error` / `hook_error` events with exception type, message, input/action context, and a short traceback. Check `job.peek_events()`, `show <job>`, or the TUI SYSTEM sub-tab. |
+| Where are hook/parser errors? | Wave emits `parser_error` / `hook_error` events with exception type, message, input/action context, and a short traceback. Check `job.peek_events()`, `show <job>`, or the TUI ERRORS sub-tab. |
 | `stop -g` says unsupported | The job has no `set_stop_policy(...)` configured. |
 
 ### Results & Exit Code

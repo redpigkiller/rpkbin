@@ -100,8 +100,11 @@ def normalize_value(value):
     if value is None:
         return ""
 
-    # datetime / date
-    if isinstance(value, (datetime.datetime, datetime.date)):
+    # datetime must be checked before date because datetime subclasses date
+    if isinstance(value, datetime.datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    if isinstance(value, datetime.date):
         return value.strftime("%Y-%m-%d")
 
     # time
@@ -112,10 +115,9 @@ def normalize_value(value):
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
 
-    # string
+    # Matching decides whether whitespace should be normalized.
     if isinstance(value, str):
-        v = value.strip()
-        return v if v else ""
+        return value
 
     return str(value)
 

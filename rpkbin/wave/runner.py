@@ -206,7 +206,7 @@ def run(
     if tui_profile is not None:
         _apply_tui_profile(tui_profile)
 
-    if no_tui:
+    if no_tui or not (sys.stdin.isatty() and sys.stdout.isatty()):
         _run_headless()
     else:
         _run_tui()
@@ -227,7 +227,7 @@ def _run_headless() -> None:
     """
     session._start(tui_notify=None)
     try:
-        if sys.stdin.isatty():
+        if sys.stdin.isatty() and sys.stdout.isatty():
             _run_repl(session)
         else:
             session.wait()

@@ -111,7 +111,7 @@ Row(
     repeat=1,                 # Times it can chain. (ex: "+", "*", tuple params)
     node_id=None,             # An identifiable label piped backwards after extraction. 
     normalize=True,           # Strips tails/lowercases inputs to assist strict matching
-    min_similarity=None,      # Provide float (0~1.0) activating fuzzy string proximity checks
+    min_similarity=None,      # Fuzzy matching for literal strings; Types/regex stay exact
     match_ratio=None          # Threshold float (0~1.0) of cells permitted to fail evaluating
 )
 ```

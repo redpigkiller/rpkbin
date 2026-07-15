@@ -766,21 +766,21 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
 
 ```
 ┌─ WAVE ─ my_flow.py ──────────── 2/8 running  ✓1 done  ●3 pending  ✗0 failed ─┐
-│ [DASHBOARD] [JOB DETAIL] [SYSTEM LOG] [HELP]                                   │
+│ [DASHBOARD] [JOB DETAIL] [SESSION LOG] [HELP]                                  │
 │─────────────────────────────────────────────────────────────────────────────── │
 │  Name          Status     Elapsed   Progress  Exit Code  Tags │ build [0f3a21b9]│
 │▶ build         RUNNING    00:02:30   42%                  gpu │ INFO compile... │
 │  lint          DONE       00:01:12             0              │ WARN retry...   │
 │  test-unit     PENDING                                 test│                  │
 ├─ wave>  _                                                                      │
-│ [F1] Dashboard  [F2] Job Detail  [F3] System Log  [Ctrl+C] Quit               │
+│ [F1] Dashboard  [F2] Job Detail  [F3] Session Log  [Ctrl+C] Quit              │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 分頁說明
 
 - **DASHBOARD** — 左側是所有 jobs 的即時表格，右側是目前 highlight job 的 log preview。
-  - 預設表格欄位：Name / ID / Status / Elapsed / Progress / Retries / Exit Code / Tags。
+  - 預設表格欄位：# / Name / Status / Elapsed / Exit Code。
   - 可在 wave file 透過 `session.configure_tui(...)` 自訂 Dashboard 欄位。
   - Running 中的 job 每秒更新 Elapsed。
   - 右側 log preview 會跟著 highlight row 變化，方便不用進入 JOB DETAIL 就快速掃不同 job 的 log。
@@ -792,9 +792,9 @@ TUI 是在互動式 terminal 下執行 `rpk-wave run` 時的預設模式。
     - **INFO** — job metadata 摘要，包含 id、status、state、skip flag 與 stop policy。
     - **DATA** — `job.peek_data()` 的 key/value 表格，以 upsert 方式更新；沒有資料時會顯示 `(no parsed data)`。
     - **EVENTS** — 使用者發送的事件（`source="user"`），依時間順序顯示。
-    - **SYSTEM** — 系統發送的事件（`source="system"`），例如 `parser_error`、`hook_error`；parser/hook 錯誤會以紅色醒目顯示，並包含 exception detail。
+    - **ERRORS** — 系統發送的事件（`source="system"`），例如 `parser_error`、`hook_error`；parser/hook 錯誤會以紅色醒目顯示，並包含 exception detail。
     - **TERMINAL** — `PtyJob` 的 append-only PTY 輸出。非 PTY job 會顯示「不支援」的提示。這是 fake-terminal view，不是完整的 terminal emulator。
-- **SYSTEM LOG** — session 層級的事件，以及所有 Command Bar 指令的輸出結果。
+- **SESSION LOG** — session 層級的事件，以及所有 Command Bar 指令的輸出結果。
 - **HELP** — 鍵盤快捷鍵與指令說明。
 
 ### 如何切換到 JOB DETAIL
@@ -828,7 +828,7 @@ Parsed-data 欄位使用 `{"label": "...", "data": "KEY"}`，會顯示 `job.peek
 
 底部的 `wave>` 輸入框無論在哪個分頁都可見。
 它接受與 headless REPL 相同的所有指令（見下方）。
-所有指令的 `print()` 輸出都會被導入 **SYSTEM LOG** 分頁，TUI 版面不會被打亂。
+所有指令的 `print()` 輸出都會被導入 **SESSION LOG** 分頁，TUI 版面不會被打亂。
 
 TUI 專屬快捷鍵：
 
@@ -836,7 +836,7 @@ TUI 專屬快捷鍵：
 | --- | --- |
 | `F1` | 切換到 DASHBOARD |
 | `F2` | 切換到 JOB DETAIL |
-| `F3` | 切換到 SYSTEM LOG |
+| `F3` | 切換到 SESSION LOG |
 | `F4` | 切換到 HELP |
 | `i` | 在 JOB DETAIL 聚焦 inline Job Input Bar；送出文字時會自動加換行 |
 | `F9` | 在 JOB DETAIL 透過 PTY 對目前 job 發送 Ctrl-C |
@@ -1179,7 +1179,7 @@ Session event 常見用途：
 | 問題 | 原因與解法 |
 |---|---|
 | Parser 沒有觸發 | 確認 job 是 `CmdJob`、log 行確實命中、且 parser 回傳了非空 `dict`。 |
-| Hook 或 parser 的錯誤去哪看？ | Wave 會發送 `parser_error` / `hook_error` 事件，內容包含 exception type、message、輸入/action context 與短 traceback。可查看 `job.peek_events()`、`show <job>`，或 TUI 的 SYSTEM sub-tab。 |
+| Hook 或 parser 的錯誤去哪看？ | Wave 會發送 `parser_error` / `hook_error` 事件，內容包含 exception type、message、輸入/action context 與短 traceback。可查看 `job.peek_events()`、`show <job>`，或 TUI 的 ERRORS sub-tab。 |
 | `stop -g` 說 unsupported | 該 job 沒有設定 `set_stop_policy(...)`。 |
 
 ### 結果與 Exit Code

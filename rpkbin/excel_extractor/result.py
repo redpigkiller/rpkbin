@@ -1,8 +1,7 @@
 """Result data structures returned by the Excel extraction engine."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
 
 
 @dataclass
@@ -45,7 +44,7 @@ class MatchOptions:
     """Options that control the behaviour of match_template().
     """
     max_matched_sheets: int = 0       # 0 for all, positive for specified number of matched sheets
-    # near_miss_threshold:     float | None = None
-    # search_range:            tuple[int, int, int, int] | None = None
-    # consume_matched_regions: bool = False
-    # warn_fuzzy:              bool = True
+
+    def __post_init__(self):
+        if not isinstance(self.max_matched_sheets, int) or self.max_matched_sheets < 0:
+            raise ValueError("max_matched_sheets must be a non-negative integer")

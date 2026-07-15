@@ -8,6 +8,8 @@ from textual.binding import Binding
 from textual.events import Key
 from textual.widgets import Input
 
+from rpkbin.wave.tui.view_models import command_identifier_for_job
+
 
 _HELP_TEXT = """\
 [bold green]Key Scopes[/bold green]
@@ -17,7 +19,7 @@ _HELP_TEXT = """\
   [cyan]Input[/cyan]        Enter Esc ↑ ↓ Tab  — active when an input bar is focused
 
 [bold green]Navigation[/bold green]
-  [cyan]F1 / F2 / F3 / F4[/cyan]  Switch tabs (Dashboard / Job Detail / System Log / Help)
+  [cyan]F1 / F2 / F3 / F4[/cyan]  Switch tabs (Dashboard / Job Detail / Session Log / Help)
   [cyan]:[/cyan]                Focus Command Bar  [dim](global)[/dim]
   [cyan]Esc[/cyan]              Leave input bar, return focus to content area  [dim](input)[/dim]
   [cyan]↑ / ↓[/cyan]            Dashboard: move job cursor  [dim](job list focused)[/dim]
@@ -26,7 +28,7 @@ _HELP_TEXT = """\
                    Input bars: submit  [dim](input focused)[/dim]
   [cyan][ / ][/cyan]            Previous / next job in Job Detail  [dim](job detail)[/dim]
   [cyan]{ / }[/cyan]            Previous / next running job in Job Detail  [dim](job detail)[/dim]
-  [cyan]1 / 2 / 3 / 4[/cyan]   Switch right panel: INFO / DATA / EVENTS / SYSTEM  [dim](job detail)[/dim]
+  [cyan]1 / 2 / 3 / 4[/cyan]   Switch right panel: INFO / DATA / EVENTS / ERRORS  [dim](job detail)[/dim]
   [cyan]Tab[/cyan]              Command Bar: autocomplete  [dim](command bar focused)[/dim]
 
 [bold green]Terminal Shortcuts[/bold green]  [dim](job detail, PTY jobs only)[/dim]
@@ -270,8 +272,8 @@ class CommandInput(Input):
             ]
             self._apply_completion(prefix, matches, before=f"{verb} ")
         elif verb in _WAVE_JOB_COMMANDS and hasattr(self.app, "_session"):
-            job_names = [job.name for job in self.app._session.jobs()]
-            candidates = list(job_names)
+            jobs = self.app._session.jobs()
+            candidates = [command_identifier_for_job(job, jobs) for job in jobs]
             if (
                 hasattr(self.app, "_detail_job")
                 and self.app._detail_job is not None
