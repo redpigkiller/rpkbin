@@ -48,8 +48,8 @@ HIR
 ```
 
 Supplying a `RegisterModel` enables validation against the target register file
-and register allocation. Passing `None` skips both; spill support remains
-dependent on the target model.
+and register allocation. Passing `None` skips both. Register pressure currently
+fails closed; production spilling is not implemented.
 
 ## Offline bounded-region semantics
 

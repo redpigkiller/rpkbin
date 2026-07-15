@@ -48,7 +48,7 @@ HIR
 ```
 
 提供 `RegisterModel` 時，pipeline 會依 target register file 驗證並執行暫存器分配；
-傳入 `None` 會略過兩者。Spill 支援仍取決於 target model。
+傳入 `None` 會略過兩者。暫存器壓力目前會 fail closed；production spill 尚未實作。
 
 ## 離線 bounded-region semantics
 

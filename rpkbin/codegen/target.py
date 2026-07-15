@@ -8,7 +8,7 @@ Protocols defined here
 ----------------------
 * ``Target``           — lowers LIR Function to pseudo ASM (instruction selection).
 * ``FragmentTarget``   — lowers LIR Fragment to pseudo ASM (instruction selection).
-* ``RegisterModel``    — describes the physical register file and spill policy.
+* ``RegisterModel``    — describes the physical register file.
 
 None of these protocols import or reference any private/target package.
 """
@@ -67,7 +67,7 @@ class FragmentTarget(Protocol):
 
 
 class RegisterModel(Protocol):
-    """Describes the physical register file and spill/reload policy.
+    """Describes the physical register file.
 
     Implementations are provided by the private target package.  The
     register allocator uses this Protocol exclusively; the framework
@@ -103,17 +103,9 @@ class RegisterModel(Protocol):
         Used by the HIR validator to detect aliasing conflicts between
         @hint-annotated variables.
 
-    ``spill_slots()``
-        Available spill locations.  Empty list means the allocator must
-        use stack push/pop exclusively.
-
-    ``emit_spill(reg, slot)``
-        Return a sequence of pseudo-ASM strings that save ``reg`` to
-        ``slot``.
-
-    ``emit_reload(slot, reg)``
-        Return a sequence of pseudo-ASM strings that restore ``reg`` from
-        ``slot``.
+    The allocator currently fails closed on register pressure.  The legacy
+    spill hooks below are retained for compatibility but are not consumed by
+    the production pipeline.
     """
 
     def allocatable_registers(self) -> Sequence[str]:
@@ -172,18 +164,13 @@ class RegisterModel(Protocol):
         )
 
     def spill_slots(self) -> Sequence[SpillSlot]:
-        """Return available spill memory locations.
-
-        An empty sequence means the allocator should rely on stack
-        push/pop only.  A non-empty sequence of ``SpillSlot`` objects
-        with ``address=int`` means fixed-address locations are available.
-        """
+        """Legacy spill prototype hook; currently not consumed."""
 
     def emit_spill(self, reg: str, slot: SpillSlot) -> Sequence[str]:
-        """Return pseudo-ASM instruction strings to save ``reg`` to ``slot``."""
+        """Legacy spill prototype hook; currently not consumed."""
 
     def emit_reload(self, slot: SpillSlot, reg: str) -> Sequence[str]:
-        """Return pseudo-ASM instruction strings to restore ``reg`` from ``slot``."""
+        """Legacy spill prototype hook; currently not consumed."""
 
 
 def is_physical_register(register_model, reg: str) -> bool:

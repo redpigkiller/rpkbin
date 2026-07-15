@@ -59,6 +59,7 @@ Volatile loads and stores preserve order and are not removed by the rewrite pass
 | `Fragment` | Bound straight-line/control-flow fragment |
 | `FragmentBinding` | Fragment input/output binding |
 | `Module` | Functions plus external declarations and symbols |
-| `SpillSlot` | Prototype register-allocator spill location |
+| `SpillSlot` | Legacy experimental placeholder; not consumed by production allocation |
 
-Targets consume `Function` or `Fragment` through `Target` / `FragmentTarget`. `SpillSlot` belongs to the experimental allocator contract.
+Targets consume `Function` or `Fragment` through `Target` / `FragmentTarget`.
+Register pressure currently fails closed.

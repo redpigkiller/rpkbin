@@ -483,56 +483,16 @@ def _four_var_lir_func() -> lir.Function:
 
 
 class TestSpill:
-    """Tests for spill behavior."""
+    """Register pressure must fail closed until spill lowering is safe."""
 
-    def test_spill_inserts_store_after_def(self):
-        """Defining a spilled var must insert a MemStore to the spill slot."""
+    def test_pressure_fails_closed_even_with_legacy_spill_slots(self):
         func = _four_var_lir_func()
         rm = ToyRegisterModelWithSpill()
-        new_func, _ = allocate_registers(func, rm)
-
-        stmts = new_func.blocks[0].statements
-        stores = [s for s in stmts if isinstance(s, lir.MemStore)]
-        assert len(stores) >= 1, "Expected at least one MemStore for spill"
-        slot_addrs = {s.addr.value for s in stores if isinstance(s.addr, lir.Const)}
-        assert slot_addrs & {0x20, 0x21}, (
-            f"Expected MemStore to spill slot 0x20 or 0x21, got: {slot_addrs}"
-        )
-
-    def test_spill_inserts_load_before_use(self):
-        """Using a spilled var must insert a MemLoad from the spill slot."""
-        func = _four_var_lir_func()
-        rm = ToyRegisterModelWithSpill()
-        new_func, _ = allocate_registers(func, rm)
-
-        stmts = new_func.blocks[0].statements
-        reload_stmts = [
-            s for s in stmts
-            if isinstance(s, lir.Assign) and isinstance(s.value, lir.MemLoad)
-        ]
-        assert len(reload_stmts) >= 1, (
-            "Expected at least one MemLoad reload statement for spilled var"
-        )
-        load_addrs = {
-            s.value.addr.value
-            for s in reload_stmts
-            if isinstance(s.value.addr, lir.Const)
-        }
-        assert load_addrs & {0x20, 0x21}, (
-            f"Expected MemLoad from spill slot 0x20 or 0x21, got: {load_addrs}"
-        )
-
-    def test_spill_no_silent_aliasing(self):
-        """Spill code must be inserted (more stmts than original) when spilling occurs."""
-        func = _four_var_lir_func()
-        rm = ToyRegisterModelWithSpill()
-        new_func, _ = allocate_registers(func, rm)
-
-        original_count = len(func.blocks[0].statements)
-        new_count = len(new_func.blocks[0].statements)
-        assert new_count > original_count, (
-            f"Spill code was not inserted: expected >{original_count} stmts, got {new_count}"
-        )
+        with pytest.raises(
+            RegisterAllocationError,
+            match="register spilling is not implemented safely",
+        ):
+            allocate_registers(func, rm)
 
     def test_spill_does_not_break_non_spill_case(self):
         """No-spill path is unchanged: 2 vars with 3 regs -> no MemStore/MemLoad inserted."""
@@ -642,10 +602,11 @@ def test_allocator_avoids_call_clobbers_for_live_values():
         ),
     )
 
-    allocated, assignment = allocate_registers(func, ToyRegisterModelWithSpill())
-
-    assert "x" not in assignment
-    assert isinstance(allocated.blocks[0].statements[0], lir.MemStore)
+    with pytest.raises(
+        RegisterAllocationError,
+        match="register spilling is not implemented safely",
+    ):
+        allocate_registers(func, ToyRegisterModelWithSpill())
 
 
 def test_fixed_register_is_not_silently_spilled_across_call():

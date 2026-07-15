@@ -12,15 +12,16 @@ See [Codegen](codegen.md) for usage.
 
 ## Experimental
 
-- Spill/reload paths and complex live-range translation remain target-dependent
-  and need broader validation.
+- Production spill/reload is disabled. The former pre-isel prototype could
+  overwrite live registers because expression-tree LIR does not expose target
+  instruction constraints.
 
 ## Deferred
 
 - Module-level pseudo-ASM pipeline.
 - 32-bit lowering.
 - Generalized `HFor` bounds and loop-variable mutation.
-- Broader spill, live-range, and allocation translation validation.
+- A machine-level save/restore or spill contract, justified by a real target.
 
 ## Out of scope
 

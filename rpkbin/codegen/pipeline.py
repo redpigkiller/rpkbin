@@ -166,7 +166,7 @@ def run_codegen_from_hir(
     ValueError
         If the produced LIR fails structural validation.
     RegisterAllocationError
-        If allocation fails (too many live vars, no spill slots).
+        If allocation fails because the available registers cannot satisfy it.
     """
     # Step 1: HIR validation
     validate_hfunction(hfunc, register_model)

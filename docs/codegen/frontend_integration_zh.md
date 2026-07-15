@@ -48,6 +48,6 @@ Frontend / private target 負責：
 
 - `UInt(32)` / `SInt(32)` lowering 尚未完成。
 - `HFor` 只接受 compile-time constant 的 `init` / `bound`，且 body 不能寫入 loop variable。
-- 提供 `RegisterModel` 時 pipeline 會執行 register allocation；spill/reload
-  是否可用取決於 target model 與其 memory model 驗證。
+- 提供 `RegisterModel` 時 pipeline 會執行 register allocation；暫存器不足時目前
+  fail closed，不會產生未驗證的 spill/reload。
 - 真實 target 與 encoding 不屬於本 package。

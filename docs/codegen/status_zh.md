@@ -17,7 +17,9 @@
 
 ## Experimental
 
-- Spill/reload path 與複雜 live-range translation 仍取決於 target，尚需更廣泛驗證。
+- Production spill/reload 已停用。舊 pre-isel prototype 在 expression-tree LIR
+  尚未知道 target instruction constraints 時挑選 reload register，可能覆寫 live
+  value；暫存器壓力現在一律 fail closed。
 - `rpkbin.codegen.cegis.minimize_cegis` 提供 solver-free、target-neutral 的
   cost-budget / counterexample 控制迴圈；solver、候選語意與完整驗證仍由離線
   consumer 提供，預設 codegen pipeline 不會呼叫它。
@@ -29,7 +31,7 @@
 | Module-level codegen pipeline | 目前 consumer 的 per-function/per-fragment pipeline 已足夠；只有實際 consumer 需要 module-wide selection 時才設計 |
 | 32-bit lowering | 不規劃；至少有第二個 target 或實際 workload 需要時再設計多暫存器表示 |
 | 一般化 `HFor` | 不規劃；frontend 應將其他迴圈表示為現有 structured `while` |
-| Register allocation hardening | 只有 target 提供真實 spill storage，或實際 workload 暴露 allocator 問題時才擴充 |
+| Register allocation hardening | 真實 target 需要 save/restore 或 spill 時，先建立能看見 machine instruction constraints 的 contract；不可重新啟用舊 pre-isel spill helper |
 
 ## Codegen algorithm decision catalog
 

@@ -182,10 +182,11 @@ def test_allocator_treats_overlapping_clobber_as_live_value_conflict():
         ),
     )
 
-    allocated, assignment = allocate_registers(func, SPILL_MODEL)
-
-    assert "x" not in assignment
-    assert any(isinstance(stmt, lir.MemStore) for stmt in allocated.blocks[0].statements)
+    with pytest.raises(
+        RegisterAllocationError,
+        match="register spilling is not implemented safely",
+    ):
+        allocate_registers(func, SPILL_MODEL)
 
 
 def test_fixed_value_live_across_alias_overlapping_clobber_errors():

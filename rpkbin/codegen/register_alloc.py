@@ -5,26 +5,20 @@ Assigns physical registers to all ``Var`` / ``VReg`` nodes in a
 Protocol; no MCU-specific details are hardcoded here.
 
 Register allocation runs whenever a codegen pipeline receives a
-``RegisterModel``.  Spill code remains target-dependent and must be validated
-against that target's memory model.
+``RegisterModel``.
 
-Algorithm: greedy graph-colouring with basic spill
---------------------------------------------------
+Algorithm: greedy graph-colouring, fail-closed on pressure
+---------------------------------------------------------
 1. Collect all named values (Var / VReg names) appearing in the function.
 2. Compute block live-in/live-out sets and build an interference graph.
 3. Greedy colour: hinted variables first (sorted by hint name), then
    unhinted variables (sorted by name for determinism).
-4. If no compatible register is available, mark var as *spilled*:
-   - spilled dict: var_name → SpillSlot  (not placed in assignment)
-   - If no spill slot available → raise RegisterAllocationError.
-5. Insert spill code:
-   - After each definition of a spilled var: insert MemStore to slot.
-   - Before each use of a spilled var: insert MemLoad from slot + replace ref.
-6. Apply the assignment: replace every non-spilled Var/VReg with
-   its physical register name.
+4. If no compatible register is available, raise RegisterAllocationError.
+5. Apply the assignment: replace every Var/VReg with its physical register.
 
-Spill addressing currently uses ``Const(slot.address, 16)``; register models
-must expose compatible spill slots.
+The old pre-isel spill prototype could overwrite live registers while loading
+spill temporaries.  Register pressure therefore fails closed until spilling is
+implemented at a representation that knows target instruction constraints.
 """
 
 from __future__ import annotations
@@ -40,7 +34,7 @@ from .target import RegisterModel, can_allocate, registers_overlap, is_physical_
 # ---------------------------------------------------------------------------
 
 class RegisterAllocationError(Exception):
-    """Raised when allocation is impossible and no spill slots are available."""
+    """Raised when the available registers cannot satisfy allocation."""
 
 
 # ---------------------------------------------------------------------------
@@ -68,16 +62,14 @@ def allocate_registers(
     Returns
     -------
     (new_func, assignment)
-        ``new_func`` has the same structure as *func* but with all
-        non-spilled Var/VReg names replaced by physical register names,
-        and spill code (MemStore/MemLoad) inserted for spilled vars.
-        ``assignment`` maps only non-spilled var_name → physical_reg.
+        ``new_func`` has the same structure as *func* but with all Var/VReg
+        names replaced by physical register names. ``assignment`` maps each
+        var_name → physical_reg.
 
     Raises
     ------
     RegisterAllocationError
-        If more simultaneously-live variables exist than available
-        registers AND no spill slots are available.
+        If more simultaneously-live variables exist than available registers.
     """
     allocator = _Allocator(func, register_model, var_hints or {})
     return allocator.run()
@@ -260,13 +252,7 @@ class _Allocator:
         self._func = func
         self._rm = rm
         self._extra_hints = extra_hints
-        self._fresh_counter = 0
         self._fixed_hints = getattr(self._rm, "fixed_register_hints", lambda: False)()
-
-    def _fresh_id(self) -> int:
-        n = self._fresh_counter
-        self._fresh_counter += 1
-        return n
 
     def run(self) -> Tuple[lir.Function, Dict[str, str]]:
         # Step 1: collect all named values and their hints
@@ -278,30 +264,13 @@ class _Allocator:
         physical_regs.update(hint for hint in names_hints.values() if hint is not None)
         interference, forbidden = _build_interference(self._func, physical_regs)
 
-        # Step 3: greedy colouring → (assignment, spilled)
-        assignment, spilled = self._greedy_colour(
+        # Step 3: greedy colouring
+        assignment = self._greedy_colour(
             names_hints, interference, forbidden
         )
-        if self._fixed_hints:
-            fixed_spills = sorted(
-                name for name, hint in names_hints.items()
-                if hint is not None and name in spilled
-            )
-            if fixed_spills:
-                raise RegisterAllocationError(
-                    "Fixed-register values cannot be spilled: "
-                    + ", ".join(repr(name) for name in fixed_spills)
-                )
 
-        # Step 4a: insert spill store/load code if any vars were spilled
-        func_after_spill = self._func
-        if spilled:
-            func_after_spill = self._insert_spill_code(
-                self._func, spilled, assignment
-            )
-
-        # Step 4b: replace non-spilled var names with physical registers
-        new_func = _apply_assignment(func_after_spill, assignment)
+        # Step 4: replace var names with physical registers
+        new_func = _apply_assignment(self._func, assignment)
         return new_func, assignment
 
     def _validate_fixed_hints(
@@ -332,12 +301,11 @@ class _Allocator:
         names_hints: Dict[str, Optional[str]],
         interference: Dict[str, Set[str]],
         forbidden: Dict[str, Set[str]],
-    ) -> Tuple[Dict[str, str], Dict[str, lir.SpillSlot]]:
+    ) -> Dict[str, str]:
         """Assign physical registers greedily.
 
-        Returns (assignment, spilled):
-          assignment: var_name → physical_reg   (non-spilled vars)
-          spilled:    var_name → SpillSlot       (spilled vars)
+        Returns:
+          assignment: var_name → physical_reg
         """
         all_regs: List[str] = list(self._rm.allocatable_registers())
 
@@ -353,10 +321,6 @@ class _Allocator:
         ordered = hinted + unhinted
 
         assignment: Dict[str, str] = {}
-        spilled: Dict[str, lir.SpillSlot] = {}
-        spill_slots = list(self._rm.spill_slots())
-        spill_idx = 0
-
         for var_name, hint in ordered:
             var_width = _find_width(self._func, var_name)
 
@@ -395,419 +359,13 @@ class _Allocator:
                 raise RegisterAllocationError(
                     f"Fixed register '{hint}' for '{var_name}'{detail}."
                 )
-            elif spill_idx < len(spill_slots):
-                # Mark as spilled — NOT entered in assignment
-                spilled[var_name] = spill_slots[spill_idx]
-                spill_idx += 1
             else:
                 raise RegisterAllocationError(
-                    f"No register available for '{var_name}' and no spill slots provided."
+                    f"No register available for '{var_name}'; register spilling "
+                    "is not implemented safely."
                 )
 
-        return assignment, spilled
-
-    # ------------------------------------------------------------------
-    # Step 4a: insert spill store/load code
-    # ------------------------------------------------------------------
-
-    def _insert_spill_code(
-        self,
-        func: lir.Function,
-        spilled: Dict[str, lir.SpillSlot],
-        assignment: Dict[str, str],
-    ) -> lir.Function:
-        """Insert MemStore after each def of a spilled var, MemLoad before each use.
-
-        Spilled vars are replaced with fresh temporaries; those temporaries
-        will later be handled by _apply_assignment (they will have been given
-        fresh names that map through the assignment dict).
-
-        The temp register for spill operations is picked as the first
-        width-compatible register — live range is a single statement so
-        conflicts are impossible within one expression tree.
-        """
-        all_regs: List[str] = list(self._rm.allocatable_registers())
-
-        # Pre-compute the width of each spilled var
-        spilled_widths: Dict[str, int] = {
-            name: _find_width(func, name) for name in spilled
-        }
-
-        def _pick_temp_reg(width: int) -> str:
-            for r in all_regs:
-                if can_allocate(self._rm, r, width):
-                    return r
-            return all_regs[0]
-
-        def _fresh_temp(base: str, width: int) -> str:
-            return f"__spill_reload_{base}_{self._fresh_id()}"
-
-        def _used_before_def(block: lir.Block, name: str) -> bool:
-            for stmt in block.statements:
-                stmt_defs, stmt_uses = _stmt_defs_uses(stmt)
-                if name in stmt_uses:
-                    return True
-                if name in stmt_defs:
-                    return False
-            return name in _term_uses(block.terminator)
-
-        param_sources = {
-            param.name: (
-                param.hint
-                if isinstance(param, lir.VReg) and param.hint is not None
-                else self._extra_hints.get(param.name)
-            )
-            for param in func.params
-        }
-
-        new_blocks = []
-        for block in func.blocks:
-            new_stmts: List = []
-
-            if block is func.blocks[0]:
-                for name, source in param_sources.items():
-                    if name not in spilled or not _used_before_def(block, name):
-                        continue
-                    if source is None:
-                        raise RegisterAllocationError(
-                            f"Cannot spill live-in parameter '{name}' without a register hint."
-                        )
-                    slot = spilled[name]
-                    new_stmts.append(
-                        lir.MemStore(
-                            lir.Const(slot.address, 16),
-                            lir.Var(source, spilled_widths[name]),
-                        )
-                    )
-
-            for stmt in block.statements:
-                # ── Definition point: Assign whose target is a spilled var ──
-                if (isinstance(stmt, lir.Assign)
-                        and isinstance(stmt.target, (lir.Var, lir.VReg))
-                        and stmt.target.name in spilled):
-                    spill_name = stmt.target.name
-                    slot = spilled[spill_name]
-                    width = spilled_widths[spill_name]
-                    temp_reg = _pick_temp_reg(width)
-
-                    # 1. Execute the assignment into a temp register name
-                    #    We give the temp a fresh var name so assignment can map it.
-                    #    But actually, we can use the physical reg name directly here
-                    #    since we know it and it's just one statement.
-                    new_stmts.append(lir.Assign(
-                        target=lir.Var(temp_reg, width),
-                        value=stmt.value,
-                    ))
-                    # 2. Immediately store temp to spill slot
-                    new_stmts.append(lir.MemStore(
-                        addr=lir.Const(slot.address, 16),
-                        value=lir.Var(temp_reg, width),
-                    ))
-                    # Record the temp_reg in assignment so _apply_assignment
-                    # leaves it as-is (it's already a physical reg name).
-                    if temp_reg not in assignment.values():
-                        assignment[temp_reg] = temp_reg
-                    else:
-                        # temp_reg is already in use; identity mapping is fine
-                        assignment.setdefault(temp_reg, temp_reg)
-
-                elif isinstance(stmt, lir.CallAssign):
-                    load_map: Dict[str, str] = {}
-                    for spill_name, slot in spilled.items():
-                        if any(_expr_contains_var(arg, spill_name) for arg in stmt.call.args):
-                            width = spilled_widths[spill_name]
-                            temp_reg = _pick_temp_reg(width)
-                            fresh_name = _fresh_temp(spill_name, width)
-                            new_stmts.append(lir.Assign(
-                                target=lir.Var(fresh_name, width),
-                                value=lir.MemLoad(
-                                    addr=lir.Const(slot.address, 16),
-                                    width=width,
-                                ),
-                            ))
-                            assignment[fresh_name] = temp_reg
-                            load_map[spill_name] = fresh_name
-
-                    if load_map:
-                        stmt = _replace_spilled_in_stmt(stmt, load_map)
-
-                    rewritten_targets = []
-                    spill_stores = []
-                    for target in stmt.targets:
-                        if not isinstance(target, (lir.Var, lir.VReg)) or target.name not in spilled:
-                            rewritten_targets.append(target)
-                            continue
-                        slot = spilled[target.name]
-                        width = spilled_widths[target.name]
-                        temp_reg = _pick_temp_reg(width)
-                        fresh_name = _fresh_temp(target.name, width)
-                        assignment[fresh_name] = temp_reg
-                        if isinstance(target, lir.VReg):
-                            rewritten_targets.append(
-                                lir.VReg(
-                                    name=fresh_name,
-                                    width=width,
-                                    hint=target.hint,
-                                )
-                            )
-                        else:
-                            rewritten_targets.append(lir.Var(fresh_name, width))
-                        spill_stores.append(
-                            lir.MemStore(
-                                addr=lir.Const(slot.address, 16),
-                                value=lir.Var(fresh_name, width),
-                            )
-                        )
-
-                    new_stmts.append(
-                        lir.CallAssign(
-                            targets=tuple(rewritten_targets),
-                            call=stmt.call,
-                            abi_return_regs=stmt.abi_return_regs,
-                        )
-                    )
-                    new_stmts.extend(spill_stores)
-
-                else:
-                    # ── Use point: check if any spilled var appears in stmt ──
-                    load_map: Dict[str, str] = {}  # spill_name → fresh_var_name
-
-                    for spill_name, slot in spilled.items():
-                        if _stmt_contains_var(stmt, spill_name):
-                            width = spilled_widths[spill_name]
-                            temp_reg = _pick_temp_reg(width)
-                            fresh_name = _fresh_temp(spill_name, width)
-                            # Insert load before this stmt
-                            new_stmts.append(lir.Assign(
-                                target=lir.Var(fresh_name, width),
-                                value=lir.MemLoad(
-                                    addr=lir.Const(slot.address, 16),
-                                    width=width,
-                                ),
-                            ))
-                            # Map the fresh temp name → physical temp reg
-                            assignment[fresh_name] = temp_reg
-                            load_map[spill_name] = fresh_name
-
-                    if load_map:
-                        stmt = _replace_spilled_in_stmt(stmt, load_map)
-                    new_stmts.append(stmt)
-
-            # Handle terminator: check for spilled var uses in terminator
-            term = block.terminator
-            load_map_term: Dict[str, str] = {}
-            for spill_name, slot in spilled.items():
-                if _term_contains_var(term, spill_name):
-                    width = spilled_widths[spill_name]
-                    temp_reg = _pick_temp_reg(width)
-                    fresh_name = _fresh_temp(spill_name, width)
-                    new_stmts.append(lir.Assign(
-                        target=lir.Var(fresh_name, width),
-                        value=lir.MemLoad(
-                            addr=lir.Const(slot.address, 16),
-                            width=width,
-                        ),
-                    ))
-                    assignment[fresh_name] = temp_reg
-                    load_map_term[spill_name] = fresh_name
-
-            if load_map_term:
-                term = _replace_spilled_in_term(term, load_map_term)
-
-            new_blocks.append(lir.Block(
-                label=block.label,
-                statements=tuple(new_stmts),
-                terminator=term,
-            ))
-
-        return lir.Function(
-            name=func.name,
-            params=func.params,
-            blocks=tuple(new_blocks),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Spill helpers: contains + replace
-# ---------------------------------------------------------------------------
-
-def _stmt_contains_var(stmt, var_name: str) -> bool:
-    """Return True if *stmt*'s expressions reference *var_name*."""
-    if isinstance(stmt, lir.Assign):
-        return _expr_contains_var(stmt.value, var_name)
-    elif isinstance(stmt, lir.CallStmt):
-        return any(_expr_contains_var(arg, var_name) for arg in stmt.call.args)
-    elif isinstance(stmt, lir.CallAssign):
-        return any(_expr_contains_var(arg, var_name) for arg in stmt.call.args)
-    elif isinstance(stmt, lir.MemStore):
-        return (
-            _expr_contains_var(stmt.addr, var_name)
-            or _expr_contains_var(stmt.value, var_name)
-        )
-    elif isinstance(stmt, lir.BitOp):
-        return _expr_contains_var(stmt.var, var_name)
-    return False
-
-
-def _term_contains_var(term, var_name: str) -> bool:
-    """Return True if *term* references *var_name*."""
-    if isinstance(term, lir.BrIf):
-        return _expr_contains_var(term.cond, var_name)
-    elif isinstance(term, lir.BrCmp):
-        return (
-            _expr_contains_var(term.left, var_name)
-            or _expr_contains_var(term.right, var_name)
-        )
-    elif isinstance(term, lir.Return):
-        return _expr_contains_var(term.value, var_name)
-    elif isinstance(term, lir.MultiReturn):
-        return any(_expr_contains_var(v, var_name) for v in term.values)
-    return False
-
-
-def _expr_contains_var(expr, var_name: str) -> bool:
-    """Return True if *expr* references *var_name*."""
-    if isinstance(expr, (lir.Var, lir.VReg)):
-        return expr.name == var_name
-    elif isinstance(expr, lir.BinOp):
-        return (
-            _expr_contains_var(expr.left, var_name)
-            or _expr_contains_var(expr.right, var_name)
-        )
-    elif isinstance(expr, lir.Cmp):
-        return (
-            _expr_contains_var(expr.left, var_name)
-            or _expr_contains_var(expr.right, var_name)
-        )
-    elif isinstance(expr, lir.Extend):
-        return _expr_contains_var(expr.value, var_name)
-    elif isinstance(expr, lir.MemLoad):
-        return _expr_contains_var(expr.addr, var_name)
-    elif isinstance(expr, lir.BitOp):
-        return _expr_contains_var(expr.var, var_name)
-    elif isinstance(expr, lir.Call):
-        return any(_expr_contains_var(a, var_name) for a in expr.args)
-    return False
-
-
-def _replace_spilled_in_expr(expr, load_map: Dict[str, str]):
-    """Replace Var/VReg names in *load_map* with their fresh reload names."""
-    if isinstance(expr, (lir.Var, lir.VReg)):
-        if expr.name in load_map:
-            return lir.Var(load_map[expr.name], expr.width)
-        return expr
-    elif isinstance(expr, lir.BinOp):
-        return lir.BinOp(
-            expr.op,
-            _replace_spilled_in_expr(expr.left, load_map),
-            _replace_spilled_in_expr(expr.right, load_map),
-            expr.width,
-        )
-    elif isinstance(expr, lir.Cmp):
-        return lir.Cmp(
-            expr.op,
-            _replace_spilled_in_expr(expr.left, load_map),
-            _replace_spilled_in_expr(expr.right, load_map),
-            expr.width,
-            expr.signed,
-        )
-    elif isinstance(expr, lir.Extend):
-        return lir.Extend(
-            kind=expr.kind,
-            value=_replace_spilled_in_expr(expr.value, load_map),
-            width=expr.width,
-        )
-    elif isinstance(expr, lir.MemLoad):
-        return lir.MemLoad(
-            addr=_replace_spilled_in_expr(expr.addr, load_map),
-            width=expr.width,
-            volatile=expr.volatile,
-        )
-    elif isinstance(expr, lir.BitOp):
-        return lir.BitOp(
-            kind=expr.kind,
-            var=_replace_spilled_in_expr(expr.var, load_map),
-            bit_idx=expr.bit_idx,
-        )
-    elif isinstance(expr, lir.Call):
-        return lir.Call(
-            name=expr.name,
-            args=tuple(_replace_spilled_in_expr(a, load_map) for a in expr.args),
-            arg_regs=expr.arg_regs,
-            return_regs=expr.return_regs,
-            clobbers=expr.clobbers,
-        )
-    return expr
-
-
-def _replace_spilled_in_stmt(stmt, load_map: Dict[str, str]):
-    """Replace all spilled var references in *stmt* with fresh reload names."""
-    if isinstance(stmt, lir.Assign):
-        return lir.Assign(
-            target=stmt.target,
-            value=_replace_spilled_in_expr(stmt.value, load_map),
-        )
-    elif isinstance(stmt, lir.CallStmt):
-        return lir.CallStmt(
-            call=lir.Call(
-                name=stmt.call.name,
-                args=tuple(_replace_spilled_in_expr(a, load_map) for a in stmt.call.args),
-                arg_regs=stmt.call.arg_regs,
-                return_regs=stmt.call.return_regs,
-                clobbers=stmt.call.clobbers,
-            ),
-        )
-    elif isinstance(stmt, lir.CallAssign):
-        return lir.CallAssign(
-            targets=stmt.targets,
-            call=lir.Call(
-                name=stmt.call.name,
-                args=tuple(_replace_spilled_in_expr(a, load_map) for a in stmt.call.args),
-                arg_regs=stmt.call.arg_regs,
-                return_regs=stmt.call.return_regs,
-                clobbers=stmt.call.clobbers,
-            ),
-            abi_return_regs=stmt.abi_return_regs,
-        )
-    elif isinstance(stmt, lir.MemStore):
-        return lir.MemStore(
-            addr=_replace_spilled_in_expr(stmt.addr, load_map),
-            value=_replace_spilled_in_expr(stmt.value, load_map),
-            volatile=stmt.volatile,
-        )
-    elif isinstance(stmt, lir.BitOp):
-        return lir.BitOp(
-            kind=stmt.kind,
-            var=_replace_spilled_in_expr(stmt.var, load_map),
-            bit_idx=stmt.bit_idx,
-        )
-    return stmt
-
-
-def _replace_spilled_in_term(term, load_map: Dict[str, str]):
-    """Replace all spilled var references in *term* with fresh reload names."""
-    if isinstance(term, lir.BrIf):
-        return lir.BrIf(
-            cond=_replace_spilled_in_expr(term.cond, load_map),
-            true_label=term.true_label,
-            false_label=term.false_label,
-        )
-    elif isinstance(term, lir.BrCmp):
-        return lir.BrCmp(
-            op=term.op,
-            left=_replace_spilled_in_expr(term.left, load_map),
-            right=_replace_spilled_in_expr(term.right, load_map),
-            true_label=term.true_label,
-            false_label=term.false_label,
-        )
-    elif isinstance(term, lir.Return):
-        return lir.Return(value=_replace_spilled_in_expr(term.value, load_map))
-    elif isinstance(term, lir.MultiReturn):
-        return lir.MultiReturn(
-            values=tuple(_replace_spilled_in_expr(v, load_map) for v in term.values)
-        )
-    return term
-
+        return assignment
 
 # ---------------------------------------------------------------------------
 # Step 1: collect all names and hints

@@ -59,6 +59,6 @@ Volatile load/store 保留順序，rewrite pass 不會移除它們。
 | `Fragment` | Bound code fragment |
 | `FragmentBinding` | Fragment input/output binding |
 | `Module` | Functions、external declarations 與 symbols |
-| `SpillSlot` | Prototype register allocator 的 spill location |
+| `SpillSlot` | Legacy experimental placeholder；production allocator 不使用 |
 
-Target 透過 `Target` / `FragmentTarget` 消費 `Function` 或 `Fragment`。`SpillSlot` 屬於 experimental allocator contract。
+Target 透過 `Target` / `FragmentTarget` 消費 `Function` 或 `Fragment`。暫存器壓力目前會 fail closed。

@@ -12,9 +12,8 @@ Key design decisions
 * ``VReg`` carries an optional opaque physical-register *hint* (e.g. ``"g0"``).
   The hint is advisory; the optional register allocator decides the final
   assignment.
-* ``SpillSlot`` uses ``address=None`` for stack-relative slots and
-  ``address=int`` for fixed-address slots.  The concrete meaning of the
-  address is decided by the Target's ``RegisterModel``.
+* ``SpillSlot`` is retained as a legacy experimental API.  Production
+  register allocation currently fails closed instead of spilling.
 * ``BrCmp`` combines a compare and a conditional branch into one terminator,
   matching MCU instructions such as ``cjne`` / ``djnz``.
 * ``MultiReturn`` expresses functions that return multiple values via pinned
@@ -355,19 +354,14 @@ Terminator = Union[BrIf, BrCmp, Jump, Return, MultiReturn, FragmentExit]
 
 @dataclass(frozen=True)
 class SpillSlot:
-    """A memory location used by the register allocator when registers are
-    exhausted.
+    """Legacy experimental spill location.
 
     ``id`` uniquely identifies this slot within a function.
 
-    ``address`` interpretation:
-    * ``None`` — stack-relative slot; the Target emits ``push``/``pop`` or
-      frame-pointer-relative loads/stores.
-    * ``int`` — fixed absolute address; the Target emits a direct memory
-      access to that address (useful for targets without a conventional stack).
-
-    The concrete addressing mode is always decided by the Target's
-    ``RegisterModel.emit_spill()`` / ``emit_reload()`` methods.
+    The production allocator does not consume spill slots because the former
+    pre-isel lowering could overwrite live registers.  This type remains only
+    to avoid an unnecessary API break while a correct machine-level contract
+    is designed.
     """
     id: int
     address: int | None = None

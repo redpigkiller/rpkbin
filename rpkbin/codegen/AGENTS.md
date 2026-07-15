@@ -35,7 +35,7 @@ There is no module-to-pseudo-ASM pipeline yet.
 | `asm.py`, `isel.py`, `target.py` | Pseudo ASM and target protocols |
 | `pipeline.py` | Public Function and Fragment pipelines |
 | `toy_target.py` | Test/reference target only |
-| `register_alloc.py` | Register allocation used by Function/Fragment pipelines when a `RegisterModel` is supplied; spill support is target-dependent |
+| `register_alloc.py` | Register allocation used by Function/Fragment pipelines when a `RegisterModel` is supplied; register pressure fails closed |
 
 ## Rules
 
