@@ -121,7 +121,7 @@ from .hir import (
 # ---------------------------------------------------------------------------
 # Target protocols
 # ---------------------------------------------------------------------------
-from .target import FragmentTarget
+from .target import FragmentTarget, RegisterModel, Target
 
 # ---------------------------------------------------------------------------
 # HIR validator API
@@ -205,7 +205,7 @@ __all__ = [
     # HIR builders
     "hconst", "s8", "s16", "simple_function", "u8", "u16",
     # HIR validator
-    "FragmentTarget",
+    "FragmentTarget", "RegisterModel", "Target",
     "HIRValidationError", "validate_extern_fn", "validate_hfragment",
     "validate_hfunction", "validate_hmodule",
     # LIR fragment nodes

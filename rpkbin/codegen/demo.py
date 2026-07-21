@@ -1,7 +1,18 @@
-import sys
 from .hir import (
-    HFunction, HParam, HAssign, HIf, HFor, HWhile, HBreak, HReturn, HInlineAsm,
-    HCall, u8, hconst, simple_function, HVar, UInt, HBinOp, HCmp
+    HAssign,
+    HBinOp,
+    HBreak,
+    HCmp,
+    HFor,
+    HIf,
+    HInlineAsm,
+    HParam,
+    HReturn,
+    HWhile,
+    UInt,
+    hconst,
+    simple_function,
+    u8,
 )
 from .pipeline import run_codegen_from_hir
 from .patterns import load_patterns_from_dicts
@@ -91,10 +102,10 @@ def build_inline_asm():
         UInt(8)
     )
 
-def build_while_experimental():
+def build_while():
     x = u8("x")
     return simple_function(
-        "while_experimental_demo",
+        "while_demo",
         [HParam("x", UInt(8))],
         [
             HWhile(HCmp("lt", x, hconst(10)), (
@@ -111,7 +122,7 @@ CASES = {
     "pattern_mul2": build_pattern_mul2,
     "for_break": build_for_break,
     "inline_asm": build_inline_asm,
-    "while_experimental": build_while_experimental,
+    "while": build_while,
 }
 
 def list_cases():
@@ -122,38 +133,42 @@ def build_case(name: str):
         raise ValueError(f"Unknown case {name}")
     return CASES[name]()
 
-def run_case(name: str):
+def run_case(name: str) -> dict[str, object]:
     print(f"=== Running case: {name} ===")
     hfunc = build_case(name)
     print("--- HIR summary ---")
     print(f"Function {hfunc.name}")
-    
-    try:
-        patterns_list = load_patterns_from_dicts(BUILTIN_PATTERNS_DICT)
-        res = run_codegen_from_hir(hfunc, ToyTarget(), patterns_list)
-        
-        lowered_text = format_function(res.input_lir)
-        rewritten_text = format_function(res.rewritten_lir)
-        asm_text = res.asm_text
-        patterns = ", ".join(res.applied_patterns)
-        
-        print("--- lowered LIR text ---")
-        print(lowered_text)
-        print("--- rewritten LIR text ---")
-        print(rewritten_text)
-        print("--- pseudo ASM ---")
-        print(asm_text)
-        print("--- applied patterns ---")
-        print(patterns)
-        
-        return {
-            "hir_summary": hfunc.name,
-            "lowered_lir": lowered_text,
-            "rewritten_lir": rewritten_text,
-            "pseudo_asm": asm_text,
-            "applied_patterns": res.applied_patterns
-        }
-    except NotImplementedError as e:
-        print("--- Error ---")
-        print(f"NotImplementedError: {e}")
-        return None
+    patterns_list = load_patterns_from_dicts(BUILTIN_PATTERNS_DICT)
+    res = run_codegen_from_hir(hfunc, ToyTarget(), patterns_list)
+
+    lowered_text = format_function(res.input_lir)
+    rewritten_text = format_function(res.rewritten_lir)
+    asm_text = res.asm_text
+    patterns = ", ".join(res.applied_patterns)
+
+    print("--- lowered LIR text ---")
+    print(lowered_text)
+    print("--- rewritten LIR text ---")
+    print(rewritten_text)
+    print("--- pseudo ASM ---")
+    print(asm_text)
+    print("--- applied patterns ---")
+    print(patterns)
+
+    return {
+        "hir_summary": hfunc.name,
+        "lowered_lir": lowered_text,
+        "rewritten_lir": rewritten_text,
+        "pseudo_asm": asm_text,
+        "applied_patterns": res.applied_patterns,
+    }
+
+
+def main() -> None:
+    """Run every maintained example with the reference pseudo target."""
+    for name in list_cases():
+        run_case(name)
+
+
+if __name__ == "__main__":
+    main()

@@ -49,12 +49,13 @@ class Job(ABC):
         max_log_lines: int = 10_000,
         tags: frozenset[str] | set[str] | None = None,
     ) -> None:
+        self._id: uuid.UUID
         if job_id is None:
-            self._id: uuid.UUID = uuid.uuid4()
+            self._id = uuid.uuid4()
         elif isinstance(job_id, str):
-            self._id: uuid.UUID = uuid.UUID(job_id)
+            self._id = uuid.UUID(job_id)
         else:
-            self._id: uuid.UUID = job_id
+            self._id = job_id
             
         self._name: str = name
         

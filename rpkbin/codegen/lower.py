@@ -49,7 +49,7 @@ Not supported:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from typing import List, Tuple
 
 from . import lir
 from .hir import (
@@ -70,6 +70,7 @@ from .hir import (
     HExtract,
     HFor,
     HFragment,
+    HFragmentBinding,
     HFunction,
     HIf,
     HInlineAsm,
@@ -77,6 +78,7 @@ from .hir import (
     HLoad,
     HLogical,
     HModule,
+    HType,
     HNot,
     HPoll,
     HReturn,

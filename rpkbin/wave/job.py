@@ -214,10 +214,14 @@ class WaveJobMixin:
         # Inject scheduler callbacks outside the lock - each call acquires the
         # scheduler's own internal lock; doing it inside _wave_lock would create
         # a nested-lock ordering that is harder to reason about.
-        if need_log:  self.on_log(self._handle_log)   # type: ignore[attr-defined]
-        if need_done: self.on_done(self._handle_on_done)         # type: ignore[attr-defined]
-        if need_fail: self.on_fail(self._handle_on_fail)         # type: ignore[attr-defined]
-        if need_retry: self.on_retry(self._handle_on_retry)      # type: ignore[attr-defined]
+        if need_log:
+            self.on_log(self._handle_log)  # type: ignore[attr-defined]
+        if need_done:
+            self.on_done(self._handle_on_done)  # type: ignore[attr-defined]
+        if need_fail:
+            self.on_fail(self._handle_on_fail)  # type: ignore[attr-defined]
+        if need_retry:
+            self.on_retry(self._handle_on_retry)  # type: ignore[attr-defined]
 
     def add_action(
         self,

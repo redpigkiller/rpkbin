@@ -80,32 +80,6 @@ class TestFindDeadLoops:
 
 
 # ---------------------------------------------------------------------------
-# dead_code_elimination
-# ---------------------------------------------------------------------------
-
-
-class TestDeadCodeElimination:
-    def test_no_dead_blocks(self):
-        cfg = CFG()
-        cfg.add_block("entry")
-        cfg.add_block("end")
-        cfg.add_edge("entry", "end")
-        cfg.set_entry("entry")
-        assert mcu.dead_code_elimination(cfg) == []
-
-    def test_removes_orphan(self):
-        cfg = CFG()
-        cfg.add_block("entry")
-        cfg.add_block("end")
-        cfg.add_block("dead")
-        cfg.add_edge("entry", "end")
-        cfg.set_entry("entry")
-        removed = mcu.dead_code_elimination(cfg)
-        assert len(removed) == 1 and removed[0].id == "dead"
-        assert "dead" not in cfg
-
-
-# ---------------------------------------------------------------------------
 # Basic MCU linearize behaviour
 # ---------------------------------------------------------------------------
 
@@ -557,6 +531,15 @@ class TestPolicyWeight:
         for bid in ("A", "B"):
             cfg.add_block(bid)
         cfg.add_edge("A", "B", weight=-1.0)
+        cfg.set_entry("A")
+        with pytest.raises(ValueError, match="invalid weight"):
+            mcu.linearize(Program({"main": cfg}), fallthrough_policy="weight")
+
+    @pytest.mark.parametrize("weight", [True, float("nan"), float("inf"), -float("inf")])
+    def test_non_finite_or_bool_weight_raises(self, weight):
+        cfg = CFG()
+        cfg.add_block("A"); cfg.add_block("B")
+        cfg.add_edge("A", "B", weight=weight)
         cfg.set_entry("A")
         with pytest.raises(ValueError, match="invalid weight"):
             mcu.linearize(Program({"main": cfg}), fallthrough_policy="weight")

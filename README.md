@@ -135,6 +135,7 @@ pip install -e .[jax]
 pip install -e .[wave]   # Installs textual, prompt_toolkit, rich
 pip install -e .[excel]  # Installs openpyxl, xlrd, rapidfuzz
 pip install -e .[cfg]    # Installs networkx
+pip install -e .[dot]    # Enables CFG.export_dot()
 
 # Install everything
 pip install -e .[all]

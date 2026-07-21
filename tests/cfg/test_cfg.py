@@ -60,6 +60,17 @@ class TestConstruction:
         with pytest.raises(ValueError):
             cfg.add_block("a")
 
+    def test_add_block_deep_copies_mutable_contents(self):
+        source = BasicBlock(
+            "a", insns=[Assignment("x", ["y"])], meta={"nested": {"v": 1}}
+        )
+        cfg = CFG()
+        added = cfg.add_block(source)
+        source.insns[0].rhs.append("z")
+        source.meta["nested"]["v"] = 2
+        assert added.insns[0].rhs == ["y"]
+        assert added.meta == {"nested": {"v": 1}}
+
     def test_edge_default_cond_none(self):
         cfg = CFG()
         cfg.add_block("a"); cfg.add_block("b")
@@ -452,6 +463,18 @@ class TestMergeCFGs:
         assert bb_a.insns == insns_a
         assert merged.out_edges(bb_a.id)[0][2]["cond"] == "ok"
 
+    def test_merged_contents_are_independent_from_source(self):
+        flow = _cfg(
+            ("a", "A", [Assignment("x", ["y"])] , {"nested": {"v": 1}}),
+        )
+        merged = merge_cfgs(flow)
+        flow.get_block("a").insns[0].rhs.append("z")
+        flow.get_block("a").meta["nested"]["v"] = 2
+
+        block = merged.get_block("a")
+        assert block.insns[0].rhs == ["y"]
+        assert block.meta == {"nested": {"v": 1}}
+
     def test_user_example_i(self):
         """Flow1: A-(1)->B, A-(2)->C  +  Flow2: E-->A'  ==>  E-->A-(1)->B, E-->A-(2)->C."""
         insns = {lbl: [Assignment(lbl, [])] for lbl in "ABCE"}
@@ -632,8 +655,8 @@ class TestMergeCFGs:
         # Verify the cycle is real
         assert not nx.is_directed_acyclic_graph(merged._graph)
 
-    def test_no_warning_when_all_inputs_already_cyclic(self):
-        """No warning if all input CFGs already contain cycles."""
+    def test_no_warning_when_merged_cycle_already_exists_in_inputs(self):
+        """No warning when merge preserves, rather than introduces, cycles."""
         # Both flows have back-edges — neither is a DAG.
         flow1 = _cfg(("a", "A"), ("b", "B"), edges=[("a", "b"), ("b", "a")])
         flow2 = _cfg(("a2", "A"), ("b2", "B"), edges=[("a2", "b2"), ("b2", "a2")])
@@ -644,6 +667,57 @@ class TestMergeCFGs:
 
         user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
         assert len(user_warnings) == 0
+
+    def test_existing_anonymous_cycle_is_not_reported_as_introduced(self):
+        flow = _cfg(("a", None), ("b", None), edges=[("a", "b"), ("b", "a")])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            merge_cfgs(flow)
+        assert not caught
+
+    def test_canonical_winner_id_does_not_make_existing_cycle_new(self):
+        placeholder = _cfg(("a_old", "A"), ("b_old", "B"), edges=[("a_old", "b_old"), ("b_old", "a_old")])
+        instructed = _cfg(
+            ("a_new", "A", [Assignment("a", [])]),
+            ("b_new", "B", [Assignment("b", [])]),
+            edges=[("a_new", "b_new"), ("b_new", "a_new")],
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            merge_cfgs(placeholder, instructed)
+        assert not caught
+
+    def test_cyclic_and_unrelated_acyclic_input_do_not_warn(self):
+        cyclic = _cfg(("a", "A"), ("b", "B"), edges=[("a", "b"), ("b", "a")])
+        acyclic = _cfg(("c", "C"), ("d", "D"), edges=[("c", "d")])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            merge_cfgs(cyclic, acyclic)
+        assert not caught
+
+    def test_new_cross_flow_cycle_warns_even_when_inputs_are_cyclic(self):
+        flow1 = _cfg(
+            ("a", "A"), ("b", "B"), ("c", "C"),
+            edges=[("a", "b"), ("b", "a"), ("b", "c")],
+        )
+        flow2 = _cfg(
+            ("a2", "A"), ("b2", "B"), ("c2", "C"),
+            edges=[("a2", "b2"), ("b2", "a2"), ("c2", "a2")],
+        )
+        with pytest.warns(UserWarning, match="introduced 1 new cycle") as caught:
+            merge_cfgs(flow1, flow2)
+        assert "('a', 'b', 'c')" in str(caught[0].message)
+
+    def test_cycle_warning_is_rotation_normalized_and_deterministic(self):
+        flow1 = _cfg(("a", "A"), ("b", "B"), edges=[("a", "b")])
+        flow2 = _cfg(("b2", "B"), ("a2", "A"), edges=[("b2", "a2")])
+        messages = []
+        for _ in range(2):
+            with pytest.warns(UserWarning) as caught:
+                merge_cfgs(flow1, flow2)
+            messages.append(str(caught[0].message))
+        assert messages[0] == messages[1]
+        assert "('a', 'b')" in messages[0]
 
     # ------------------------------------------------------------------ #
     # Error cases                                                          #
@@ -962,3 +1036,254 @@ class TestRenameBlock:
         cfg = self._make()
         with pytest.raises(ValueError, match="end"):
             cfg.rename_block("mid", "end")
+
+    @pytest.mark.parametrize("new_id", ["", 1, None])
+    def test_invalid_new_id_is_atomic(self, new_id):
+        cfg = self._make()
+        before_nodes = list(cfg._graph.nodes)
+        before_edges = cfg.edges
+        before_entry = cfg.entry.id if cfg.entry is not None else None
+        before_exit = cfg.exit.id if cfg.exit is not None else None
+        before_block_id = cfg.get_block("mid").id
+
+        with pytest.raises(ValueError, match="non-empty string"):
+            cfg.rename_block("mid", new_id)  # type: ignore[arg-type]
+
+        assert list(cfg._graph.nodes) == before_nodes
+        assert cfg.edges == before_edges
+        assert cfg.get_block("mid").id == before_block_id
+        assert (cfg.entry.id if cfg.entry is not None else None) == before_entry
+        assert (cfg.exit.id if cfg.exit is not None else None) == before_exit
+        assert cfg.has_edge("mid", "mid")
+        assert cfg.has_edge("entry", "mid")
+        assert cfg.has_edge("mid", "end")
+
+
+def test_validate_detects_graph_key_mismatch_and_unknown_instruction():
+    cfg = CFG()
+    cfg.add_block("a")
+    cfg.set_entry("a")
+    object.__setattr__(cfg.get_block("a"), "id", "different")
+    cfg.get_block("a").insns.append(object())
+
+    issues = cfg.validate()
+
+    assert any("does not match block id" in issue for issue in issues)
+    assert any("unsupported type" in issue for issue in issues)
+
+
+def test_irreducible_cycle_is_not_reported_as_natural_loop():
+    cfg = CFG()
+    for block_id in ("entry", "a", "b"):
+        cfg.add_block(block_id)
+    cfg.add_edge("entry", "a")
+    cfg.add_edge("entry", "b")
+    cfg.add_edge("a", "b")
+    cfg.add_edge("b", "a")
+    cfg.set_entry("entry")
+
+    assert cfg.find_natural_loops() == []
+
+
+class TestCoreGraphContracts:
+    def test_add_edge_rejects_duplicate_without_mutation(self):
+        cfg = CFG()
+        cfg.add_block("a")
+        cfg.add_block("b")
+        nested = {"items": [1]}
+        cfg.add_edge("a", "b", cond="go", priority=3, meta=nested)
+        nested["items"].append(2)
+        before = cfg.edge_attrs("a", "b")
+
+        with pytest.raises(ValueError, match="already exists"):
+            cfg.add_edge("a", "b", cond="other", meta={"items": [9]})
+
+        assert cfg.edge_attrs("a", "b") == before == {
+            "cond": "go", "priority": 3, "meta": {"items": [1]}
+        }
+
+    def test_add_edge_rejects_duplicate_self_loop(self):
+        cfg = CFG()
+        cfg.add_block("a")
+        cfg.add_edge("a", "a", role="loop")
+        with pytest.raises(ValueError):
+            cfg.add_edge("a", "a")
+        assert cfg.edge_attrs("a", "a")["role"] == "loop"
+
+    def test_update_and_output_edge_attributes_are_detached(self):
+        cfg = CFG()
+        cfg.add_block("a")
+        cfg.add_block("b")
+        cfg.add_edge("a", "b", cond="old", payload={"values": [1]})
+        update = {"values": [2]}
+        cfg.update_edge("a", "b", cond=None, payload=update)
+        update["values"].append(3)
+        cfg.update_edge("a", "b")
+
+        assert cfg.edge_attrs("a", "b") == {
+            "cond": None, "priority": 0, "payload": {"values": [2]}
+        }
+        for attrs in (
+            cfg.edges[0][2], cfg.edge_attrs("a", "b"),
+            cfg.out_edges("a")[0][2], cfg.in_edges("b")[0][2],
+        ):
+            attrs["payload"]["values"].append(99)
+        assert cfg.edge_attrs("a", "b")["payload"] == {"values": [2]}
+        removed = cfg.remove_edge("a", "b")
+        removed["payload"]["values"].append(4)
+        assert not cfg.has_edge("a", "b")
+        with pytest.raises(KeyError):
+            cfg.update_edge("a", "b", cond="missing")
+
+    def test_entry_exit_ids_are_read_only(self):
+        cfg = make_linear()
+        assert (cfg.entry_id, cfg.exit_id) == ("entry", "end")
+        with pytest.raises(AttributeError):
+            cfg.entry_id = "bb1"  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            cfg.exit_id = "bb1"  # type: ignore[misc]
+
+    def test_to_networkx_is_deep_snapshot(self):
+        cfg = CFG()
+        cfg.add_block("a", insns=[Assignment("x", {"n": [1]})], meta={"tags": []})
+        cfg.add_block("b")
+        cfg.add_edge("a", "b", nested={"values": [1]})
+        snapshot = cfg.to_networkx()
+        snapshot.nodes["a"]["block"].meta["tags"].append("snapshot")
+        snapshot.nodes["a"]["block"].insns[0].rhs["n"].append(2)
+        snapshot["a"]["b"]["nested"]["values"].append(2)
+        snapshot.remove_node("b")
+
+        assert cfg.get_block("a").meta == {"tags": []}
+        assert cfg.get_block("a").insns[0].rhs == {"n": [1]}
+        assert cfg.edge_attrs("a", "b")["nested"] == {"values": [1]}
+        assert "b" in cfg
+
+
+class TestCoreReachabilityAndDominance:
+    def test_remove_unreachable_no_dead_blocks_and_orphan(self):
+        cfg = CFG()
+        cfg.add_block("entry")
+        cfg.add_block("end")
+        cfg.add_block("dead")
+        cfg.add_edge("entry", "end")
+        cfg.set_entry("entry")
+        assert [bb.id for bb in cfg.remove_unreachable()] == ["dead"]
+        assert cfg.remove_unreachable() == []
+
+    def test_terminal_blocks_respect_reachability_and_order(self):
+        cfg = CFG()
+        for block_id in ("entry", "left", "right", "dead"):
+            cfg.add_block(block_id)
+        cfg.add_edge("entry", "left")
+        cfg.add_edge("entry", "right")
+        cfg.set_entry("entry")
+
+        assert [bb.id for bb in cfg.terminal_blocks()] == ["left", "right"]
+        assert [bb.id for bb in cfg.terminal_blocks(reachable_only=False)] == [
+            "left", "right", "dead"
+        ]
+        with pytest.raises(KeyError):
+            cfg.terminal_blocks("ghost")
+
+    def test_terminal_blocks_without_entry_and_ignore_start_when_all(self):
+        cfg = CFG()
+        cfg.add_block("a")
+        with pytest.raises(RuntimeError):
+            cfg.terminal_blocks()
+        assert [bb.id for bb in cfg.terminal_blocks("ghost", reachable_only=False)] == ["a"]
+
+    def test_terminal_blocks_explicit_start_filters_to_that_subgraph(self):
+        cfg = CFG()
+        for block_id in ("entry", "left", "right", "left_end", "right_end"):
+            cfg.add_block(block_id)
+        cfg.add_edge("entry", "left")
+        cfg.add_edge("entry", "right")
+        cfg.add_edge("left", "left_end")
+        cfg.add_edge("right", "right_end")
+        cfg.set_entry("entry")
+        assert [bb.id for bb in cfg.terminal_blocks("left")] == ["left_end"]
+
+    def test_remove_unreachable_preserves_order_and_clears_exit(self):
+        cfg = CFG()
+        for block_id in ("entry", "live", "dead1", "dead2"):
+            cfg.add_block(block_id)
+        cfg.add_edge("entry", "live")
+        cfg.set_entry("entry")
+        cfg.set_exit("dead2")
+
+        assert [bb.id for bb in cfg.remove_unreachable()] == ["dead1", "dead2"]
+        assert cfg.exit_id is None
+        assert list(bb.id for bb in cfg.blocks) == ["entry", "live"]
+
+    def test_remove_unreachable_validates_start_and_clears_removed_entry(self):
+        cfg = CFG()
+        cfg.add_block("entry")
+        cfg.add_block("alternate")
+        cfg.add_block("end")
+        cfg.add_edge("alternate", "end")
+        cfg.set_entry("entry")
+        with pytest.raises(KeyError):
+            cfg.remove_unreachable("ghost")
+        assert [bb.id for bb in cfg.remove_unreachable("alternate")] == ["entry"]
+        assert cfg.entry_id is None
+
+        no_entry = CFG()
+        no_entry.add_block("only")
+        with pytest.raises(RuntimeError):
+            no_entry.remove_unreachable()
+
+    def test_dominates_validates_and_ignores_unreachable_nodes(self):
+        cfg = make_diamond()
+        cfg.add_block("dead")
+        assert cfg.dominates("entry", "end")
+        assert cfg.dominates("end", "end")
+        assert not cfg.dominates("bb1", "end")
+        with pytest.raises(KeyError):
+            cfg.dominates("ghost", "end")
+        with pytest.raises(ValueError):
+            cfg.dominates("entry", "dead")
+        with pytest.raises(ValueError):
+            cfg.dominates("dead", "end")
+        with pytest.raises(KeyError):
+            cfg.dominates("entry", "end", start="ghost")
+        assert set(cfg.dominator_tree()) == {"entry", "bb1", "bb2", "end"}
+
+    def test_post_dominators_configured_or_explicit_exit(self):
+        cfg = make_linear()
+        assert cfg.post_dominators() == cfg.post_dominators("end")
+        cfg_without_exit = CFG()
+        cfg_without_exit.add_block("a")
+        with pytest.raises(RuntimeError, match=r"set_exit\(\) or pass exit_node explicitly"):
+            cfg_without_exit.post_dominators()
+        with pytest.raises(KeyError):
+            cfg.post_dominators("ghost")
+
+    def test_post_dominators_excludes_blocks_without_path_to_selected_exit(self):
+        cfg = CFG()
+        for block_id in ("entry", "return", "loop"):
+            cfg.add_block(block_id)
+        cfg.add_edge("entry", "return")
+        cfg.add_edge("entry", "loop")
+        cfg.add_edge("loop", "loop")
+        cfg.set_entry("entry")
+        post = cfg.post_dominators("return")
+        assert post["return"] == "return"
+        assert "loop" not in post
+
+    def test_to_networkx_snapshot_isolated_from_later_cfg_mutation(self):
+        cfg = CFG()
+        cfg.add_block("a", insns=[Assignment("x", {"n": [1]})], meta={"tags": []})
+        cfg.add_block("b")
+        cfg.add_edge("a", "b", nested={"values": [1]})
+        snapshot = cfg.to_networkx()
+
+        cfg.get_block("a").meta["tags"].append("cfg")
+        cfg.get_block("a").insns[0].rhs["n"].append(2)
+        cfg.update_edge("a", "b", nested={"values": [2]})
+        cfg.remove_block("b")
+
+        assert snapshot.nodes["a"]["block"].meta == {"tags": []}
+        assert snapshot.nodes["a"]["block"].insns[0].rhs == {"n": [1]}
+        assert snapshot["a"]["b"]["nested"] == {"values": [1]}
+        assert "b" in snapshot

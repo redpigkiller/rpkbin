@@ -250,7 +250,6 @@ class Format:
         return hash((self.width, self.frac, self.signed, self.rounding, self.overflow))
 
     def __repr__(self) -> str:
-        s = "s" if self.signed else "u"
         return (
             f"Format({self.width}, {self.frac}, signed={self.signed}, "
             f"rounding={self.rounding!r}, overflow={self.overflow!r})"

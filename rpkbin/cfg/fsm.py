@@ -125,7 +125,7 @@ def find_sink_sccs(program: Program) -> list[list[str]]:
         List of sink SCCs; each SCC is a sorted list of state ids.
     """
     cfg = program.main
-    entry_id = cfg._entry
+    entry_id = cfg.entry_id
     if entry_id is None:
         raise RuntimeError("Main CFG entry is not set.  Call set_entry() first.")
 

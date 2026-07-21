@@ -32,6 +32,13 @@ from dataclasses import dataclass, field
 from typing import Any, Union
 
 
+def _validate_block_id(block_id: object) -> str:
+    """Return a valid block id or raise before any CFG graph mutation."""
+    if not isinstance(block_id, str) or not block_id:
+        raise ValueError("BasicBlock.id must be a non-empty string.")
+    return block_id
+
+
 # ---------------------------------------------------------------------------
 # Instruction types
 # ---------------------------------------------------------------------------
@@ -81,9 +88,9 @@ class CallRef:
 class OtherInsn:
     """Fall-back instruction for anything not covered by the typed variants.
 
-    Liveness analysis treats ``defs`` / ``uses`` as authoritative.  If the
-    instruction has no data-flow effect, leave both empty (conservative but
-    safe).
+    Liveness analysis treats ``defs`` / ``uses`` as authoritative. Empty sets
+    mean the caller provided no known data-flow effect; using them for an
+    instruction that really reads or writes values under-approximates liveness.
 
     Attributes:
         raw:  Original source text.
@@ -125,15 +132,27 @@ class BasicBlock:
     insns: list[Insn] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        _validate_block_id(self.id)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Keep the node-key identity immutable after construction."""
+        if name == "id" and "id" in self.__dict__:
+            raise AttributeError(
+                "BasicBlock.id is immutable; use CFG.rename_block() instead."
+            )
+        super().__setattr__(name, value)
+
+    def _rename(self, new_id: str) -> None:
+        """Update the id during CFG's atomic private rename operation."""
+        object.__setattr__(self, "id", _validate_block_id(new_id))
+
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
         return f"BasicBlock({self.id!r}, label={self.label!r}, insns={len(self.insns)})"
-
-    def __hash__(self) -> int:          # so it can be used in sets / dict keys
-        return hash(self.id)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, BasicBlock):

@@ -86,20 +86,29 @@ class TestBasicBlock:
         assert isinstance(bb.insns[1], CallRef)
         assert isinstance(bb.insns[2], OtherInsn)
 
-    def test_hash_and_eq(self):
+    def test_equality_uses_id(self):
         b1 = BasicBlock(id="x")
         b2 = BasicBlock(id="x")
         b3 = BasicBlock(id="y")
         assert b1 == b2
         assert b1 != b3
-        assert hash(b1) == hash(b2)
-        assert hash(b1) != hash(b3)
 
-    def test_in_set(self):
-        b1 = BasicBlock(id="a")
-        b2 = BasicBlock(id="b")
-        s = {b1, b2}
-        assert BasicBlock(id="a") in s
+    def test_is_unhashable(self):
+        bb = BasicBlock(id="a")
+        with pytest.raises(TypeError):
+            hash(bb)
+        with pytest.raises(TypeError):
+            {bb}
+
+    def test_id_is_immutable_after_construction(self):
+        bb = BasicBlock(id="a")
+        with pytest.raises(AttributeError, match="immutable"):
+            bb.id = "b"
+
+    @pytest.mark.parametrize("block_id", ["", 1, None])
+    def test_invalid_id_rejected(self, block_id):
+        with pytest.raises(ValueError, match="non-empty string"):
+            BasicBlock(id=block_id)  # type: ignore[arg-type]
 
     def test_repr(self):
         bb = BasicBlock(id="entry", label="IDLE")

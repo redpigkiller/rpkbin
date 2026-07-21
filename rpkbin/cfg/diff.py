@@ -86,6 +86,12 @@ class CFGDiffResult:
         changed_edges:  Edge keys whose attributes changed.
         added_calls:    ``(block_key, callee)`` call relationships in *new* only.
         removed_calls:  ``(block_key, callee)`` call relationships in *old* only.
+        entry_changed:  Whether the aligned entry designation changed.
+        old_entry:      Old aligned entry key, or ``None``.
+        new_entry:      New aligned entry key, or ``None``.
+        exit_changed:   Whether the aligned exit designation changed.
+        old_exit:       Old aligned exit key, or ``None``.
+        new_exit:       New aligned exit key, or ``None``.
     """
 
     added_blocks: set[str] = field(default_factory=set)
@@ -96,6 +102,12 @@ class CFGDiffResult:
     changed_edges: dict[tuple[str, str], EdgeDelta] = field(default_factory=dict)
     added_calls: set[tuple[str, str]] = field(default_factory=set)
     removed_calls: set[tuple[str, str]] = field(default_factory=set)
+    entry_changed: bool = False
+    old_entry: str | None = None
+    new_entry: str | None = None
+    exit_changed: bool = False
+    old_exit: str | None = None
+    new_exit: str | None = None
 
     def has_changes(self) -> bool:
         """Return ``True`` if any structural difference was recorded."""
@@ -108,6 +120,8 @@ class CFGDiffResult:
             or self.changed_edges
             or self.added_calls
             or self.removed_calls
+            or self.entry_changed
+            or self.exit_changed
         )
 
 
@@ -179,7 +193,6 @@ def _build_key_map(
 def _extract_calls(
     cfg: CFG,
     key_map: dict[str, str],
-    align_by: Literal["id", "label"],
 ) -> set[tuple[str, str]]:
     """Return ``{(block_key, callee)}`` for all CallRef insns in *cfg*."""
     # Build reverse: block_id -> aligned key
@@ -201,7 +214,6 @@ def _extract_calls(
 def _build_edge_map(
     cfg: CFG,
     key_map: dict[str, str],
-    align_by: Literal["id", "label"],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Return ``{(src_key, dst_key): attrs}`` for every edge in *cfg*."""
     id_to_key: dict[str, str] = {bid: k for k, bid in key_map.items()}
@@ -264,6 +276,17 @@ def diff_cfgs(
     old_keys = _build_key_map(old, align_by)  # key -> old_id
     new_keys = _build_key_map(new, align_by)  # key -> new_id
 
+    old_id_to_key = {block_id: key for key, block_id in old_keys.items()}
+    new_id_to_key = {block_id: key for key, block_id in new_keys.items()}
+    old_entry = old_id_to_key.get(old.entry_id) if old.entry_id is not None else None
+    new_entry = new_id_to_key.get(new.entry_id) if new.entry_id is not None else None
+    old_exit = old_id_to_key.get(old.exit_id) if old.exit_id is not None else None
+    new_exit = new_id_to_key.get(new.exit_id) if new.exit_id is not None else None
+    if old_entry != new_entry:
+        result.entry_changed, result.old_entry, result.new_entry = True, old_entry, new_entry
+    if old_exit != new_exit:
+        result.exit_changed, result.old_exit, result.new_exit = True, old_exit, new_exit
+
     old_key_set = set(old_keys)
     new_key_set = set(new_keys)
 
@@ -290,8 +313,8 @@ def diff_cfgs(
             )
 
     # Edges
-    old_edges = _build_edge_map(old, old_keys, align_by)
-    new_edges = _build_edge_map(new, new_keys, align_by)
+    old_edges = _build_edge_map(old, old_keys)
+    new_edges = _build_edge_map(new, new_keys)
 
     old_edge_set = set(old_edges)
     new_edge_set = set(new_edges)
@@ -311,8 +334,8 @@ def diff_cfgs(
                 )
 
     # CallRef relationships — always compared regardless of compare_insns
-    old_calls = _extract_calls(old, old_keys, align_by)
-    new_calls = _extract_calls(new, new_keys, align_by)
+    old_calls = _extract_calls(old, old_keys)
+    new_calls = _extract_calls(new, new_keys)
 
     result.added_calls   = new_calls - old_calls
     result.removed_calls = old_calls - new_calls
@@ -369,16 +392,13 @@ def diff_programs(
     result.added_functions   = new_fns - old_fns
     result.removed_functions = old_fns - new_fns
 
-    cfg_diff_kwargs = dict(
-        align_by=align_by,
-        compare_meta=compare_meta,
-        compare_insns=compare_insns,
-        compare_edge_attrs=compare_edge_attrs,
-    )
-
     for fn_name in old.cfgs:
         if fn_name in new.cfgs:
-            cfg_diff = diff_cfgs(old.cfgs[fn_name], new.cfgs[fn_name], **cfg_diff_kwargs)
+            cfg_diff = diff_cfgs(
+                old.cfgs[fn_name], new.cfgs[fn_name], align_by=align_by,
+                compare_meta=compare_meta, compare_insns=compare_insns,
+                compare_edge_attrs=compare_edge_attrs,
+            )
             if cfg_diff.has_changes():
                 result.changed_functions[fn_name] = cfg_diff
 

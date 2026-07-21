@@ -41,7 +41,7 @@ Domain recipes::
     fsm_layout = fsm.linearize(program)
 
     mcu.find_dead_loops(program, exit_block="HALT")
-    mcu.dead_code_elimination(program.main)
+    program.main.remove_unreachable()
     mcu_layout = mcu.linearize(program)
 
 Graph utilities and deeper analysis::

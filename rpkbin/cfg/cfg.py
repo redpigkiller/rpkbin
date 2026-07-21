@@ -14,7 +14,10 @@ Every edge carries two standard attributes:
                  conditional edges leave the same block.  Defaults to ``0``.
 
 Additional keyword attributes may be stored via ``**attrs`` in
-:meth:`add_edge`.
+:meth:`add_edge`.  A CFG has exactly one structural edge per ``(src, dst)``;
+duplicate insertion raises :class:`ValueError`.  Use :meth:`update_edge` for
+explicit attribute changes.  Edge attributes are deep-copied at the API
+boundary, as is :meth:`to_networkx` output.
 
 Entry vs Exit
 -------------
@@ -37,7 +40,7 @@ from typing import Any, Generator, Literal
 
 import networkx as nx
 
-from .block import BasicBlock, Insn
+from .block import Assignment, BasicBlock, CallRef, Insn, OtherInsn, _validate_block_id
 
 
 # ---------------------------------------------------------------------------
@@ -245,16 +248,16 @@ class CFG:
             source = block_id
             block_id = source.id
             label = source.label
-            insns = list(source.insns)
-            meta = dict(source.meta)
+            insns = deepcopy(source.insns)
+            meta = deepcopy(source.meta)
 
         if block_id in self._g:
             raise ValueError(f"Block {block_id!r} already exists in CFG.")
         bb = BasicBlock(
             id=block_id,
             label=label,
-            insns=list(insns or []),
-            meta=dict(meta or {}),
+            insns=deepcopy(insns) if insns is not None else [],
+            meta=deepcopy(meta) if meta is not None else {},
         )
         self._g.add_node(block_id, block=bb)
         return bb
@@ -283,7 +286,21 @@ class CFG:
         for bid in (src, dst):
             if bid not in self._g:
                 raise KeyError(f"Block {bid!r} not found in CFG.")
-        self._g.add_edge(src, dst, cond=cond, priority=priority, **attrs)
+        if self._g.has_edge(src, dst):
+            raise ValueError(f"Edge {src!r} -> {dst!r} already exists in CFG.")
+        self._g.add_edge(
+            src, dst, cond=cond, priority=priority, **deepcopy(attrs)
+        )
+
+    def update_edge(self, src: str, dst: str, **attrs: Any) -> None:
+        """Partially update attributes of the existing edge *src* -> *dst*.
+
+        Values are deep-copied, so later mutation of caller-owned nested
+        objects cannot alter the CFG.  Passing no attributes is a no-op.
+        """
+        if not self._g.has_edge(src, dst):
+            raise KeyError(f"Edge {src!r} -> {dst!r} not found in CFG.")
+        self._g[src][dst].update(deepcopy(attrs))
 
     def remove_block(self, block_id: str) -> BasicBlock:
         """Remove *block_id* and all incident edges, returning the removed block."""
@@ -299,7 +316,7 @@ class CFG:
         """Remove edge *src* -> *dst*, returning a copy of its attributes."""
         if not self._g.has_edge(src, dst):
             raise KeyError(f"Edge {src!r} -> {dst!r} not found in CFG.")
-        attrs = dict(self._g[src][dst])
+        attrs = deepcopy(dict(self._g[src][dst]))
         self._g.remove_edge(src, dst)
         return attrs
 
@@ -316,11 +333,13 @@ class CFG:
         """
         if old_id not in self._g:
             raise KeyError(f"Block {old_id!r} not found in CFG.")
+        # Validate before relabeling: relabel_nodes() mutates in place.
+        new_id = _validate_block_id(new_id)
         if new_id in self._g:
             raise ValueError(f"Block {new_id!r} already exists in CFG.")
         nx.relabel_nodes(self._g, {old_id: new_id}, copy=False)
         bb = self._g.nodes[new_id]["block"]
-        bb.id = new_id
+        bb._rename(new_id)
         if self._entry == old_id:
             self._entry = new_id
         if self._exit == old_id:
@@ -361,15 +380,25 @@ class CFG:
     @property
     def edges(self) -> list[tuple[str, str, dict[str, Any]]]:
         """All edges as ``(src, dst, attrs)`` triples."""
-        return [(u, v, dict(d)) for u, v, d in self._g.edges(data=True)]
+        return [(u, v, deepcopy(dict(d))) for u, v, d in self._g.edges(data=True)]
 
     @property
     def entry(self) -> BasicBlock | None:
-        return self._g.nodes[self._entry]["block"] if self._entry else None
+        return self._g.nodes[self._entry]["block"] if self._entry is not None else None
+
+    @property
+    def entry_id(self) -> str | None:
+        """Configured entry block id, or ``None`` when no entry is set."""
+        return self._entry
 
     @property
     def exit(self) -> BasicBlock | None:
-        return self._g.nodes[self._exit]["block"] if self._exit else None
+        return self._g.nodes[self._exit]["block"] if self._exit is not None else None
+
+    @property
+    def exit_id(self) -> str | None:
+        """Configured exit block id, or ``None`` when no exit is set."""
+        return self._exit
 
     def predecessors(self, block_id: str) -> list[BasicBlock]:
         return [self.get_block(p) for p in self._g.predecessors(block_id)]
@@ -379,7 +408,7 @@ class CFG:
 
     def edge_attrs(self, src: str, dst: str) -> dict[str, Any]:
         """Return a copy of the attribute dict for edge *src* → *dst*."""
-        return dict(self._g[src][dst])
+        return deepcopy(dict(self._g[src][dst]))
 
     def has_edge(self, src: str, dst: str) -> bool:
         """Return ``True`` if edge *src* -> *dst* exists."""
@@ -391,7 +420,7 @@ class CFG:
         Returns a list of ``(src, dst, attrs)`` triples.
         """
         edges = [
-            (u, v, dict(d))
+            (u, v, deepcopy(dict(d)))
             for u, v, d in self._g.out_edges(block_id, data=True)
         ]
         edges.sort(key=lambda e: e[2].get("priority", 0))
@@ -403,7 +432,7 @@ class CFG:
         Returns a list of ``(src, dst, attrs)`` triples.
         """
         edges = [
-            (u, v, dict(d))
+            (u, v, deepcopy(dict(d)))
             for u, v, d in self._g.in_edges(block_id, data=True)
         ]
         edges.sort(key=lambda e: e[2].get("priority", 0))
@@ -425,6 +454,14 @@ class CFG:
         clone._exit = self._exit
         return clone
 
+    def to_networkx(self) -> nx.DiGraph:
+        """Return an independent deep snapshot of the underlying graph.
+
+        The returned :class:`networkx.DiGraph` shares no mutable block,
+        instruction, metadata, or edge-attribute state with this CFG.
+        """
+        return deepcopy(self._g)
+
     def validate(self, *, require_entry: bool = True) -> list[str]:
         """Return structural issues found in the CFG.
 
@@ -443,6 +480,18 @@ class CFG:
             issues.append(f"exit block {self._exit!r} is not in the CFG")
 
         for block_id in self._g.nodes:
+            bb = self._g.nodes[block_id].get("block")
+            if not isinstance(bb, BasicBlock):
+                issues.append(f"node {block_id!r} does not store a BasicBlock")
+                continue
+            if bb.id != block_id:
+                issues.append(f"node key {block_id!r} does not match block id {bb.id!r}")
+            for index, insn in enumerate(bb.insns):
+                if not isinstance(insn, (Assignment, CallRef, OtherInsn)):
+                    issues.append(
+                        f"block {block_id!r} instruction {index} has unsupported "
+                        f"type {type(insn).__name__}"
+                    )
             if self._g.in_degree(block_id) == 0 and self._g.out_degree(block_id) == 0:
                 if block_id not in {self._entry, self._exit}:
                     issues.append(f"block {block_id!r} is isolated")
@@ -481,13 +530,13 @@ class CFG:
 
     def dfs(self, start: str | None = None) -> Generator[BasicBlock, None, None]:
         """Yield blocks in depth-first pre-order starting from *start* (or entry)."""
-        root = start or self._start()
+        root = start if start is not None else self._start()
         for nid in nx.dfs_preorder_nodes(self._g, root):
             yield self.get_block(nid)
 
     def bfs(self, start: str | None = None) -> Generator[BasicBlock, None, None]:
         """Yield blocks in breadth-first order starting from *start* (or entry)."""
-        root = start or self._start()
+        root = start if start is not None else self._start()
         for nid in nx.bfs_tree(self._g, root).nodes:
             yield self.get_block(nid)
 
@@ -501,7 +550,7 @@ class CFG:
         Uses ``networkx.dfs_postorder_nodes`` (iterative internally) to avoid
         Python's recursive call-stack limit on large graphs.
         """
-        root = start or self._start()
+        root = start if start is not None else self._start()
         postorder = list(nx.dfs_postorder_nodes(self._g, root))
         return [self.get_block(nid) for nid in reversed(postorder)]
 
@@ -515,9 +564,47 @@ class CFG:
 
     def find_unreachable(self, start: str | None = None) -> list[BasicBlock]:
         """Return all blocks that cannot be reached from *start* (or entry)."""
-        root = start or self._start()
+        root = start if start is not None else self._start()
+        if root not in self._g:
+            raise KeyError(f"Block {root!r} not found in CFG.")
         reachable = nx.descendants(self._g, root) | {root}
         return [self.get_block(nid) for nid in self._g.nodes if nid not in reachable]
+
+    def terminal_blocks(
+        self, start: str | None = None, *, reachable_only: bool = True
+    ) -> list[BasicBlock]:
+        """Return terminal blocks in deterministic CFG insertion order.
+
+        By default only terminals reachable from *start* (or the configured
+        entry) are returned.  With ``reachable_only=False``, *start* is
+        ignored and every zero-outdegree block is returned.
+        """
+        if not reachable_only:
+            return [
+                self.get_block(node)
+                for node in self._g.nodes
+                if self._g.out_degree(node) == 0
+            ]
+        root = start if start is not None else self._start()
+        if root not in self._g:
+            raise KeyError(f"Block {root!r} not found in CFG.")
+        reachable = nx.descendants(self._g, root) | {root}
+        return [
+            self.get_block(node)
+            for node in self._g.nodes
+            if node in reachable and self._g.out_degree(node) == 0
+        ]
+
+    def remove_unreachable(self, start: str | None = None) -> list[BasicBlock]:
+        """Remove and return blocks unreachable from *start* (or entry).
+
+        Returned blocks follow CFG insertion order.  Removing a configured
+        entry or exit clears that marker through :meth:`remove_block`.
+        """
+        unreachable = self.find_unreachable(start)
+        for block in unreachable:
+            self.remove_block(block.id)
+        return unreachable
 
     def find_sccs(self) -> list[list[str]]:
         """Return all Strongly Connected Components as lists of block ids.
@@ -545,7 +632,7 @@ class CFG:
         Uses an explicit stack to avoid Python recursion depth limits on large
         graphs.
         """
-        root = start or self._start()
+        root = start if start is not None else self._start()
         back_edges: list[tuple[str, str]] = []
         visited: set[str] = set()
         in_stack: set[str] = set()
@@ -571,16 +658,29 @@ class CFG:
         return back_edges
 
     def find_natural_loops(self, start: str | None = None) -> list[NaturalLoop]:
-        """Return all natural loops identified by their back-edges.
+        """Return natural loops whose headers dominate their tails.
 
         For each back-edge ``(tail → header)``, the natural loop body is the
         set of nodes from which *tail* is reachable without passing through
         *header* (plus *header* itself).
         """
-        back_edges = self.find_back_edges(start)
+        root = start if start is not None else self._start()
+        back_edges = self.find_back_edges(root)
+        idom = self.dominators(root)
+
+        def dominates(header: str, tail: str) -> bool:
+            node = tail
+            while node != idom[node]:
+                if node == header:
+                    return True
+                node = idom[node]
+            return node == header
+
         loops: list[NaturalLoop] = []
         rev = self._g.reverse()
         for tail, header in back_edges:
+            if not dominates(header, tail):
+                continue
             body: set[str] = {header}
             worklist = [tail]
             while worklist:
@@ -603,21 +703,54 @@ class CFG:
 
         Uses Lengauer-Tarjan via networkx.  The entry node maps to itself.
         """
-        root = start or self._start()
+        root = start if start is not None else self._start()
+        if root not in self._g:
+            raise KeyError(f"Block {root!r} not found in CFG.")
         idom = nx.immediate_dominators(self._g, root)
         idom.setdefault(root, root)
         return idom
 
-    def post_dominators(self, exit_node: str) -> dict[str, str]:
+    def dominates(
+        self, dominator: str, node: str, start: str | None = None
+    ) -> bool:
+        """Return whether *dominator* dominates *node* from *start* or entry.
+
+        Both nodes must exist and be reachable from the selected start node.
+        Unknown node or start ids raise :class:`KeyError`; existing but
+        unreachable nodes raise :class:`ValueError`.
+        """
+        for block_id in (dominator, node):
+            if block_id not in self._g:
+                raise KeyError(f"Block {block_id!r} not found in CFG.")
+        idom = self.dominators(start)
+        if dominator not in idom or node not in idom:
+            raise ValueError("Both nodes must be reachable from the selected start block.")
+        current = node
+        while current != idom[current]:
+            if current == dominator:
+                return True
+            current = idom[current]
+        return current == dominator
+
+    def post_dominators(self, exit_node: str | None = None) -> dict[str, str]:
         """Return the immediate post-dominator mapping ``{node: ipost_dom}``.
 
-        Computed as dominators on the reversed graph from *exit_node*.
+        Computed as dominators on the reversed graph from one selected exit.
+        An explicit *exit_node* takes priority over the configured exit.  The
+        mapping contains only blocks that can reach that selected exit, which
+        maps to itself.  This API does not create a virtual exit for multiple
+        terminals and is not multi-exit control-dependence analysis.
 
         Args:
-            exit_node: The block id to treat as the exit / sink for
-                       post-dominator computation.  Must be provided explicitly;
-                       this method does **not** fall back to ``self._exit``.
+            exit_node: The block id to treat as the exit / sink.  When omitted,
+                the configured exit block is used.
         """
+        if exit_node is None:
+            if self._exit is None:
+                raise RuntimeError(
+                    "CFG exit is not set. Call set_exit() or pass exit_node explicitly."
+                )
+            exit_node = self._exit
         if exit_node not in self._g:
             raise KeyError(f"Block {exit_node!r} not found in CFG.")
         idom = nx.immediate_dominators(self._g.reverse(), exit_node)
@@ -628,7 +761,7 @@ class CFG:
         """Return the dominator tree as a networkx DiGraph (idom → node edges)."""
         idom = self.dominators(start)
         tree = nx.DiGraph()
-        tree.add_nodes_from(self._g.nodes)
+        tree.add_nodes_from(idom)
         for node, dom in idom.items():
             if node != dom:
                 tree.add_edge(dom, node)
@@ -1002,7 +1135,7 @@ class CFG:
         except ImportError as exc:
             raise ImportError(
                 "export_dot() requires the 'pydot' package.  "
-                "Install it with: pip install pydot"
+                "Install it with: pip install rpkbin[dot]"
             ) from exc
 
         dot_graph = pydot.Dot(graph_type="digraph", rankdir="TB")
@@ -1100,8 +1233,10 @@ def merge_cfgs(*cfgs: CFG) -> CFG:
 
     Cycle warning
     -------------
-    If at least one input CFG was acyclic but the merged result contains
-    cycles, a :class:`UserWarning` is issued listing the new cycles.
+    If remapping and unifying blocks creates directed cycles not already present
+    in any input (after remapping to merged ids), a :class:`UserWarning` lists
+    those new cycles. This also detects a new cross-flow cycle when every input
+    CFG was already cyclic.
     Detection uses :func:`networkx.is_directed_acyclic_graph` and
     :func:`networkx.simple_cycles` — no custom cycle-detection code.
 
@@ -1218,13 +1353,13 @@ def merge_cfgs(*cfgs: CFG) -> CFG:
     result = CFG()
 
     for label, bb in canonical.items():
-        result.add_block(bb.id, label=bb.label, insns=list(bb.insns), meta=canonical_meta[label])
+        result.add_block(bb.id, label=bb.label, insns=bb.insns, meta=canonical_meta[label])
 
     for i, cfg in enumerate(cfgs):
         for bb in cfg.blocks:
             if bb.label is None:
                 new_id = all_id_map[(i, bb.id)]
-                result.add_block(new_id, label=None, insns=list(bb.insns), meta=dict(bb.meta))
+                result.add_block(new_id, label=None, insns=bb.insns, meta=bb.meta)
 
     # ------------------------------------------------------------------
     # Step 6: Remap and add edges.
@@ -1236,7 +1371,7 @@ def merge_cfgs(*cfgs: CFG) -> CFG:
             src = all_id_map[(i, u)]
             dst = all_id_map[(i, v)]
             key = (src, dst)
-            attrs_copy = dict(attrs)
+            attrs_copy = deepcopy(attrs)
             if key not in edge_registry:
                 edge_registry[key] = (i, attrs_copy)
             elif edge_registry[key][1] == attrs_copy:
@@ -1252,9 +1387,27 @@ def merge_cfgs(*cfgs: CFG) -> CFG:
     # Step 7: Warn if merge introduced new cycles (EC-10).
     # Uses nx.is_directed_acyclic_graph + nx.simple_cycles — no custom logic.
     # ------------------------------------------------------------------
-    if any(nx.is_directed_acyclic_graph(cfg._graph) for cfg in cfgs):
-        if not nx.is_directed_acyclic_graph(result._graph):
-            new_cycles = list(nx.simple_cycles(result._graph))
+    if not nx.is_directed_acyclic_graph(result._graph):
+        def canonical_cycle(cycle: list[str]) -> tuple[str, ...]:
+            """Normalize directed-cycle rotation without reversing its direction."""
+            return min(
+                tuple(cycle[index:] + cycle[:index])
+                for index in range(len(cycle))
+            )
+
+        input_cycles = {
+            canonical_cycle([all_id_map[(index, block_id)] for block_id in cycle])
+            for index, cfg in enumerate(cfgs)
+            for cycle in nx.simple_cycles(cfg._graph)
+        }
+        new_cycles = sorted(
+            {
+                canonical_cycle(cycle)
+                for cycle in nx.simple_cycles(result._graph)
+                if canonical_cycle(cycle) not in input_cycles
+            }
+        )
+        if new_cycles:
             warnings.warn(
                 f"merge_cfgs introduced {len(new_cycles)} new cycle(s): {new_cycles}",
                 UserWarning,

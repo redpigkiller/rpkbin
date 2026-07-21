@@ -9,9 +9,7 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 import shutil
-import importlib.resources as _res
 from pathlib import Path
 from string import Template
 

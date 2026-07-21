@@ -212,7 +212,7 @@ class Program:
             from .analysis import check_call_depth
 
             check_call_depth(self, max_depth=max_call_depth)
-        except ValueError as exc:
+        except (KeyError, ValueError) as exc:
             issues.append(str(exc))
 
         return issues

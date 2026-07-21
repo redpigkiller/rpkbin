@@ -6,6 +6,26 @@
 
 DSL parsing, real MCU ISAs, assemblers, linkers, and binary encoding are intentionally out of scope.
 
+## Boundary and compatibility contract
+
+`rpkbin.codegen` owns target-neutral HIR/LIR, validation and lowering, CFG and
+dataflow mechanics, allocator mechanics, rewrite mechanics, target protocols,
+and the pseudo-ASM pipeline.  `Target`, `FragmentTarget`, and `RegisterModel`
+are public protocols for a backend package to implement; none encodes a
+particular MCU ABI, register file, or flag convention.
+
+A UC frontend such as MyRtkPkg owns its DSL grammar/parser, UC register/alias/
+bit mapping, ABI, hardware semantics such as `CY`, `Z`, and `b_signext`,
+UC-specific patterns and costs, and real assembly/encoding.  Keep those
+policies outside this package.
+
+`HFragment` remains a deliberately narrow compatibility API: its acyclic
+control-flow, `HExit`, and phased scratch-register reuse behavior are recorded
+contracts, not a general-purpose fragment-policy framework.  They are not
+generalized by this package.  `region_semantics` remains here as an offline,
+target-neutral facility.  CEGIS is experimental/orphaned: it is not part of
+the production compilation pipeline and currently has no committed consumer.
+
 ## Entry points
 
 | Input | Use case | API |
@@ -35,6 +55,10 @@ print(result.asm_text)
 
 `ToyTarget` is a test/reference target, not a production target.
 
+`run_codegen_from_fragment` returns `FragmentCodegenResult`, whose typed
+intermediate fields match the function result and whose `asm_text` property is
+the same formatted pseudo-ASM convenience interface as `CodegenResult`.
+
 ## Pipeline
 
 ```text
@@ -50,6 +74,25 @@ HIR
 Supplying a `RegisterModel` enables validation against the target register file
 and register allocation. Passing `None` skips both. Register pressure currently
 fails closed; production spilling is not implemented.
+
+Rewrite rules are applied in declaration order.  `RewritePattern.cost_delta`
+is accepted as reserved metadata for compatibility, but it currently does not
+participate in rule selection; this package does not implement a cost-based
+optimizer.  Rewrite matching also treats calls, volatile loads, and inline ASM
+as effect boundaries, and reports an error when rules cycle rather than
+silently looping. Each expression permits up to 256 accepted state transitions
+(`max_steps`); the final stable probe does not consume a transition. A separate
+16,384-node `max_nodes` budget is checked for the initial expression and each
+candidate before it is hashed for cycle tracking. The diagnostics report the
+last rule, completed transitions, node count, and seen-state count.
+
+Replacement construction preserves captured metadata and derives new integer
+result/operand widths from the matched expression context, not matching tree
+positions. Comparison and `BitOp("test")` results are width 1; comparisons
+retain matched signedness. A root replacement whose known result width differs
+from the matched expression is rejected, while a captured `ref` preserves its
+own metadata. Ambiguous type-changing replacements are rejected instead of
+silently falling back to an 8-bit or unsigned default.
 
 ## Offline bounded-region semantics
 

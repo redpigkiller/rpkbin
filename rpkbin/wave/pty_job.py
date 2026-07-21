@@ -31,12 +31,10 @@ import logging
 import os
 import re
 import signal
-import subprocess
 import sys
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING, Callable
 
 from rpkbin.job_manager.job import Job, RUNNING
 from rpkbin.wave.job import WaveJobMixin

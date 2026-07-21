@@ -15,6 +15,8 @@ See [Codegen](codegen.md) for usage.
 - Production spill/reload is disabled. The former pre-isel prototype could
   overwrite live registers because expression-tree LIR does not expose target
   instruction constraints.
+- `cegis.minimize_cegis` is an experimental, orphaned offline helper.  It is
+  not invoked by the production pipeline and has no committed consumer.
 
 ## Deferred
 

@@ -128,13 +128,15 @@ needs them.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | Unique graph key. Stable ids are best for tests and generated code. |
+| `id` | `str` | Unique, non-empty graph key. It is immutable after construction. |
 | `label` | `str | None` | Human-readable label, often the assembly label or flowchart state name. |
 | `insns` | `list[Insn]` | Optional instruction annotations. Core flow features do not require them. |
 | `meta` | `dict` | Source location, spreadsheet row, flowchart id, or other caller-owned data. |
 
 You can create blocks through `CFG.add_block(...)` or pass a pre-built
-`BasicBlock` object.
+`BasicBlock` object. Blocks compare by id but are intentionally unhashable:
+`CFG.rename_block()` can legally change an owned block's id, so placing a block
+in a set or as a dict key would be unsafe.
 
 ```python
 from rpkbin.cfg import BasicBlock, CFG
@@ -221,6 +223,20 @@ transition.
 
 This keeps the CFG target-neutral: one emitter can turn `cond="start"` into an
 assembly branch, while another can turn it into a table entry or HDL case item.
+
+Each `(src, dst)` pair is one structural edge.  A duplicate `add_edge()` raises
+`ValueError` and never overwrites attributes; use
+`update_edge(src, dst, **attrs)` for explicit partial updates, including
+`cond=None`.  Inputs and all public edge results (`edges`, `edge_attrs()`,
+`out_edges()`, `in_edges()`, and `remove_edge()`) are deep copies, including
+nested values.
+
+`entry_id` and `exit_id` are read-only configured ids.  `terminal_blocks()`
+returns entry-reachable terminals in insertion order;
+`terminal_blocks(reachable_only=False)` returns all terminals.  Core
+`remove_unreachable()` removes and returns unreachable blocks in insertion
+order.  `to_networkx()` returns an independent deep `networkx.DiGraph`
+snapshot, never a live editing handle.
 
 ### Text Display
 
@@ -323,6 +339,12 @@ program.function_order("insertion")
 # unreachable functions are appended in insertion order
 program.function_order("call_dfs")
 
+# callee-before-caller order; recursive SCCs use a deterministic heuristic
+program.function_order("bottom_up")
+
+# deterministic lexicographic function order
+program.function_order("alphabetical")
+
 # explicit order; unspecified functions are appended in insertion order
 program.function_order("custom", order=["SUB_CHECK", "main"])
 
@@ -384,14 +406,13 @@ or exit block.
 from rpkbin.cfg import mcu
 
 dead_loops = mcu.find_dead_loops(program, exit_block="HALT")
-removed = mcu.dead_code_elimination(program.main)
+removed = program.main.remove_unreachable()
 layout = mcu.linearize(program, strategy="trace")
 ```
 
 | Function | Returns | Use For |
 |---|---|---|
 | `find_dead_loops(program, exit_block=None)` | `list[list[str]]` | Reachable cycles with no path to halt/exit. |
-| `dead_code_elimination(cfg, start=None)` | `list[BasicBlock]` | Remove unreachable blocks in place. |
 | `linearize(program, strategy="rpo")` | `MCULayout` | Ordered slots with exit-edge and fallthrough hints. |
 
 `MCULayout` does not emit assembly. It tells your emitter which block comes
@@ -433,6 +454,8 @@ Available `fallthrough_policy` values:
 - `"layout"`: Reorders based on edge `layout_role` attribute (`"main"` > `"normal"` > `"cold"`).
 - `"likelihood"`: Reorders based on edge `likelihood` attribute (`"likely"` > `"normal"` > `"unlikely"`).
 - `"weight"`: Reorders based on edge `weight` attribute (higher weight takes precedence).
+- `"cond_aware_weight"`: Prefers unconditional edges first, then uses higher
+  `weight` to rank successors of the same conditionality.
 
 > [!IMPORTANT]
 > **Heuristic Nature**
@@ -506,6 +529,8 @@ if result.has_changes():
     print("changed edges:", result.changed_edges)     # dict[(src,dst), EdgeDelta]
     print("added calls:",   result.added_calls)       # CallRef relationships
     print("removed calls:", result.removed_calls)
+    print("entry:", result.old_entry, "->", result.new_entry)
+    print("exit:", result.old_exit, "->", result.new_exit)
 
 # Convenience boolean
 if not cfg_structurally_equal(old_cfg, new_cfg):
@@ -547,6 +572,9 @@ list(cfg.bfs())
 cfg.reverse_postorder()
 cfg.can_reach("entry", "done")
 cfg.find_unreachable()
+cfg.terminal_blocks()
+cfg.remove_unreachable()
+snapshot = cfg.to_networkx()
 cfg.find_sccs()
 ```
 
@@ -556,9 +584,25 @@ cfg.find_sccs()
 cfg.find_back_edges()
 cfg.find_natural_loops()
 cfg.dominators()
-cfg.post_dominators(exit_node="done")
+cfg.dominates("entry", "done")
+cfg.post_dominators()  # configured exit, or pass exit_node="done"
 cfg.dominator_tree()
 ```
+
+Dominance is defined only for blocks reachable from the selected `start` (or
+the configured entry). `dominates()` raises `KeyError` for an unknown block or
+start, and `ValueError` when either existing argument is unreachable from the
+selected start. `dominator_tree()` likewise contains only reachable blocks;
+unreachable blocks are not added as isolated tree nodes.
+
+`post_dominators(exit_node=None)` is single-selected-exit post-dominance: an
+explicit `exit_node` takes priority, otherwise the configured exit is used.
+Its mapping contains only blocks that can reach the selected exit, and the
+selected exit maps to itself. It does not create a virtual exit for a
+multi-terminal CFG and is not multi-exit control-dependence analysis. Use
+`terminal_blocks()` to inspect terminals, then explicitly choose one when that
+is the analysis you need. If neither an explicit exit nor a configured exit is
+available, it raises `RuntimeError`; call `set_exit()` or pass `exit_node`.
 
 ### Merging Labeled Flows
 
@@ -589,7 +633,7 @@ def/use information.
 | Type | Meaning |
 |---|---|
 | `Assignment(lhs, rhs, raw="")` | Defines `lhs` and uses the variables in `rhs`. Constants should be excluded by the frontend. |
-| `CallRef(callee, raw="")` | Marks a call to another CFG in a `Program`. |
+| `CallRef(callee, raw="")` | Marks a call to another CFG in a `Program`; the callee may-def summary propagates outward, while only definite writes kill caller liveness. |
 | `OtherInsn(raw="", defs=set(), uses=set())` | Caller-provided def/use annotation for anything else. |
 
 ```python
@@ -607,6 +651,11 @@ live = results["main"].live_in["work"]
 Liveness is structural and annotation-driven. It does not understand ISA
 register aliases, flags, memory aliasing, stack conventions, or implicit
 clobbers unless your frontend records them in `defs` and `uses`.
+Leaving an `OtherInsn` annotation empty means no known effect was provided; if
+the instruction actually reads or writes values, analysis under-approximates
+liveness. `FunctionSummary.defs` is the entry-reachable may-def set, while
+`must_defs` contains values written on every reachable normal-return path. It
+is empty for CFGs with no reachable normal return.
 
 ---
 
@@ -639,3 +688,25 @@ rpkbin/cfg/
   fsm.py       FSM-oriented checks and layout
   mcu.py       MCU-oriented checks and layout
 ```
+
+## Correctness and ownership contracts
+
+`BasicBlock.id` is a non-empty, immutable graph-node identity. Rename a stored
+block only with `CFG.rename_block()`, which updates its graph key, edges, entry,
+and exit atomically. `BasicBlock` compares by id but is intentionally unhashable.
+
+`CFG.add_block(BasicBlock(...))`, `CFG.copy()`, and `merge_cfgs()` give the
+destination independent ownership of instructions, metadata, and edge attributes.
+`CFG.validate()` also checks node-key/id agreement and instruction types; a
+mutated unknown `CallRef` is reported by `Program.validate()`.
+
+For interprocedural liveness, `FunctionSummary.defs` remains the public
+**may-def** set. `must_defs` contains only variables written on every path to a
+designated exit and is the only call-site liveness kill set. `uses` is the
+function-entry live-in requirement.
+
+`diff_cfgs()` includes entry/exit changes. With `align_by="label"`, equal
+logical entry/exit labels are equal even when ids differ. `find_natural_loops()`
+requires a back-edge header to dominate its tail, excluding irreducible SCCs.
+Weight-driven MCU policies require finite, non-boolean numeric weights >= 0.
+Install `rpkbin[dot]` to use `CFG.export_dot()`.

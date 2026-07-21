@@ -360,7 +360,7 @@ class MapBV(_BVBase):
             )
 
         for p in parts:
-            reachable = set()
+            reachable: set[int] = set()
             p._collect_linked(reachable)    # pylint: disable=protected-access
             if id(self) in reachable or id(p) == id(self):
                 raise ValueError(

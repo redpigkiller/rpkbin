@@ -19,7 +19,8 @@ def/use derivation
     def = {lhs},  use = set(rhs)
 
 ``CallRef(callee)``
-    def = callee's FunctionSummary.defs
+    liveness kill-def = callee's FunctionSummary.must_defs
+    exported may-def = callee's FunctionSummary.defs
     use = callee's FunctionSummary.uses
 
 ``OtherInsn(defs, uses)``
@@ -47,23 +48,30 @@ if TYPE_CHECKING:
 def _block_def_use(
     insn: Insn,
     summaries: dict[str, "FunctionSummary"],
-) -> tuple[set[str], set[str]]:
-    """Return ``(defs, uses)`` for a single instruction.
+) -> tuple[set[str], set[str], set[str]]:
+    """Return ``(kill_defs, uses, may_defs)`` for one instruction.
 
-    For :class:`CallRef`, the summary of the callee is used if available;
-    otherwise both sets are empty (safe but imprecise — run bottom-up to avoid
-    this case).
+    ``kill_defs`` drives backward liveness and must-def dataflow; ``may_defs``
+    is used only to export the caller's :class:`FunctionSummary`. A
+    :class:`CallRef` uses callee ``must_defs`` for the former and callee
+    ``defs`` for the latter.
+
+    A missing callee summary can occur only in direct, out-of-order private use:
+    :func:`interprocedural_liveness` always processes callees first. In that
+    unsupported situation empty sets under-approximate liveness and may-defs.
     """
     if isinstance(insn, Assignment):
-        return {insn.lhs}, set(insn.rhs)
+        defs = {insn.lhs}
+        return defs, set(insn.rhs), defs
     if isinstance(insn, CallRef):
         s = summaries.get(insn.callee)
         if s is not None:
-            return set(s.defs), set(s.uses)
-        return set(), set()   # callee not analysed yet (cycle guard)
+            return set(s.must_defs), set(s.uses), set(s.defs)
+        return set(), set(), set()
     if isinstance(insn, OtherInsn):
-        return set(insn.defs), set(insn.uses)
-    return set(), set()      # unreachable with the current Insn union
+        defs = set(insn.defs)
+        return defs, set(insn.uses), defs
+    return set(), set(), set()  # unreachable with the current Insn union
 
 
 # ---------------------------------------------------------------------------
@@ -74,17 +82,27 @@ def _block_def_use(
 class FunctionSummary:
     """Liveness summary exported from a single function.
 
+    ``defs`` contains entry-reachable may-defs. ``uses`` is the entry live-in
+    requirement. ``must_defs`` contains values written on every reachable
+    normal-return path and is empty when no normal return exists.
+
     Attributes:
-        defs: Variables the function *may* write on any execution path.
+        defs: Variables reachable from function entry that may be written.
         uses: Variables the function reads before (possibly) writing them —
               i.e. the live-in set at the function's entry block.
+        must_defs: Variables written on every reachable normal-return path;
+            empty when no reachable normal return exists.
     """
 
     defs: set[str] = field(default_factory=set)
     uses: set[str] = field(default_factory=set)
+    must_defs: set[str] = field(default_factory=set)
 
     def __repr__(self) -> str:
-        return f"FunctionSummary(defs={sorted(self.defs)}, uses={sorted(self.uses)})"
+        return (
+            f"FunctionSummary(defs={sorted(self.defs)}, "
+            f"uses={sorted(self.uses)}, must_defs={sorted(self.must_defs)})"
+        )
 
 
 @dataclass
@@ -191,16 +209,20 @@ def _intraprocedural_liveness(
     # Compute per-block def/use sets (in sequential instruction order)
     block_def: dict[str, set[str]] = {}
     block_use: dict[str, set[str]] = {}
+    block_may_def: dict[str, set[str]] = {}
     for bb in cfg.blocks:
         blk_def: set[str] = set()
+        blk_may_def: set[str] = set()
         blk_use: set[str] = set()
         for insn in bb.insns:
-            d, u = _block_def_use(insn, summaries)
+            d, u, may_d = _block_def_use(insn, summaries)
             # A variable used before it is defined in this block is live-in
             blk_use |= u - blk_def
             blk_def |= d
+            blk_may_def |= may_d
         block_def[bb.id] = blk_def
         block_use[bb.id] = blk_use
+        block_may_def[bb.id] = blk_may_def
 
     # Initialize live sets
     live_in:  dict[str, FrozenSet[str]] = {bb.id: frozenset() for bb in cfg.blocks}
@@ -226,12 +248,51 @@ def _intraprocedural_liveness(
 
     result = LivenessResult(live_in=live_in, live_out=live_out)
 
-    # Build summary: defs = union of all block defs; uses = live_in at entry
+    # Build summary. ``defs`` is the public may-def summary.  A call can only
+    # kill values in ``must_defs``: a value written on one branch may retain its
+    # caller value on another branch.
+    entry_id = cfg.entry_id
+    reachable = (
+        nx.descendants(g, entry_id) | {entry_id}
+        if entry_id is not None else set()
+    )
     all_defs: set[str] = set()
-    for d in block_def.values():
-        all_defs |= d
-    entry_uses: set[str] = set(live_in[cfg._entry]) if cfg._entry else set()
-    summary = FunctionSummary(defs=all_defs, uses=entry_uses)
+    for block_id in reachable:
+        all_defs |= block_may_def[block_id]
+    entry_uses: set[str] = (
+        set(live_in[entry_id]) if entry_id is not None else set()
+    )
+    must_in: dict[str, set[str] | None] = {bid: None for bid in g}
+    if entry_id is not None:
+        must_in[entry_id] = set()
+    must_worklist = [entry_id] if entry_id is not None else []
+    must_out: dict[str, set[str]] = {}
+    while must_worklist:
+        bid = must_worklist.pop()
+        incoming = must_in[bid]
+        assert incoming is not None
+        outgoing = incoming | block_def[bid]
+        if must_out.get(bid) == outgoing:
+            continue
+        must_out[bid] = outgoing
+        for succ in g.successors(bid):
+            previous = must_in[succ]
+            merged = outgoing if previous is None else previous & outgoing
+            if merged != previous:
+                must_in[succ] = merged
+                must_worklist.append(succ)
+    if entry_id is None:
+        exit_ids: list[str] = []
+    elif cfg.exit_id is not None:
+        exit_ids = [cfg.exit_id] if cfg.exit_id in reachable else []
+    else:
+        exit_ids = [bid for bid in reachable if g.out_degree(bid) == 0]
+    must_defs: set[str] = set()
+    if exit_ids:
+        must_defs = set(all_defs)
+        for exit_id in exit_ids:
+            must_defs &= must_out.get(exit_id, set())
+    summary = FunctionSummary(defs=all_defs, must_defs=must_defs, uses=entry_uses)
 
     return result, summary
 

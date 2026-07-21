@@ -28,7 +28,7 @@ from .lir import Fragment, Function, validate_fragment, validate_function
 from .isel import select_fragment_instructions, select_instructions
 from .patterns import RewritePattern
 from .rewrite import rewrite_fragment, rewrite_function
-from .target import RegisterModel, Target
+from .target import FragmentTarget, RegisterModel, Target
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class CodegenResult:
     rewritten_lir: Function
     asm: AsmFunction
     applied_patterns: Sequence[str]
-    register_assignment: dict | None = None
+    register_assignment: dict[str, str] | None = None
 
     # ------------------------------------------------------------------
     # Backward-compatibility helpers
@@ -240,14 +240,19 @@ class FragmentCodegenResult:
     rewritten_lir: Fragment
     asm: AsmFunction
     applied_patterns: Sequence[str]
-    register_assignment: dict | None = None
+    register_assignment: dict[str, str] | None = None
+
+    @property
+    def asm_text(self) -> str:
+        """Formatted pseudo-ASM, matching :class:`CodegenResult`."""
+        return self.asm.format()
 
 
 def run_codegen_from_fragment(
     fragment: HFragment,
-    target,
+    target: FragmentTarget,
     patterns: Iterable[RewritePattern] = (),
-    register_model=None,
+    register_model: RegisterModel | None = None,
 ) -> FragmentCodegenResult:
     """Run the full HFragment → pseudo-ASM pipeline.
 
@@ -308,7 +313,7 @@ def run_codegen_from_fragment(
     validate_fragment(rewritten)
 
     # Step 6: scratch-only, no-spill Fragment register allocation
-    reg_assignment: dict | None = None
+    reg_assignment: dict[str, str] | None = None
     allocated = rewritten
     if register_model is not None:
         from .register_alloc import allocate_fragment_registers
@@ -337,13 +342,13 @@ def run_codegen_from_fragment(
     )
 
 
-def _extract_hints(hfunc: HFunction) -> dict:
+def _extract_hints(hfunc: HFunction) -> dict[str, str]:
     """Extract all @hint annotations from HIR function params.
 
     Returns a dict mapping param name → hint string for params that
     carry a ``reg_hint``.
     """
-    hints = {}
+    hints: dict[str, str] = {}
     for p in hfunc.params:
         if p.reg_hint:
             hints[p.name] = p.reg_hint

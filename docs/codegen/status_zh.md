@@ -79,3 +79,19 @@
 - DSL parser。
 - 真實 MCU ISA、register definitions 與 private rewrite patterns。
 - assembler、linker 與 binary encoding。
+
+## 穩定化邊界（2026）
+
+- `rpkbin.codegen` 僅擁有 generic HIR/LIR、validation/lowering、CFG/dataflow、allocator、
+  rewrite mechanics、target protocols 與 pseudo-ASM pipeline。MyRtkPkg/UC frontend 負責
+  DSL parser、UC register/alias/bit mapping、ABI、`CY`/`Z`/`b_signext`、UC-specific
+  patterns/costs，以及 real assembly/encoding。
+- `HFragment` 的 acyclic、`HExit`、phased reuse 是既有 narrow compatibility contract；
+  本次只記錄，不搬動或泛化。`region_semantics` 暫留 codegen 作 offline facility。
+- `RewritePattern.cost_delta` 是 reserved metadata，不參與 rule selection；沒有 cost optimizer。
+- CEGIS 是 experimental/orphan，非 production pipeline，且沒有 committed consumer。
+- rewrite 不會穿越含 `Call`、volatile `MemLoad`、`InlineAsmExpr` 或 `SymbolAddr` 的 subtree。
+  exact cycle 與非重複成長均會以 `RewriteConvergenceError` fail closed。預設每個 expression
+  最多有 256 個已接受 transition（stable probe 不計），另有 16,384-node budget；初始值與
+  candidate 都在 state hash 前檢查。診斷包含 last rule、steps、expression size、max_nodes 與
+  seen states。`Cmp` 與 `BitOp("test")` 結果皆為 width 1，root result width mismatch 會 fail closed。

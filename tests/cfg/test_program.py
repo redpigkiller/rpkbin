@@ -127,6 +127,14 @@ def test_program_validate_can_check_call_depth():
     assert any("Call depth" in issue for issue in issues)
 
 
+def test_program_validate_reports_callref_added_after_construction():
+    cfg = _main_cfg()
+    program = Program({"main": cfg})
+    cfg.get_block("entry").insns.append(CallRef("missing"))
+
+    assert any("unknown function 'missing'" in issue for issue in program.validate())
+
+
 # ---------------------------------------------------------------------------
 # Program.function_order
 # ---------------------------------------------------------------------------
@@ -337,5 +345,4 @@ class TestFunctionOrder:
         # callers must be emitted before entry (main)
         assert result.index("a") < result.index("main")
         assert result.index("b") < result.index("main")
-
 

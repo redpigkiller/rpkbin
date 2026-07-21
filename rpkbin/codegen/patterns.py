@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Iterable, List, Mapping
 
 
 PatternSpec = Mapping[str, Any]
@@ -17,10 +17,16 @@ PatternSpec = Mapping[str, Any]
 
 @dataclass(frozen=True)
 class RewritePattern:
+    """One structural rewrite rule.
+
+    ``cost_delta`` is compatibility metadata reserved for a future selector;
+    the current ordered rewrite pass does not use it to choose rules.
+    """
+
     name: str
     match: PatternSpec
     replace: PatternSpec
-    cost_delta: int = 0
+    cost_delta: int = 0  # Metadata only; currently not used for selection.
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "RewritePattern":

@@ -204,6 +204,16 @@ class TestCFGDiffAlignByLabel:
         result = diff_cfgs(old, new, align_by="label")
         assert not result.has_changes()
 
+    def test_entry_and_exit_changes_are_reported(self):
+        old = _cfg_ab()
+        old.set_exit("b")
+        new = _cfg_ab()
+        new.set_entry("b")
+
+        result = diff_cfgs(old, new)
+        assert result.entry_changed and result.old_entry == "a" and result.new_entry == "b"
+        assert result.exit_changed and result.old_exit == "b" and result.new_exit is None
+
     def test_align_by_label_raises_on_duplicate_labels(self):
         cfg = CFG()
         cfg.add_block("a1", label="SAME")

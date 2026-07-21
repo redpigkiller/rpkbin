@@ -42,10 +42,10 @@ from rpkbin.wave._util import job_exit_code as _job_exit_code
 from rpkbin.wave.tui.commands import (
     CommandInput,
     _HELP_TEXT,
-    _KEY_COMPLETIONS,
-    _SIGNAL_COMPLETIONS,
-    _WAVE_COMMANDS,
-    _WAVE_JOB_COMMANDS,
+    _KEY_COMPLETIONS,  # noqa: F401 - module-level compatibility alias
+    _SIGNAL_COMPLETIONS,  # noqa: F401 - module-level compatibility alias
+    _WAVE_COMMANDS,  # noqa: F401 - module-level compatibility alias
+    _WAVE_JOB_COMMANDS,  # noqa: F401 - module-level compatibility alias
     _expand_dot_in_parts,
 )
 from rpkbin.wave.tui.formatting import (
@@ -619,6 +619,7 @@ class WaveApp(App):
         if getattr(self, "_quitting", False) and not _active_jobs(self._session):
             self.exit()
             return
+        tick_t0: float | None = None
         try:
             perf_enabled = getattr(self._session, "perf_enabled", False)
             tick_t0 = time.perf_counter() if perf_enabled else None

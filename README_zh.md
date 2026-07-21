@@ -132,6 +132,7 @@ pip install -e .
 pip install -e .[wave]   # 安裝 textual, prompt_toolkit, rich
 pip install -e .[excel]  # 安裝 openpyxl, xlrd, rapidfuzz
 pip install -e .[cfg]    # 安裝 networkx
+pip install -e .[dot]    # 啟用 CFG.export_dot()
 
 # 安裝所有功能（建議）
 pip install -e .[all]

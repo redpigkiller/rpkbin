@@ -17,10 +17,6 @@ MCU-specific checks
     MCU's exit block.  Unlike FSM sink detection, MCU infinite loops are
     always bugs (the machine should eventually reach HALT).
 
-``dead_code_elimination``
-    Removes blocks unreachable from the entry.  Operates in-place on a
-    single CFG and returns the list of removed blocks.
-
 MCU layout
 ----------
 ``linearize`` returns an :class:`MCULayout`, an ordered list of
@@ -85,6 +81,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
+import math
 from typing import Literal
 
 import networkx as nx
@@ -229,12 +226,12 @@ def _validate_weights(cfg: CFG, ordered_ids: list[str]) -> None:
             w = attrs.get("weight")
             if w is None:
                 continue
-            if not isinstance(w, (int, float)):
+            if isinstance(w, bool) or not isinstance(w, (int, float)):
                 raise ValueError(
                     f"Edge {bid!r} -> {dst!r} has invalid weight {w!r}: "
                     "must be int or float."
                 )
-            if w < 0:
+            if not math.isfinite(w) or w < 0:
                 raise ValueError(
                     f"Edge {bid!r} -> {dst!r} has invalid weight {w!r}: "
                     "must be >= 0."
@@ -453,20 +450,20 @@ def find_dead_loops(program: Program, exit_block: str | None = None) -> list[lis
     Args:
         program:    The program to analyse (only the main CFG is examined).
         exit_block: Block id of the halt / exit block.  If ``None``, falls
-                    back to ``main_cfg._exit``.  At least one must be provided.
+                    back to ``main_cfg.exit_id``.  At least one must be provided.
 
     Returns:
         List of dead loops; each loop is a sorted list of block ids.
 
     Raises:
-        RuntimeError: If neither *exit_block* nor ``main_cfg._exit`` is set.
+        RuntimeError: If neither *exit_block* nor ``main_cfg.exit_id`` is set.
     """
     cfg = program.main
-    entry_id = cfg._entry
+    entry_id = cfg.entry_id
     if entry_id is None:
         raise RuntimeError("Main CFG entry is not set.  Call set_entry() first.")
 
-    exit_id = exit_block or cfg._exit
+    exit_id = exit_block if exit_block is not None else cfg.exit_id
     if exit_id is None:
         raise RuntimeError(
             "exit_block must be provided (or set via CFG.set_exit()) "
@@ -499,28 +496,6 @@ def find_dead_loops(program: Program, exit_block: str | None = None) -> list[lis
     return dead
 
 
-def dead_code_elimination(
-    cfg: CFG,
-    start: str | None = None,
-) -> list[BasicBlock]:
-    """Remove unreachable blocks from *cfg* **in place**.
-
-    Args:
-        cfg:   The :class:`CFG` to modify.
-        start: Entry block id.  Defaults to ``cfg._entry``.
-
-    Returns:
-        The list of :class:`BasicBlock` objects removed from the graph.
-
-    Raises:
-        RuntimeError: If no entry is set and *start* is not provided.
-    """
-    dead = cfg.find_unreachable(start)
-    for bb in dead:
-        cfg.remove_block(bb.id)
-    return dead
-
-
 def _safe_weight(val: object) -> float:
     """Convert *val* to float for use in :class:`MCUExitEdge`.
 
@@ -529,7 +504,7 @@ def _safe_weight(val: object) -> float:
     so that slot construction does not raise.  Validation for the ``"weight"``
     policy is performed earlier by :func:`_validate_weights`.
     """
-    if isinstance(val, (int, float)):
+    if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
         return float(val)
     return 1.0  # non-numeric → safe default (will be caught by _validate_weights if needed)
 
@@ -630,12 +605,12 @@ def linearize(
     if (
         strategy == "custom"
         and ordered_ids
-        and cfg._entry is not None
-        and ordered_ids[0] != cfg._entry
+        and cfg.entry_id is not None
+        and ordered_ids[0] != cfg.entry_id
     ):
         warnings.warn(
             f"mcu.linearize: custom order places block {ordered_ids[0]!r} first, "
-            f"but the CFG entry is {cfg._entry!r}. "
+            f"but the CFG entry is {cfg.entry_id!r}. "
             "If your backend uses the first physical slot as the program entry "
             "point, this will cause incorrect execution. "
             "Put the entry block first in the custom order to suppress this warning.",
