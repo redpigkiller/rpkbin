@@ -9,6 +9,14 @@
 
 它刻意不負責 parse assembly、不配置 register、不理解特定 ISA，也不決定 calling convention。這些 target-specific 的選擇應該留在你的 frontend 或 emitter。
 
+## 模組 contract
+
+- **安裝：** `python -m pip install -e ".[cfg]"`；只有使用 `CFG.export_dot()` 時才需要再安裝 `python -m pip install -e ".[dot]"`。
+- **Public entry points：** `CFG`、`BasicBlock`、`Program`、`CallRef`、`fsm`、`mcu`、`diff_cfgs` 與 `diff_programs`。
+- **狀態：** Beta。模型與 layout helpers 已可使用，但 package 保持 target-neutral，不會產生最終 ISA instructions。
+- **驗證：** `python -m pytest tests/cfg -q`。
+- **相關文件：** [package 架構](../architecture_zh.md)、[English guide](cfg.md)。
+
 ---
 
 ## 快速開始
@@ -457,9 +465,9 @@ cfg.add_edge("C", "RESET", cond="error", weight=1.0)
 > 在 `MCULayout` 中，只有在滿足以下**所有**條件時，`MCUExitEdge.is_fallthrough` 才會是 `True`：
 > 1. Edge 沒有條件限制 (`edge.cond is None`)。
 > 2. Edge 的 target 剛好是緊接的下一個物理 slot (`edge.target` 位於 layout 的下一個位置)。
-> 
+>
 > Conditional edges (有條件的 edge) **永遠不可能是** physical fallthrough，即使 target 在 layout 中剛好相鄰。系統不會進行 condition inversion。
-> 
+>
 > 請注意：
 > - `layout_role="main"` 不等於 fallthrough。
 > - `likelihood="likely"` 不等於 fallthrough。

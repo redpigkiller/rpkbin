@@ -7,6 +7,15 @@
 
 本套件支援**雙向數值同步** (更改父暫存器會反映在其切片上，反之亦然)、**符號化求值 (Symbolic Evaluation)** 以及易讀的結構化列印。
 
+## 模組 contract
+
+- **安裝：** core package 已足夠，不需要 optional extra。
+- **Public entry points：** `var`、`const`、`concat`，以及它們建立的 `MapBV` / `MapBVExpr` objects。
+- **語意：** slices 使用包含兩端的 `[MSB:LSB]` bounds；concatenated views 會雙向保持 live；`.eval()` 會做 what-if 計算而不修改來源。
+- **不要混用：** fixed-point scaling、rounding、overflow 或 DSP arithmetic 應使用 [NumBV](../numbv/numbv_zh.md)；MapBV 專注 bit/register structure。
+- **狀態：** Stable。**驗證：** `python -m pytest tests/mapbv -q`。
+- **相關文件：** [English guide](mapbv.md)、[package 架構](../architecture_zh.md)。
+
 ---
 
 ## 快速開始 (使用指南)

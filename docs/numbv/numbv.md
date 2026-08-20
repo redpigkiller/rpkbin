@@ -12,6 +12,15 @@ It features a **two-layer API** separating everyday convenience from bit-exact p
 **explicit format tracking** through every arithmetic step, and an **optional JAX backend**
 for acceleration when its execution constraints fit the pipeline.
 
+## Module contract
+
+- **Install:** `python -m pip install -e "."` provides the NumPy backend; add `python -m pip install -e ".[jax]"` for JAX.
+- **Public entry points:** `Format`, `NumBV`, `scalar`, `array`, `zeros`, `ones`, `full`, `from_bits`, `add`, `sub`, `mul`, `neg`, `sum`, `dot`, `mac`, `infer_add_format`, `infer_mul_format`, `set_backend`, and `get_backend`.
+- **Compatibility:** formats are backed by `int64` and currently limit `width` to 63 bits. Select the process-global backend before creating `NumBV` objects.
+- **Performance:** NumPy reductions preserve bit-true rounding/overflow with Python-loop semantics and can be slow for large arrays; JAX is the optional acceleration path for compatible fixed-shape pipelines.
+- **Status:** Stable. **Verification:** `python -m pytest tests/numbv -q`.
+- **Related:** [Traditional Chinese guide](numbv_zh.md), [package architecture](../architecture.md).
+
 ---
 
 ## Quick Start
@@ -20,8 +29,8 @@ for acceleration when its execution constraints fit the pipeline.
 import rpkbin.numbv as nbv
 ```
 
-NumPy is installed by default with `pip install rpkbin`. For the optional JAX
-backend, install `pip install 'rpkbin[jax]'`.
+NumPy is installed by default with `python -m pip install -e "."`. For the optional JAX
+backend, install `python -m pip install -e ".[jax]"`.
 
 ### 1. Defining a Format
 

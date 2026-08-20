@@ -7,6 +7,15 @@
 
 **Excel Extractor** 採用了另一套思維：你只需要描述你期望看到的資料「形狀」（一個具備欄位定義的樣板 Block），引擎便會掃描整份 Excel，自動找出相符格式所在的絕對位置與內容。
 
+## 模組 contract
+
+- **安裝：** `python -m pip install -e ".[excel]"`，支援 `.xls`、`.xlsx`、`.xlsm` 與模糊比對所需的相依套件。
+- **Public entry points：** `match_template`、`Block`、`Row`、`EmptyRow`、`Group`、`Types`、`MatchOptions` 與 `MatchOutput`。
+- **輸出：** `MatchOutput`，包含 matched blocks、rows、cells、sheet names 與 coordinates；extractor 只讀取 workbook，不會寫回檔案。
+- **狀態：** Beta。比對品質取決於 template 是否足夠明確，以及 workbook 是否能由 `openpyxl` 或 `xlrd` 讀取。
+- **驗證：** `python -m pytest tests/excel_extractor -q`。
+- **相關文件：** [English guide](excel_extractor.md)、[package 架構](../architecture_zh.md)。
+
 ---
 
 ## 快速開始 (使用指南)
@@ -31,11 +40,11 @@ from rpkbin.excel_extractor import match_template, Block, Row, Types
 # 定義表格外觀
 template = Block(
     # 第一列：精確比對這三個標題字眼
-    Row(pattern=["部門", "姓名", "月薪"], node_id="header"),      
-    
+    Row(pattern=["部門", "姓名", "月薪"], node_id="header"),
+
     # 後續列：型別分別是 字串、字串、整數。並且指定 repeat="+" 代表「至少一列，越多越好」
     Row(pattern=[Types.STR, Types.STR, Types.INT], repeat="+", node_id="data"),
-    
+
     # 幫這個樣板取個名字，方便追蹤
     block_id="salary_table",
 )
@@ -51,7 +60,7 @@ results = match_template("report.xlsx", template)
 
 for block_match in results.blocks:
     print(f"在工作表 '{block_match.sheet_name}' 找到表格位置：{block_match.start} → {block_match.end}")
-    
+
     # 印出表格裡所有列的資訊
     for row in block_match.rows:
         row_idx = row.row
@@ -92,7 +101,7 @@ for block_match in results.blocks:
 
 **進階用法：**
 - **自訂正則**：你可以用 `Types.r(r"(?i)^[A-Z]\d{4}$")` 創造出自訂的強力比對條件。
-  > [!WARNING]  
+  > [!WARNING]
   > 由於 `Row` 元件預設會啟用 `normalize=True`，也就是將讀取到的儲存格值全數轉為「小寫」再進行比對。如果你的正則表達式內含大寫字母判定（例如 `[A-Z]`），將會永遠配對失敗！請記得加上不分大小寫的修飾詞 `(?i)`，或是將 `Row` 的 `normalize` 設為 `False`。
 - **OR 條件聯集**：你可以使用 `|` 符號結合不同型別。如 `Types.STR | Types.BLANK` 接受字串或者是沒有填東西的格子。
 - **連續擴展糖**：你可以使用 `()` 語法將條件重複。例如 `Row(pattern=[Types.ANY(3), Types.INT])` 等價於前面有三個任意值，最後為一個整數。
@@ -107,9 +116,9 @@ for block_match in results.blocks:
 基礎的比對單位。
 ```python
 Row(
-    pattern=["A", Types.INT], # 格子條件陣列 
+    pattern=["A", Types.INT], # 格子條件陣列
     repeat=1,                 # 出現次數範圍 (詳見下文 Repeat)
-    node_id=None,             # 為該列打上辨識標籤，結果回傳時好判斷對象 
+    node_id=None,             # 為該列打上辨識標籤，結果回傳時好判斷對象
     normalize=True,           # 自動去除字串頭尾空白與轉小寫進行寬鬆判斷
     min_similarity=None,      # literal 字串的 0~1 模糊比對；Types/regex 仍為精確比對
     match_ratio=None          # (0~1) 例如 0.9，容許列內有 10% 的格子不符合也算過關
@@ -195,7 +204,7 @@ cell.is_merged          # boolean — 此格的擴展是否依賴 Excel 合併�
 from rpkbin.excel_extractor import MatchOptions
 
 results = match_template(
-    "report.xlsx", 
+    "report.xlsx",
     template,
     sheet=["Sheet1", "Sheet3"], # 只看這兩張表 (也可給予 0-based 索引整數)
     options=MatchOptions(

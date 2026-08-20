@@ -1,150 +1,166 @@
-# rpkbin — Core IC Design & Verification Utilities
+# rpkbin — IC Design & Verification Utilities
 
 [![English](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
 [![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](README_zh.md)
 
-`rpkbin` is a practical toolbox for hardware design and verification work. It includes small, focused utilities for bit-true modeling, spreadsheet extraction, control-flow modeling, and long-running batch workflows.
+`rpkbin` is a Python toolkit for IC design and verification workflows: bit/register mapping, bit-true fixed-point simulation, spreadsheet extraction, control-flow modeling, compiler-backend experiments, and observable batch execution.
 
-If you are new here, start with the task you want to solve:
+## Why rpkbin?
 
-| I want to... | Start with |
-| --- | --- |
-| Run many shell/Python jobs and watch them live | [Wave](docs/wave/wave.md) |
-| Run commands/functions in parallel from Python | [Job Manager](docs/job_manager/job_manager.md) |
-| Model registers and bit fields | [MapBV](docs/mapbv/mapbv.md) |
-| Simulate fixed-point arithmetic | [NumBV](docs/numbv/numbv.md) |
-| Extract structured data from Excel files | [Excel Extractor](docs/excel_extractor/excel_extractor.md) |
-| Sketch or validate low-level control flow | [CFG](docs/cfg/cfg.md) |
-| Compile high-level IR (HIR) to pseudo ASM for MCU targets | [Codegen](docs/codegen/codegen.md) |
+The package keeps small, hardware-oriented utilities composable instead of forcing a single end-to-end framework. Each module exposes a focused Python API, while Wave adds a CLI and live/headless controls for longer-running jobs.
 
+## Quick start
 
-## Core Features
+The shortest path from a clean checkout to a working result is the Wave smoke flow.
 
-### 1. MapBV — BitVector with Bidirectional Mapping
-MapBV allows you to define a hierarchy of bit-fields that stay synchronized automatically.
-- **Hierarchical Slicing**: Define a 32-bit register and slice it into named fields.
-- **Bidirectional Linking**: Use `concat` to build a new view from existing variables; updating the view updates the sources.
-- **Symbolic Evaluation**: Use `.eval()` to test "what-if" scenarios without changing actual values.
+1. Install Python 3.11+ and the Wave extra.
 
-[Learn more in MapBV Documentation](docs/mapbv/mapbv.md)
+   ```bash
+   python -m pip install -e ".[wave]"
+   ```
 
-### 2. NumBV — Bit-True Fixed-Point Arithmetic
-Bit-exact fixed-point simulation for DSP pipeline verification. Pure NumPy, with no external fixed-point dependency.
-- **Two-layer API**: Operator layer (`+`, `*`) for convenience; function layer (`nbv.add()`, `nbv.mul()`) for explicit pipeline staging.
-- **Five Rounding Modes**: `trunc`, `round`, `round_half_even` (convergent, Xilinx DSP48), `ceil`, `round_to_zero`.
-- **Unified Operations**: One `NumBV` class handles both scalar and array computations. Backed by NumPy by default, with an optional JAX backend for XLA acceleration.
+2. Generate a starter wave file with a parser example.
 
-[Learn more in NumBV Documentation](docs/numbv/numbv.md)
+   ```bash
+   rpk-wave init hello --profile parser
+   ```
 
-### 3. Excel Extractor — Template-Based Extraction
-Intelligently extract data from complex spreadsheets.
-- **Layout Description**: Define the "shape" of data instead of hardcoded coordinates.
-- **Fuzzy Matching**: Matches headers even with slight spelling variations.
-- **Merged Cell Support**: Correctly resolves values spanning across merged rows/cols.
+   Expected output:
 
-[Learn more in Excel Extractor Documentation](docs/excel_extractor/excel_extractor.md)
+   ```text
+   [Wave] Created hello.wave.py
+          Edit the file, then run:  rpk-wave run hello.wave.py
+   ```
 
-### 4. CFG — Low-Level Control Flow Toolkit
-Organize assembly-like flows, FSM state machines, and MCU branch layouts before writing target-specific code.
-- **Explicit Flow Modeling**: Build labeled blocks and priority-ordered branch edges without committing to an ISA.
-- **Readable Checks & Layouts**: Validate common control-flow mistakes, print text layouts, and choose deterministic block emission order.
-- **Program Call Checks**: Mark subroutine calls with `CallRef` and check call depth against hardware or coding-rule limits.
+3. Run it in headless mode and print the lightweight performance summary.
 
-[Learn more in CFG Documentation](docs/cfg/cfg.md)
+   ```bash
+   rpk-wave run hello.wave.py --no-tui --perf
+   ```
 
-### 5. Job Manager
-A practical, cross-platform job manager for running shell commands and Python callables safely in parallel.
+   A successful run includes:
 
-- **One API for Common Workloads**: Run local functions (`FuncJob`) and CLI tasks (`CmdJob`) with the same manager.
-- **Resource-Aware Scheduling**: Limit concurrency by global resources such as GPU count or license tokens.
-- **Operationally Friendly**: Built-in cancellation, retries, live logs, and callbacks for automation pipelines.
+   ```text
+   [Wave][perf] summary
+   [Wave][perf] total lines=2 parser=2 ...
+   ```
 
-[Job Manager Documentation](docs/job_manager/job_manager.md)
+   The timing fields vary by machine; the process exits with code `0` when the batch succeeds.
 
-### 6. Wave — Batch Workflow Orchestration with Live TUI
-A workflow layer built on top of Job Manager for declaring and observing long-running batch flows.
+## Installation and feature extras
 
-- **Plain Python wave files**: declare jobs, parsers, hooks, and actions in a normal `.py` file.
-- **Live TUI by default**: dashboard, per-job logs, parsed data, events, system messages, and a command bar.
-- **Headless mode when needed**: use `--no-tui` for CI or script-only environments.
-- **Operational controls**: rerun jobs, stop/cancel by job or tag, send stdin, send OS signals, or send PTY terminal keys.
-- **Automation hooks**: react to log patterns, parsed data, elapsed time, lifecycle events, or user-defined actions.
+The core install provides the package, NumPy, and Click. Optional functionality is installed with extras:
 
-[Wave Documentation](docs/wave/wave.md)
-
-### 7. Codegen — MCU Compiler Backend Framework
-A target-agnostic compiler backend that translates High-level IR (HIR) to pseudo assembly. Supports pattern rewrite optimizations, graph-coloring register allocation, and safe variable spilling.
-- **HIR Lowering**: Lowers structured control flow (if/while/for/poll) and volatile memory loads/stores.
-- **Physical Register Alias Resolution**: Supports overlapping registers (e.g. 16-bit register composed of two 8-bit aliases).
-- **Safe Variable Spilling**: Automatically spills live variables to configured SRAM locations when registers are exhausted.
-
-[Codegen Documentation](docs/codegen/codegen.md)
-
-## Quick Start: Wave
-
-
-Install Wave support:
+| Extra | Enables | Main dependency |
+| --- | --- | --- |
+| `wave` | Wave CLI, TUI, parsers, hooks, PTY jobs | Textual, prompt-toolkit, Rich |
+| `excel` | Excel Extractor | openpyxl, xlrd, rapidfuzz |
+| `cfg` / `dot` | NetworkX analysis / `CFG.export_dot()` | networkx / pydot |
+| `jax` | NumBV JAX backend | JAX |
 
 ```bash
-pip install -e .[wave]
+python -m pip install -e "."             # core
+python -m pip install -e ".[excel]"      # Excel Extractor
+python -m pip install -e ".[all]"        # all listed extras except jax
+python -m pip install -e ".[all,jax]"    # everything, including JAX
 ```
 
-Create `hello.wave.py`:
+The package requires Python `>=3.11`. The authoritative dependency and entry-point definitions are in [pyproject.toml](pyproject.toml).
+
+## Common usage
+
+### Bit-true fixed-point arithmetic
 
 ```python
-from rpkbin.wave import session, CmdJob
+from rpkbin.numbv import Format, scalar
 
-session.configure(max_workers=2)
+fmt = Format(8, 4)
+a = scalar(1.25, fmt=fmt)
+b = scalar(0.5, fmt=fmt)
 
-session.add(CmdJob("hello", "python -c \"print('hello from wave')\""))
-session.add(CmdJob("list", "python -c \"import os; print(os.getcwd())\""))
+print((a + b).val)
 ```
-
-Run it:
-
-```bash
-rpk-wave run hello.wave.py
-```
-
-Useful TUI commands:
 
 ```text
-status
-logs hello
-show hello
-rerun hello
-stop hello
+1.75
 ```
 
-For CI or plain terminal output:
+Use the function-level API (`add`, `mul`, `sum`, `dot`, `mac`) when each pipeline stage needs an explicit output format. See [NumBV](docs/numbv/README.md).
 
-```bash
-rpk-wave run hello.wave.py --no-tui
+### Concurrent Python and shell jobs
+
+```python
+from rpkbin.job_manager import JobManager, FuncJob
+
+job = FuncJob("hello", lambda: "ok")
+with JobManager(max_workers=1) as manager:
+    manager.add(job)
+    manager.wait()
+
+print(job.status, job.result)
 ```
 
-## Installation
-
-```bash
-# Core (installs NumPy)
-pip install -e .
-
-# Optional NumBV JAX backend
-pip install -e .[jax]
-
-# Install specific features
-pip install -e .[wave]   # Installs textual, prompt_toolkit, rich
-pip install -e .[excel]  # Installs openpyxl, xlrd, rapidfuzz
-pip install -e .[cfg]    # Installs networkx
-pip install -e .[dot]    # Enables CFG.export_dot()
-
-# Install everything
-pip install -e .[all]
+```text
+done ok
 ```
+
+Use [Wave](docs/wave/README.md) when the same jobs need parsers, hooks, PTY support, logs, or an interactive TUI.
+
+## Module guide
+
+| Status | Module | Use it for |
+| --- | --- | --- |
+| Stable | [MapBV](docs/mapbv/README.md), [NumBV](docs/numbv/README.md), [StageTracker](docs/utils/README.md), [Job Manager](docs/job_manager/README.md), [Wave](docs/wave/README.md) | Register/bit views, fixed-point simulation, stage reporting, concurrent jobs, and observable workflows |
+| Beta | [CFG](docs/cfg/README.md), [Excel Extractor](docs/excel_extractor/README.md) | Low-level flow/layout analysis and template-based Excel extraction |
+| Experimental | [Codegen](docs/codegen/README.md), [Debug & DAP](docs/debug/README.md) | Compiler-backend experiments and target-neutral debugger/DAP integration contracts |
+
+Each module has a short English/Traditional Chinese entry point under [`docs/`](docs/); the longer `*.md` pages are the detailed references.
+
+## Architecture
+
+At the top level, callers choose a focused module. Wave is layered on Job Manager; Codegen is a target-neutral HIR-to-pseudo-ASM backend and does not parse a DSL or encode a real MCU instruction set.
+
+```text
+Python / Excel / HIR input
+        │
+        ├─ MapBV · NumBV · Excel Extractor · CFG · StageTracker
+        │
+        ├─ Wave CLI/TUI ──> Job Manager ──> local commands / Python callables
+        │
+        └─ Codegen: HIR ─> validate ─> LIR ─> rewrite ─> allocate ─> Target ─> pseudo ASM
+```
+
+See [architecture.md](docs/architecture.md) for responsibilities, session boundaries, invariants, and trade-offs.
+
+## Reference
+
+| Need | Start here |
+| --- | --- |
+| Wave commands, options, and exit codes | [CLI reference](docs/cli-reference.md) |
+| Codegen HIR/LIR constructs and pipeline errors | [Syntax reference](docs/syntax-reference.md) |
+| Module-specific API and examples | The relevant page under [`docs/`](docs/) |
+
+## Known limitations and troubleshooting
+
+- Installing `rpkbin` without an extra does not install Wave, Excel, NetworkX, pydot, or JAX. Install the extra for the module you use.
+- NumBV selects its process-global backend before creating `NumBV` objects; JAX is optional and is not included by `.[all]`.
+- Codegen is experimental. It intentionally excludes DSL parsing, real MCU ISAs, assemblers, linkers, binary encoding, production spilling, and a one-call module-to-ASM pipeline. Check [status.md](docs/codegen/status.md) before depending on it.
+- Debug & DAP is experimental. Targets retain execution semantics, source mapping, breakpoint-condition evaluation, register schemas, and memory serialization; `rpkbin.debug` only supplies the integration contract and stdio DAP lifecycle.
+- Wave defaults to the full-screen TUI in an interactive terminal. Use `--no-tui` in CI or when only batch completion is required; install the `wave` extra first.
+- If a Wave job fails, inspect its status and logs in the TUI/headless controls; the CLI returns a non-zero status when the batch is unsuccessful.
+
+## Contributing
+
+`rpkbin` is published as an MIT-licensed public package. For bugs, proposals, or pull requests, use the [GitHub repository](https://github.com/redpigkiller/rpkbin). See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and documentation checks.
+
+## License
+
+The package is released under the [MIT License](LICENSE).
 
 ## Testing
 
-Run tests using `pytest` from the root directory:
+From the repository root:
+
 ```bash
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
-*(All tests require only `numpy` — no optional dependencies needed.)*

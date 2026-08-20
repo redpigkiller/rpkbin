@@ -7,6 +7,15 @@
 
 它適合用在 EDA 流程、CI 輔助腳本、批次自動化等場景：你需要平行執行任務，但又不希望系統過載，並且希望在出錯時能快速定位問題。
 
+## 模組 contract
+
+- **安裝：** core package 已足夠；`JobManager`、`CmdJob` 與 `FuncJob` 不需要 optional extra。
+- **Public entry points：** `JobManager`、`Job`、`CmdJob`、`FuncJob`、`JobStatus`，以及 `PENDING`、`RUNNING`、`DONE`、`FAILED`、`CANCELLED` constants。
+- **Runtime boundary：** jobs 在本機執行。`FuncJob` 使用 Python threads；cancellation 只會標記為 cancelled，不能強制停止底層 callable。
+- **狀態：** Stable。如果還需要 wave file、parser、hook、PTY control 或 TUI，請使用 [Wave](../wave/wave_zh.md)。
+- **驗證：** `python -m pytest tests/job_manager -q`。
+- **相關文件：** [English guide](job_manager.md)、[package 架構](../architecture_zh.md)。
+
 ---
 
 ## 快速上手

@@ -6,6 +6,14 @@
 
 DSL parsing, real MCU ISAs, assemblers, linkers, and binary encoding are intentionally out of scope.
 
+## Module contract
+
+- **Install:** the core package is enough; no optional extra is required for the target-neutral pipeline.
+- **Public entry points:** `run_codegen_from_hir`, `run_codegen_from_fragment`, `run_codegen`, `HFunction`, `HFragment`, `HModule`, `Target`, `FragmentTarget`, and `RegisterModel`.
+- **Status:** Experimental. `ToyTarget` is a reference/test target, not a production MCU backend.
+- **Verification:** `python -m pytest tests/codegen -q`.
+- **Related:** [IR syntax and error reference](../syntax-reference.md), [HIR](hir.md), [LIR](lir.md), [status](status.md), and [frontend integration](frontend_integration.md) / [中文](frontend_integration_zh.md).
+
 ## Boundary and compatibility contract
 
 `rpkbin.codegen` owns target-neutral HIR/LIR, validation and lowering, CFG and

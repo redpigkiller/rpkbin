@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.1.15"
+version = "0.1.16"
 description = "Personal collection of small scripts and helpers for work."
 readme = "README.md"
 authors = [
@@ -60,4 +60,7 @@ markers = [
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+"rpkbin.wave" = ["docs/*.md"]
 

@@ -337,11 +337,13 @@ def cmd_init(name: str, force: bool, profile: str) -> None:
 def _find_wave_docs_src() -> "Path | None":
     """Find the wave-specific docs directory shipped with the package.
 
-    Returns the ``docs/wave`` subdirectory relative to the repository root,
-    or ``None`` when the docs tree cannot be located.
+    Prefer the package-local copy so the command works from a wheel, then
+    fall back to the source-tree locations used by editable checkouts.
     """
+    wave_package = Path(__file__).resolve().parent
     pkg_root = Path(__file__).resolve().parent.parent
     candidates = [
+        wave_package / "docs",
         pkg_root / "docs" / "wave",
         pkg_root.parent / "docs" / "wave",
     ]

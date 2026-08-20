@@ -6,6 +6,14 @@
 
 它刻意不包含 DSL parser、真實 MCU ISA、assembler、linker 或 binary encoding。
 
+## 模組 contract
+
+- **安裝：** target-neutral pipeline 只需要 core package，不需要 optional extra。
+- **Public entry points：** `run_codegen_from_hir`、`run_codegen_from_fragment`、`run_codegen`、`HFunction`、`HFragment`、`HModule`、`Target`、`FragmentTarget` 與 `RegisterModel`。
+- **狀態：** Experimental。`ToyTarget` 是 reference/test target，不是 production MCU backend。
+- **驗證：** `python -m pytest tests/codegen -q`。
+- **相關文件：** [IR syntax 與錯誤參考](../syntax-reference_zh.md)、[HIR](hir_zh.md)、[LIR](lir_zh.md)、[status](status_zh.md) 與 [frontend integration](frontend_integration_zh.md)。
+
 ## 選擇入口
 
 | 輸入 | 使用時機 | API |

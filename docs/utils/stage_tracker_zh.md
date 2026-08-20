@@ -7,6 +7,15 @@
 
 **唯一合法的使用方式是將整個流程包裝在 `with StageTracker() as t:` 中，不支援其他用法。**
 
+## 模組 contract
+
+- **安裝：** core package 已足夠。若環境有 `rich`，StageTracker 會使用 rich output；否則自動退回 plain text。
+- **Public entry points：** `rpkbin.utils.stage_tracker` 的 `StageTracker`、`StageFailedError`、`UsageError`、`TrackerMode`、`ErrorLevel` 與 `Issue`。
+- **Modes：** `mode="flat"` 搭配 `begin_stage()`，或 `mode="context"` 搭配 `with t.stage(name)`；不可混用 modes，也不可巢狀 stages。
+- **狀態：** Stable。每個 instance 在進行 logging 或 stage operations 前都必須先進入 `with` statement。
+- **驗證：** `python -m pytest tests/utils/test_stage_tracker.py -q`。
+- **相關文件：** [English guide](stage_tracker.md)、[package 架構](../architecture_zh.md)。
+
 ---
 
 ## 快速入門 (User Guide)
@@ -56,7 +65,7 @@ from rpkbin.utils.stage_tracker import StageTracker
 with StageTracker("ContextTracker", mode="context") as t:
     with t.stage("Download"):
         t.info("Downloading files...")
-        # 離開 with 時會自動跑 health checked. 
+        # 離開 with 時會自動跑 health checked.
         # 若在區塊中有任何 `t.error()` 呼叫，StageFailedError 將於此拋出。
 
     with t.stage("Parsing"):
@@ -142,7 +151,7 @@ StageTracker(
 **報表輸出範例：**
 ```text
 ============================================================
-                     EXECUTION SUMMARY                      
+                     EXECUTION SUMMARY
 ============================================================
 Execution Paths by Thread:
   MainThread: Initialization → Data Processing → Export

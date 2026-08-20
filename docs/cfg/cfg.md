@@ -14,6 +14,14 @@ It deliberately does not parse assembly, allocate registers, understand an ISA,
 or decide calling conventions. Those target-specific choices stay in your
 frontend or emitter.
 
+## Module contract
+
+- **Install:** `python -m pip install -e ".[cfg]"`; add `python -m pip install -e ".[dot]"` only when using `CFG.export_dot()`.
+- **Public entry points:** `CFG`, `BasicBlock`, `Program`, `CallRef`, `fsm`, `mcu`, `diff_cfgs`, and `diff_programs`.
+- **Status:** Beta. The model and layout helpers are usable, but the package remains target-neutral and does not emit final ISA instructions.
+- **Verification:** `python -m pytest tests/cfg -q`.
+- **Related:** [package architecture](../architecture.md), [Traditional Chinese guide](cfg_zh.md).
+
 ---
 
 ## Quick Start
@@ -495,9 +503,9 @@ Validation of layout attributes occurs only when `mcu.linearize()` is invoked wi
 > An edge in `MCULayout` is marked as physical fallthrough (`MCUExitEdge.is_fallthrough=True`) **only** when:
 > 1. The edge condition is `None` (`edge.cond is None`).
 > 2. The edge target is the next physical slot (`edge.target` is the adjacent next block in the layout).
-> 
+>
 > Conditional edges are **never** marked as physical fallthrough, even if their target block is placed immediately adjacent in the layout. No condition inversion is performed.
-> 
+>
 > Layout hints like `layout_role="main"`, `likelihood="likely"`, or a high `weight` represent **block ordering preferences only** and do not guarantee a physical fallthrough.
 
 #### Safety and Compatibility

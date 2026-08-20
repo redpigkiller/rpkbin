@@ -7,6 +7,15 @@ Reading structured data from non-standard Excel files is tedious. Every time the
 
 **Excel Extractor** takes a fundamentally different approach: you describe the *shape* of the data you expect (a template "Block" with column definitions), and the engine scans the sheet to automatically find where it matches and what its contents are.
 
+## Module contract
+
+- **Install:** `python -m pip install -e ".[excel]"` for `.xls`, `.xlsx`, and `.xlsm` input support plus fuzzy matching dependencies.
+- **Public entry points:** `match_template`, `Block`, `Row`, `EmptyRow`, `Group`, `Types`, `MatchOptions`, and `MatchOutput`.
+- **Output:** a `MatchOutput` containing matched blocks, rows, cells, sheet names, and coordinates; the extractor reads workbooks and does not write them back.
+- **Status:** Beta. Matching behavior depends on a sufficiently specific template and the workbook being readable by `openpyxl` or `xlrd`.
+- **Verification:** `python -m pytest tests/excel_extractor -q`.
+- **Related:** [Traditional Chinese guide](excel_extractor_zh.md), [package architecture](../architecture.md).
+
 ---
 
 ## Quick Start (User Guide)
@@ -31,12 +40,12 @@ from rpkbin.excel_extractor import match_template, Block, Row, Types
 # Define the table's footprint
 template = Block(
     # First row: Look for an exact match of these three string headers
-    Row(pattern=["Dept", "Name", "Salary"], node_id="header"),      
-    
-    # Subsequent rows: Must be String, String, Integer. 
+    Row(pattern=["Dept", "Name", "Salary"], node_id="header"),
+
+    # Subsequent rows: Must be String, String, Integer.
     # repeat="+" implies "at least one data row, keeping consuming as many as valid"
     Row(pattern=[Types.STR, Types.STR, Types.INT], repeat="+", node_id="data"),
-    
+
     # Tag this template block to easily track results
     block_id="salary_table",
 )
@@ -52,7 +61,7 @@ results = match_template("report.xlsx", template)
 
 for block_match in results.blocks:
     print(f"Table found on sheet '{block_match.sheet_name}' at: {block_match.start} → {block_match.end}")
-    
+
     # Print out all the row data
     for row in block_match.rows:
         row_idx = row.row
@@ -91,7 +100,7 @@ When populating your `Row` pattern arrays, you can scatter raw matching strings 
 | `Types.ANY` | Absolute wildcard. Eats anything including empties. |
 
 **Advanced Usages:**
-- **Custom Regular Expressions**: Cast bespoke parameters manually using `Types.r(r"(?i)^[A-Z]\d{4}$")`. 
+- **Custom Regular Expressions**: Cast bespoke parameters manually using `Types.r(r"(?i)^[A-Z]\d{4}$")`.
   > [!WARNING]
   > `Row` has `normalize=True` enabled by default, which lowercases all cell values before matching. If your regex requires matching uppercase letters, it will fail. You must either use the regex ignore-case flag `(?i)` or set `normalize=False` in your `Row` component.
 - **OR Union Combos**: Combine types via bitwise operator `|`. To check if a cell contains a string OR gets left empty, evaluate `Types.STR | Types.BLANK`.
@@ -109,7 +118,7 @@ Fundamental horizontal definition match component.
 Row(
     pattern=["A", Types.INT], # The ordered horizontal list of Types or literals
     repeat=1,                 # Times it can chain. (ex: "+", "*", tuple params)
-    node_id=None,             # An identifiable label piped backwards after extraction. 
+    node_id=None,             # An identifiable label piped backwards after extraction.
     normalize=True,           # Strips tails/lowercases inputs to assist strict matching
     min_similarity=None,      # Fuzzy matching for literal strings; Types/regex stay exact
     match_ratio=None          # Threshold float (0~1.0) of cells permitted to fail evaluating
@@ -190,17 +199,17 @@ cell.is_merged          # Boolean informing whether span expansion inflated this
 ### 4. Extra Search Optimizations & Dual Parsing
 
 #### Limiting Iteration Time `MatchOptions`
-Sometimes scanning a workbook 50 times deep for specific data when the data will only show up 'once' represents a tremendous waste of CPU processing. 
+Sometimes scanning a workbook 50 times deep for specific data when the data will only show up 'once' represents a tremendous waste of CPU processing.
 ```python
 from rpkbin.excel_extractor import MatchOptions
 
 results = match_template(
-    "report.xlsx", 
+    "report.xlsx",
     template,
     sheet=["Sheet1", "Sheet3"], # Force scans strictly inside these sheets
     options=MatchOptions(
         # Halt execution abruptly after finding matched templates on 1 sheet
-        max_matched_sheets=1 
+        max_matched_sheets=1
     )
 )
 ```

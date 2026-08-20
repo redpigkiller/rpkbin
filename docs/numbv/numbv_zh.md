@@ -9,6 +9,15 @@
 核心特色：**兩層 API**（operator 便利層 / 函式型 pipeline 層）的清楚分工、**五種硬體對齊 rounding mode**
 （含 Xilinx DSP48 的 convergent rounding）、明確的 **format tracking**，以及適合固定 shape／format pipeline 的 **可選 JAX 後端**。
 
+## 模組 contract
+
+- **安裝：** `python -m pip install -e "."` 提供 NumPy backend；使用 JAX 時再加上 `python -m pip install -e ".[jax]"`。
+- **Public entry points：** `Format`、`NumBV`、`scalar`、`array`、`zeros`、`ones`、`full`、`from_bits`、`add`、`sub`、`mul`、`neg`、`sum`、`dot`、`mac`、`infer_add_format`、`infer_mul_format`、`set_backend` 與 `get_backend`。
+- **Compatibility：** backend 以 `int64` 為基礎，`width` 目前上限為 63 bits。建立 `NumBV` objects 前必須先選定 process-global backend。
+- **效能：** NumPy reductions 為了維持 bit-true rounding/overflow 使用 Python-loop semantics，大型陣列可能較慢；相容的 fixed-shape pipeline 可使用 optional JAX 加速。
+- **狀態：** Stable。**驗證：** `python -m pytest tests/numbv -q`。
+- **相關文件：** [English guide](numbv.md)、[package 架構](../architecture_zh.md)。
+
 ---
 
 ## 快速入門
@@ -17,7 +26,7 @@
 import rpkbin.numbv as nbv
 ```
 
-安裝 `rpkbin` 時會預設安裝 NumPy；若要使用選用的 JAX 後端，請安裝 `pip install 'rpkbin[jax]'`。
+使用 `python -m pip install -e "."` 時會預設安裝 NumPy；若要使用選用的 JAX 後端，請安裝 `python -m pip install -e ".[jax]"`。
 
 ### 1. 定義格式（Format）
 

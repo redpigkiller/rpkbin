@@ -7,6 +7,15 @@
 
 It is designed for real-world automation tasks such as EDA flows, CI helpers, and batch local scripts where you want safe parallelism, clear status transitions, and actionable logs.
 
+## Module contract
+
+- **Install:** the core package is enough; no optional extra is required for `JobManager`, `CmdJob`, or `FuncJob`.
+- **Public entry points:** `JobManager`, `Job`, `CmdJob`, `FuncJob`, `JobStatus`, and the status constants `PENDING`, `RUNNING`, `DONE`, `FAILED`, and `CANCELLED`.
+- **Runtime boundary:** jobs execute on the local machine. `FuncJob` runs in Python threads; cancellation marks it cancelled but cannot force-stop the underlying callable.
+- **Status:** Stable. Use [Wave](../wave/wave.md) when you also need a wave file, parsers, hooks, PTY control, or a TUI.
+- **Verification:** `python -m pytest tests/job_manager -q`.
+- **Related:** [Traditional Chinese guide](job_manager_zh.md), [package architecture](../architecture.md).
+
 ---
 
 ## Quick Start

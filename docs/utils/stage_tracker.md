@@ -7,6 +7,15 @@
 
 **The only valid usage is wrapping the entire workflow using `with StageTracker() as t:`.** Other usage patterns are not supported.
 
+## Module contract
+
+- **Install:** the core package is enough. If `rich` is installed, StageTracker uses rich output; otherwise it falls back to plain text.
+- **Public entry points:** `StageTracker`, `StageFailedError`, `UsageError`, `TrackerMode`, `ErrorLevel`, and `Issue` from `rpkbin.utils.stage_tracker`.
+- **Modes:** use `mode="flat"` with `begin_stage()` or `mode="context"` with `with t.stage(name)`. Do not mix modes or nest stages.
+- **Status:** Stable. Every instance must be entered with a `with` statement before logging or stage operations.
+- **Verification:** `python -m pytest tests/utils/test_stage_tracker.py -q`.
+- **Related:** [Traditional Chinese guide](stage_tracker_zh.md), [package architecture](../architecture.md).
+
 ---
 
 ## Quick Start (User Guide)
@@ -54,7 +63,7 @@ from rpkbin.utils.stage_tracker import StageTracker
 with StageTracker("ContextTracker", mode="context") as t:
     with t.stage("Download"):
         t.info("Downloading files...")
-        # Health checked automatically upon exit. 
+        # Health checked automatically upon exit.
         # If any `t.error()` was called, StageFailedError is raised here.
 
     with t.stage("Parsing"):
@@ -140,7 +149,7 @@ After the outer `with` block exits, workflow operations raise `UsageError`; `get
 **Example Summary Output:**
 ```text
 ============================================================
-                     EXECUTION SUMMARY                      
+                     EXECUTION SUMMARY
 ============================================================
 Execution Paths by Thread:
   MainThread: Initialization → Data Processing → Export

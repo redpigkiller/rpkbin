@@ -7,6 +7,15 @@
 
 It features **bidirectional value synchronization** (changes to a register immediately reflect in its mapped sub-slices and vice-versa), **symbolic evaluation**, and beautifully formatted layout printing.
 
+## Module contract
+
+- **Install:** the core package is enough; no optional extra is required.
+- **Public entry points:** `var`, `const`, `concat`, and the `MapBV`/`MapBVExpr` objects they create.
+- **Semantics:** slices use inclusive `[MSB:LSB]` bounds, concatenated views stay live in both directions, and `.eval()` performs a what-if calculation without mutating sources.
+- **Use instead of:** use [NumBV](../numbv/numbv.md) for fixed-point scaling, rounding, overflow, or DSP arithmetic; MapBV models bit/register structure.
+- **Status:** Stable. **Verification:** `python -m pytest tests/mapbv -q`.
+- **Related:** [Traditional Chinese guide](mapbv_zh.md), [package architecture](../architecture.md).
+
 ---
 
 ## Quick Start (User Guide)

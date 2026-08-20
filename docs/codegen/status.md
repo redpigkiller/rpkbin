@@ -2,10 +2,14 @@
 
 See [Codegen](codegen.md) for usage.
 
-## Stable
+The status below describes the backend boundary, not a promise that the experimental package is production-ready.
 
-- 8/16-bit integer operations and HIR validation/lowering.
-- Structured control flow, `HInsert`, volatile memory access, calls, and returns.
+## Stable in the current backend
+
+- 8/16-bit integer operations and HIR validation/lowering, including signed and
+  unsigned forms currently covered by the test suite.
+- Structured control flow (`if`, `while`, polling, and short-circuit operators),
+  `HInsert`, volatile load/store/bit-test/bit-set operations, calls, and returns.
 - Function, Fragment, and Module validation/lowering APIs.
 - Rewrite hooks and Function/Fragment pseudo-ASM pipelines, including register
   allocation when a `RegisterModel` is supplied.
@@ -15,15 +19,15 @@ See [Codegen](codegen.md) for usage.
 - Production spill/reload is disabled. The former pre-isel prototype could
   overwrite live registers because expression-tree LIR does not expose target
   instruction constraints.
-- `cegis.minimize_cegis` is an experimental, orphaned offline helper.  It is
-  not invoked by the production pipeline and has no committed consumer.
+- `cegis.minimize_cegis` is an experimental, orphaned offline helper. It is not
+  invoked by the backend pipeline and has no committed consumer.
 
 ## Deferred
 
-- Module-level pseudo-ASM pipeline.
+- A module-level one-call pseudo-ASM pipeline.
 - 32-bit lowering.
 - Generalized `HFor` bounds and loop-variable mutation.
-- A machine-level save/restore or spill contract, justified by a real target.
+- A machine-level save/restore or spill contract, which requires a real target.
 
 ## Out of scope
 

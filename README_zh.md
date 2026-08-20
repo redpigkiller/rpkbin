@@ -1,148 +1,167 @@
-# rpkbin — IC 設計與驗證核心工具庫
+# rpkbin — IC 設計與驗證工具庫
 
 [![English](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
 [![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](README_zh.md)
 
-`rpkbin` 是一組偏實務導向的硬體設計與驗證工具。它包含 bit-true modeling、Excel 資料擷取、控制流程建模，以及長時間 batch workflow 監控等小而專注的工具。
+`rpkbin` 是一套 Python 工具庫，服務 IC 設計與驗證流程，涵蓋 bit/register mapping、bit-true fixed-point simulation、Excel 資料擷取、control-flow modeling、compiler backend 實驗，以及可觀測的 batch execution。
 
-如果你是第一次看這個 repo，可以先從你想解決的問題開始：
+## 為什麼使用 rpkbin？
 
-| 我想要... | 先看 |
-| --- | --- |
-| 同時跑很多 shell / Python jobs，並即時監控 | [Wave](docs/wave/wave_zh.md) |
-| 在 Python 裡平行執行 commands / functions | [Job Manager](docs/job_manager/job_manager_zh.md) |
-| 建模 register 與 bit fields | [MapBV](docs/mapbv/mapbv_zh.md) |
-| 模擬 fixed-point arithmetic | [NumBV](docs/numbv/numbv_zh.md) |
-| 從 Excel 抽出結構化資料 | [Excel Extractor](docs/excel_extractor/excel_extractor_zh.md) |
-| 描述或檢查低階 control flow | [CFG](docs/cfg/cfg_zh.md) |
-| 將高階 IR (HIR) 編譯為特定 MCU 彙編 | [Codegen](docs/codegen/codegen_zh.md) |
+它把硬體導向的小型工具維持在清楚、可組合的模組邊界內，不要求使用者採用單一端到端框架。每個模組提供專注的 Python API；需要長時間執行時，再由 Wave 提供 CLI、TUI 與 headless 控制。
 
+## 快速開始
 
-## 核心功能
+從乾淨 checkout 到第一個可執行結果，最短路徑是 Wave smoke flow。
 
-### 1. MapBV — 可映射的 BitVector
-MapBV 讓你把一個大寄存器切成多個欄位，並保持雙向同步。
-- **階層切片**：例如把 32-bit register 拆成具名欄位。
-- **雙向連動**：用 `concat` 組合出的 view，更新 view 會回寫來源。
-- **假設推演**：用 `.eval()` 做 what-if 測試，不汙染真實值。
+1. 安裝 Python 3.11 以上版本與 Wave extra。
 
-[閱讀 MapBV 文件](docs/mapbv/mapbv_zh.md)
+   ```bash
+   python -m pip install -e ".[wave]"
+   ```
 
-### 2. NumBV — Bit-True 定點數運算
-Bit-exact 定點數模擬，專為 DSP pipeline 驗證設計。純 NumPy，無外部相依套件。
-- **兩層 API**：Operator 層（`+`、`*`）方便日常計算；函式層（`nbv.add()`、`nbv.mul()`）用於精確 pipeline 驗證。
-- **五種 Rounding 模式**：`trunc`、`round`、`round_half_even`（Convergent，Xilinx DSP48）、`ceil`、`round_to_zero`。
-- **Scalar & Array 統一**：單一類別處理純量與陣列。預設以純 NumPy 為底層，並可透過 `set_backend("jax")` 獲得透明的 XLA 硬體加速。
+2. 產生包含 parser 範例的 starter wave file。
 
-[閱讀 NumBV 文件](docs/numbv/numbv_zh.md)
+   ```bash
+   rpk-wave init hello --profile parser
+   ```
 
-### 3. Excel Extractor — 樣板式資料擷取
-針對複雜 Excel 版面進行穩定擷取。
-- **版面描述導向**：描述資料形狀，而非硬編座標。
-- **模糊比對**：標頭有小差異也能匹配。
-- **合併儲存格支援**：可正確還原跨列跨欄資料。
+   預期輸出：
 
-[閱讀 Excel Extractor 文件](docs/excel_extractor/excel_extractor_zh.md)
+   ```text
+   [Wave] Created hello.wave.py
+          Edit the file, then run:  rpk-wave run hello.wave.py
+   ```
 
-### 4. CFG — 低階控制流工具組
-在撰寫 target-specific code 之前，先整理 assembly-like flows、FSM state machines 與 MCU branch layouts。
-- **明確的 Flow Modeling**：建立 labeled blocks 與依 priority 排序的 branch edges，不綁定特定 ISA。
-- **好讀的檢查與 Layout**：驗證常見控制流錯誤、輸出文字 layout，並取得 deterministic 的 block 發射順序。
-- **Program Call 檢查**：用 `CallRef` 標註 subroutine calls，並檢查 call depth 是否符合硬體或 coding-rule 限制。
+3. 以 headless mode 執行，並列印簡短效能摘要。
 
-[閱讀 CFG 文件](docs/cfg/cfg_zh.md)
+   ```bash
+   rpk-wave run hello.wave.py --no-tui --perf
+   ```
 
-### 5. Job Manager
-一個實用、跨平台的工作管理器，可安全地平行執行 Shell 指令與 Python 函式。
+   成功執行會包含：
 
-- **同一套 API 管兩種工作**：`FuncJob` 跑 Python；`CmdJob` 跑 CLI。
-- **資源感知排程**：可用 `gpu`、`license`、`slot` 等全域資源限制併發。
-- **除錯友善**：支援取消、重試、即時 logs 與 callback，方便串接自動化流程。
+   ```text
+   [Wave][perf] summary
+   [Wave][perf] total lines=2 parser=2 ...
+   ```
 
-[閱讀完整 Job Manager 文件](docs/job_manager/job_manager_zh.md)
+   時間欄位會依機器不同而變化；batch 成功時 process exit code 為 `0`。
 
-### 6. Wave — 帶即時 TUI 的批次流程排程器
-建立在 Job Manager 之上的 workflow layer，用來宣告、執行與觀測長時間批次流程。
+## 安裝與 feature extras
 
-- **一般 Python 檔就是 wave file**：在 `.py` 裡宣告 jobs、parsers、hooks 與 actions。
-- **預設開啟即時 TUI**：Dashboard、per-job logs、parsed data、events、system messages 與 command bar。
-- **需要時可用 headless mode**：CI 或不想開 TUI 時使用 `--no-tui`。
-- **執行控制**：rerun job、依 job/tag 停止或取消、送 stdin、送 OS signal、或送 PTY terminal key。
-- **自動化 hooks**：對 log pattern、parsed data、經過時間、生命週期事件或自訂 action 做反應。
+核心安裝提供 package、NumPy 與 Click。其他功能透過 extras 安裝：
 
-[閱讀 Wave 文件](docs/wave/wave_zh.md)
-
-### 7. Codegen — 通用 MCU 編譯器後端
-
-將 Frontend 產生的 HIR 驗證並降低為 LIR，再透過外部注入的 `Target` 產生 pseudo ASM。本 package 不負責 DSL parsing、真實 MCU ISA、assembler 或 binary encoding。
-
-- [使用說明](docs/codegen/codegen_zh.md)
-- [Frontend / external DSL frontend 接入指南](docs/codegen/frontend_integration_zh.md)
-- [目前進度與 TODO](docs/codegen/status_zh.md)
-
-## 快速開始：Wave
-
-
-安裝 Wave 需要的相依套件：
+| Extra | 啟用功能 | 主要相依套件 |
+| --- | --- | --- |
+| `wave` | Wave CLI、TUI、parser、hook、PTY jobs | Textual、prompt-toolkit、Rich |
+| `excel` | Excel Extractor | openpyxl、xlrd、rapidfuzz |
+| `cfg` / `dot` | NetworkX analysis / `CFG.export_dot()` | networkx / pydot |
+| `jax` | NumBV JAX backend | JAX |
 
 ```bash
-pip install -e .[wave]
+python -m pip install -e "."             # 核心功能
+python -m pip install -e ".[excel]"      # Excel Extractor
+python -m pip install -e ".[all]"        # 所有已列出的 extras，但不含 jax
+python -m pip install -e ".[all,jax]"    # 包含 JAX 的完整安裝
 ```
 
-建立 `hello.wave.py`：
+套件要求 Python `>=3.11`。正式的相依套件與 entry point 定義請看 [pyproject.toml](pyproject.toml)。
+
+## 常見用法
+
+### Bit-true fixed-point arithmetic
 
 ```python
-from rpkbin.wave import session, CmdJob
+from rpkbin.numbv import Format, scalar
 
-session.configure(max_workers=2)
+fmt = Format(8, 4)
+a = scalar(1.25, fmt=fmt)
+b = scalar(0.5, fmt=fmt)
 
-session.add(CmdJob("hello", "python -c \"print('hello from wave')\""))
-session.add(CmdJob("list", "python -c \"import os; print(os.getcwd())\""))
+print((a + b).val)
 ```
-
-執行：
-
-```bash
-rpk-wave run hello.wave.py
-```
-
-常用 TUI 指令：
 
 ```text
-status
-logs hello
-show hello
-rerun hello
-stop hello
+1.75
 ```
 
-如果是在 CI 或只想看純文字輸出：
+當每個 pipeline stage 都需要明確 output format 時，使用 function-level API（`add`、`mul`、`sum`、`dot`、`mac`）。詳見 [NumBV 文件](docs/numbv/README_zh.md)。
 
-```bash
-rpk-wave run hello.wave.py --no-tui
+### 平行執行 Python 與 shell jobs
+
+```python
+from rpkbin.job_manager import JobManager, FuncJob
+
+job = FuncJob("hello", lambda: "ok")
+with JobManager(max_workers=1) as manager:
+    manager.add(job)
+    manager.wait()
+
+print(job.status, job.result)
 ```
 
-## 安裝
-
-```bash
-# 只裝核心模組（最少相依套件）
-pip install -e .
-
-# 依照需求安裝特定功能的相依套件
-pip install -e .[wave]   # 安裝 textual, prompt_toolkit, rich
-pip install -e .[excel]  # 安裝 openpyxl, xlrd, rapidfuzz
-pip install -e .[cfg]    # 安裝 networkx
-pip install -e .[dot]    # 啟用 CFG.export_dot()
-
-# 安裝所有功能（建議）
-pip install -e .[all]
+```text
+done ok
 ```
+
+如果還需要 parser、hook、PTY、logs 或互動式 TUI，請使用建立在 Job Manager 之上的 [Wave](docs/wave/README_zh.md)。
+
+## 模組導覽
+
+| 狀態 | 模組 | 適用情境 |
+| --- | --- | --- |
+| Stable | [MapBV](docs/mapbv/README_zh.md)、[NumBV](docs/numbv/README_zh.md)、[StageTracker](docs/utils/README_zh.md)、[Job Manager](docs/job_manager/README_zh.md)、[Wave](docs/wave/README_zh.md) | Register/bit views、fixed-point simulation、流程摘要、平行 jobs 與可觀測 workflow |
+| Beta | [CFG](docs/cfg/README_zh.md)、[Excel Extractor](docs/excel_extractor/README_zh.md) | 低階流程/layout 分析與樣板式 Excel 擷取 |
+| Experimental | [Codegen](docs/codegen/README_zh.md) | HIR/LIR validation、lowering、rewrite、register allocation 與 pseudo-ASM 實驗 |
+
+每個模組都有 English／繁體中文的短版入口；完整 API 與實作說明保留在各目錄的長版 reference。
+
+## 架構
+
+最上層由使用者選擇適合的模組。Wave 建立在 Job Manager 之上；Codegen 是 target-neutral 的 HIR-to-pseudo-ASM backend，不負責 DSL parsing 或真實 MCU instruction set encoding。
+
+```text
+Python / Excel / HIR input
+        │
+        ├─ MapBV · NumBV · Excel Extractor · CFG · StageTracker
+        │
+        ├─ Wave CLI/TUI ──> Job Manager ──> local commands / Python callables
+        │
+        └─ Codegen: HIR ─> validate ─> LIR ─> rewrite ─> allocate ─> Target ─> pseudo ASM
+```
+
+完整的責任邊界、session model、invariants 與 trade-offs 請看 [架構文件](docs/architecture_zh.md)。
+
+## Reference
+
+| 需求 | 從這裡開始 |
+| --- | --- |
+| Wave commands、options 與 exit codes | [CLI reference](docs/cli-reference_zh.md) |
+| Codegen HIR/LIR constructs 與 pipeline errors | [Syntax reference](docs/syntax-reference_zh.md) |
+| 各模組的 API 與範例 | [`docs/`](docs/) 下對應的模組文件 |
+
+## 已知限制與排錯
+
+- 不加 extra 安裝 `rpkbin` 時，不會安裝 Wave、Excel、NetworkX、pydot 或 JAX；請依使用的模組安裝對應 extra。
+- NumBV 必須在建立 `NumBV` 物件前選定 process-global backend；JAX 是 optional，且不包含在 `.[all]` 中。
+- Codegen 仍是 experimental，刻意不包含 DSL parser、真實 MCU ISA、assembler、linker、binary encoding、production spilling，以及一次完成 module-to-ASM 的 pipeline。使用前請查看 [status.md](docs/codegen/status_zh.md)。
+- Interactive terminal 預設啟動 Wave 全螢幕 TUI；CI 或只需要 batch 完成結果時使用 `--no-tui`，並先安裝 `wave` extra。
+- Wave job 失敗時，請在 TUI/headless controls 檢查 status 與 logs；batch 不成功時 CLI 會回傳 non-zero status。
+
+## 貢獻
+
+`rpkbin` 是以 MIT license 發布的公開 package。Bug、提案與 pull request 請使用 [GitHub repository](https://github.com/redpigkiller/rpkbin)。測試位於 [`tests/`](tests/)；開發時先跑聚焦測試，release 前再跑完整 suite。
+
+## License
+
+Package 使用 [MIT License](LICENSE)。開發與文件檢查請參考 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+套件依 [MIT License](LICENSE) 發布；開發與文件檢查請參考 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 測試
 
-在根目錄使用 `pytest`：
-```bash
-pytest tests/ -v
-```
+在 repository root 執行：
 
-（所有測試只需要 `numpy`，不需要額外相依套件。）
+```bash
+python -m pytest tests/ -v
+```
