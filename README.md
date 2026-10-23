@@ -17,16 +17,16 @@ Requires Python 3.11 or newer:
 
 ```bash
 # Core package (Wave, MapBV and TablePack; standard library plus NumPy)
-pip install -e .
+python -m pip install --upgrade rpkbin
 
 # Optional: include brotli compression for TablePack (zlib is used without it)
-pip install -e ".[table]"
+python -m pip install --upgrade "rpkbin[table]"
 
 # Optional: include fixed-point math modeling support (apytypes)
-pip install -e ".[fixed]"
+python -m pip install --upgrade "rpkbin[fixed]"
 
 # Optional: include rpk-calc GUI and fixed-point support
-pip install -e ".[calc]"
+python -m pip install --upgrade "rpkbin[calc]"
 ```
 
 ---
@@ -136,7 +136,7 @@ assert unpack(blob) == rows               # the schema is embedded in the blob b
 print(unpack(blob)[1])                    # {'module': 'uart', 'addr': 20, 'kind': 'RO', 'note': 'status'}
 ```
 
-TablePack never reads files: pass it rows from any source and it returns `bytes`. `pack(rows)` without a schema infers one for you. For brotli compression install `pip install -e ".[table]"`; without it zlib is used.
+TablePack never reads files: pass it rows from any source and it returns `bytes`. `pack(rows)` without a schema infers one for you. For brotli compression install `python -m pip install "rpkbin[table]"`; without it zlib is used.
 
 ---
 

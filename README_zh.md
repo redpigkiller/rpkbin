@@ -17,16 +17,16 @@
 
 ```bash
 # 核心安裝（包含 Wave、MapBV 與 TablePack，僅依賴 NumPy 與標準庫）
-pip install -e .
+python -m pip install --upgrade rpkbin
 
 # 選配套件：TablePack 的 brotli 壓縮（未安裝時改用 zlib）
-pip install -e ".[table]"
+python -m pip install --upgrade "rpkbin[table]"
 
 # 選配套件：若需要定點數模型支援（加入 apytypes）
-pip install -e ".[fixed]"
+python -m pip install --upgrade "rpkbin[fixed]"
 
 # 選配套件：安裝 rpk-calc GUI 與定點數支援
-pip install -e ".[calc]"
+python -m pip install --upgrade "rpkbin[calc]"
 ```
 
 ---
@@ -135,7 +135,7 @@ assert unpack(blob) == rows               # schema 預設會嵌入 blob
 print(unpack(blob)[1])                    # {'module': 'uart', 'addr': 20, 'kind': 'RO', 'note': 'status'}
 ```
 
-TablePack 不會讀取任何檔案：資料列從哪裡來都可以，它只回傳 `bytes`。不給 schema 時，`pack(rows)` 會自動推斷。若要使用 brotli 壓縮，請安裝 `pip install -e ".[table]"`；沒有安裝時會改用 zlib。
+TablePack 不會讀取任何檔案：資料列從哪裡來都可以，它只回傳 `bytes`。不給 schema 時，`pack(rows)` 會自動推斷。若要使用 brotli 壓縮，請安裝 `python -m pip install "rpkbin[table]"`；沒有安裝時會改用 zlib。
 
 ---
 
