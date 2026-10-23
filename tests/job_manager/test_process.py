@@ -153,8 +153,11 @@ class ProcessTests(unittest.TestCase):
         before = time.monotonic()
         with self.assertRaisesRegex(
             TimeoutError, "partial.*do not automatically retry"
-        ):
+        ) as caught:
             handle.write("x" * (8 * 1024 * 1024))
+        # An empty pipe accepts a bounded prefix even when the full request is
+        # larger than its buffer (including the Python 3.11 Windows CRT).
+        self.assertRegex(str(caught.exception), r"writing [1-9][0-9]*/8388608 bytes")
         self.assertLess(time.monotonic() - before, 3)
         # Timeout leaves no pending writer. Cleanup is immediately reachable,
         # and a different handle can receive its exact input without contamination.

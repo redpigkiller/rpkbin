@@ -356,7 +356,10 @@ class ProcessHandle:
                 if self._closed:
                     raise BrokenPipeError("Process input was closed")
                 try:
-                    written = os.write(fd, data)
+                    # The Windows CRT can reject a request larger than the
+                    # available pipe buffer without writing any prefix.
+                    chunk = data[:4096] if os.name == "nt" else data
+                    written = os.write(fd, chunk)
                 except BlockingIOError:
                     written = 0
                 except OSError as exc:
