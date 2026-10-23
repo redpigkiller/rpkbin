@@ -197,6 +197,7 @@ def test_representation_buttons_reflow_without_losing_modes_or_selection(page_fa
     assert len({button.y() for button in page.mode_buttons.values()}) == 1
     page.resize(480, 900)
     app.processEvents()
+    assert page.width() == 480
     assert len({button.y() for button in page.mode_buttons.values()}) == 2
     assert all(button.isVisible() for button in page.mode_buttons.values())
     assert page.mode_buttons["hex"].isChecked()

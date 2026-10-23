@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import errno
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rpkbin.job_manager._process import ProcessHandle
 
@@ -82,6 +84,27 @@ class ProcessTests(unittest.TestCase):
         self.assertFalse(reader.is_alive())
         self.assertEqual(handle.poll(), 7)
         self.assertIn(b"final evidence", output)
+
+    @unittest.skipUnless(os.name == "nt", "Windows CRT pipe error mapping")
+    def test_windows_full_pipe_enospc_can_resume_without_losing_input(self):
+        handle = self.make_process("import os; os.write(1,os.read(0,5))")
+        handle.start()
+        reader, output = self.collect(handle)
+        real_write = os.write
+        calls = 0
+
+        def write_with_full_pipe(fd, data):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError(errno.ENOSPC, "Windows nonblocking pipe full")
+            return real_write(fd, data)
+
+        with patch("rpkbin.job_manager._process.os.write", side_effect=write_with_full_pipe):
+            handle.write("EXACT")
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(self.finish(handle, reader), 0)
+        self.assertEqual(output, b"EXACT")
 
     def test_env_merges_and_cwd(self):
         with tempfile.TemporaryDirectory() as directory:

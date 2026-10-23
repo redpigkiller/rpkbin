@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtGui import QFontMetricsF
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolButton, QTextBrowser, QWidget
 
 from rpkbin.calc.controller import CalcController
@@ -46,6 +47,15 @@ def test_legacy_language_config_keeps_unicode_user_content(tmp_path):
     assert cfg.startup_script == source
     assert cfg.ui_font_family == "微軟正黑體"
     assert tr("settings_tooltip", "zh_TW") != tr("settings_tooltip", "en_US")
+
+
+def test_missing_code_font_falls_back_to_monospace_without_changing_preferences(window, app):
+    cfg = replace(window.controller.config, code_font_family="rpkbin-nonexistent-font-family")
+    window.controller.update_config(cfg)
+    app.processEvents()
+    metrics = QFontMetricsF(window.console_widget.term._control.font())
+    assert metrics.horizontalAdvance("iiii") == pytest.approx(metrics.horizontalAdvance("WWWW"))
+    assert window.controller.config.code_font_family == "rpkbin-nonexistent-font-family"
 
 
 @pytest.mark.parametrize("ratio", [1.0, 1.5, 2.0, 3.0])

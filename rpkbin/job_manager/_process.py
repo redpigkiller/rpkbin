@@ -360,9 +360,12 @@ class ProcessHandle:
                 except BlockingIOError:
                     written = 0
                 except OSError as exc:
-                    # Windows PIPE_NOWAIT may report ERROR_NO_DATA when the
-                    # pipe is full. Broken-pipe is a different error (109).
-                    if os.name == "nt" and getattr(exc, "winerror", None) == 232:
+                    # PIPE_NOWAIT reports ERROR_NO_DATA for a full pipe; older
+                    # Windows CRT/Python versions expose it as ENOSPC instead.
+                    # This fd is an input pipe, not a filesystem write.
+                    if os.name == "nt" and (
+                        getattr(exc, "winerror", None) == 232 or exc.errno == errno.ENOSPC
+                    ):
                         written = 0
                     else:
                         raise

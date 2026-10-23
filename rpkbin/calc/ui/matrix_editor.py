@@ -148,6 +148,9 @@ class MatrixEditorPage(QFrame):
         layout.setContentsMargins(6, 6, 6, 6)
         toolbar = QFrame(self)
         toolbar.setObjectName("PanelHeader")
+        # A wide child layout must not prevent the parent from shrinking far
+        # enough to trigger its narrow layout on the next resize event.
+        toolbar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         toolbar_layout = QGridLayout(toolbar)
         self._toolbar_layout = toolbar_layout
         self._toolbar_wide = None

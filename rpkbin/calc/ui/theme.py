@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QPalette
 
 from ..core.config import CalcConfig
 
@@ -87,6 +87,13 @@ def get_palette(theme_name: str = "dark") -> ThemePalette:
 
 def qss_family(family: str) -> str:
     return '"' + family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ") + '"'
+
+
+def code_font_family(requested: str) -> str:
+    """Use the platform's fixed font when a configured family is unavailable."""
+    if QGuiApplication.instance() is None or requested in QFontDatabase.families():
+        return requested
+    return QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
 
 
 def scaled_px(value: int, cfg: CalcConfig) -> int:
@@ -320,11 +327,12 @@ def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
     style = re.sub(r"font-size: (\d+)px", lambda m: f"font-size: {round(int(m[1]) * cfg.ui_font_size / 10)}px", style)
     style = re.sub(r"(\d+(?:\.\d+)?)px", lambda m: f"{max(1, round(float(m[1]) * cfg.ui_scale / 100)) if float(m[1]) else 0}px", style)
     style = style.replace('"Segoe UI", "Microsoft JhengHei UI", sans-serif', qss_family(cfg.ui_font_family))
-    style = style.replace('"Cascadia Mono", "Consolas", monospace', qss_family(cfg.code_font_family))
+    code_family = qss_family(code_font_family(cfg.code_font_family))
+    style = style.replace('"Cascadia Mono", "Consolas", monospace', code_family)
     code_size = cfg.code_font_size * cfg.ui_scale / 100
     style += f"""
     QLineEdit, QPlainTextEdit, QTableWidget, QTableView, QWidget[calcCode="true"] {{
-        font-family: {qss_family(cfg.code_font_family)}; font-size: {code_size:g}pt;
+        font-family: {code_family}; font-size: {code_size:g}pt;
     }}
     """
     return style

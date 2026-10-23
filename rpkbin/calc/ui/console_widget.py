@@ -16,7 +16,7 @@ from qtconsole.rich_jupyter_widget import RichJupyterWidget
 from ..controller import CalcController
 from .icons import style_icon_button
 from .i18n import UiText, notify
-from .theme import get_palette, qss_family
+from .theme import code_font_family, get_palette, qss_family
 
 
 class SessionCommandHistory:
@@ -231,13 +231,14 @@ class CommandWindowWidget(QFrame):
         previous_theme = self.palette.name
         self.palette = get_palette(cfg.theme)
         self.retranslate_ui(cfg)
-        self.term.font_family = cfg.code_font_family
+        family = code_font_family(cfg.code_font_family)
+        self.term.font_family = family
         self.term.font_size = round(cfg.code_font_size * cfg.ui_scale / 100)
         self.term.syntax_style = "monokai" if self.palette.name == "dark" else "default"
         self.term.style_sheet = f"""
             QTextEdit, QPlainTextEdit {{ background: {self.palette.bg_input};
                 color: {self.palette.text_primary}; border: none;
-                font-family: {qss_family(cfg.code_font_family)};
+                font-family: {qss_family(family)};
                 font-size: {cfg.code_font_size * cfg.ui_scale / 100:g}pt; }}
             .in-prompt, .out-prompt {{ color: {self.palette.accent}; }}
             .error {{ color: {self.palette.danger}; }}
