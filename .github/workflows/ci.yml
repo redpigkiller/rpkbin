@@ -1,4 +1,4 @@
-name: MyPkg cross-platform regression
+name: Cross-platform regression
 
 on:
   push:

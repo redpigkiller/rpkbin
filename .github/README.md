@@ -1,7 +1,7 @@
-# 持續驗證 MyPkg
+# CI 與套件檢查
 
 修改程式、測試、套件設定、根 README、授權或 CI 檔案後，push／pull request 會執行
-[MyPkg cross-platform regression](workflows/ci.yml)。也能從 GitHub Actions 手動執行。
+[Cross-platform regression](workflows/ci.yml)。也能從 GitHub Actions 手動執行。
 
 | Job | 環境 | 檢查內容 |
 | --- | --- | --- |
