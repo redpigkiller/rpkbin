@@ -1,542 +1,649 @@
-﻿import os
-import shutil
+"""Behavioral regressions for shared scheduling, monitoring and attempt safety."""
+
+import sys
 import time
-import uuid
-import tempfile
-import threading
-import logging
-import io
+from dataclasses import FrozenInstanceError
+
 import pytest
 
-from rpkbin.job_manager import JobManager, CmdJob, FuncJob, DONE, FAILED, PENDING, CANCELLED, RUNNING
-import rpkbin.job_manager.manager as manager_mod
+from rpkbin.job_manager import (
+    Event,
+    Expect,
+    Job,
+    JobManager,
+    JobStatus,
+    Result,
+)
 
-def test_cmd_job():
-    job = CmdJob("test_cmd", "echo hello")
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
-    
-    assert job.status == DONE
-    assert job.result == 0
-    assert "hello" in "\n".join(job.logs())
 
-def test_func_job():
-    def my_func(a, b):
-        return a + b
+def command(code, name="worker", **kwargs):
+    return Job(name, [sys.executable, "-u", "-c", code], pty=False, **kwargs)
 
-    job = FuncJob("test_func", my_func, args=(1, 2))
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
 
-    assert job.status == DONE
-    assert job.result == 3
+@pytest.fixture
+def managers():
+    instances = []
 
-def test_job_cancel():
-    def long_func():
-        time.sleep(1)
-        return "yes"
+    def make(**kwargs):
+        manager = JobManager(**kwargs)
+        instances.append(manager)
+        return manager
 
-    job = FuncJob("long", long_func)
-    with JobManager(max_workers=2) as manager:
-        manager.add(job)
-        time.sleep(0.1)
-        job.cancel()
-        manager.wait()
+    yield make
+    for manager in instances:
+        manager.close()
 
-    assert job.status == CANCELLED
-    
-def test_dynamic_resources():
-    flag = {"gpu": 0}
-    
-    def my_func():
-        return "ok"
 
-    job = FuncJob("test", my_func, resources={"gpu": 1})
-    with JobManager(max_workers=2, resources={"gpu": lambda: flag["gpu"]}) as manager:
-        manager.add(job)
-        time.sleep(0.2)
-        assert job.status == "pending" # Resource 0, can't fit
-        
-        flag["gpu"] = 1 # give resource
-        manager.wait(job.id, timeout=2.0)
-        assert job.status == DONE
+def wait_for(predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
 
-def test_job_retry():
-    attempts = 0
-    def flaky_func():
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise ValueError("Not yet")
-        return "success"
 
-    job = FuncJob("flaky", flaky_func, max_retries=3)
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
-        
-    assert job.status == DONE
-    assert job.result == "success"
-    assert attempts == 3
+@pytest.mark.parametrize(
+    "code,expectation,verdict",
+    [
+        ("print('COMPLETE')", Expect.PRESENT, Result.PASS),
+        ("print('other')", Expect.PRESENT, Result.FAIL),
+        ("print('COMPLETE')", Expect.ABSENT, Result.FAIL),
+        ("print('other')", Expect.ABSENT, Result.PASS),
+    ],
+)
+def test_check_contract(managers, code, expectation, verdict):
+    manager = managers()
+    job = manager.add(command(code))
+    job.check("completion", match="COMPLETE", expect=expectation)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is verdict
+    assert job.status is JobStatus.DONE
 
-def test_job_callbacks():
-    log_called = False
-    done_called = False
-    fail_called = False
-    watch_called = False
-    
-    job = CmdJob("cb_job", "echo Hello World")
-    
-    def on_log(j, line):
-        nonlocal log_called
-        if "Hello" in line:
-            log_called = True
-            
-    def on_done(j):
-        nonlocal done_called
-        done_called = True
-        
-    def on_fail(j, e):
-        nonlocal fail_called
-        fail_called = True
-        
-    def on_watch(j, m):
-        nonlocal watch_called
-        watch_called = True
-    
-    job.on_log(on_log)
-    job.on_done(on_done)
-    job.on_fail(on_fail)
-    job.watch("World", on_watch)
-    
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
-        
-    assert job.status == DONE
-    assert log_called
-    assert done_called
-    assert not fail_called
-    assert watch_called
 
-def test_manager_pause_resume():
-    job1 = FuncJob("j1", lambda: time.sleep(0.1))
-    job2 = FuncJob("j2", lambda: time.sleep(0.1))
-    
-    with JobManager(max_workers=1) as manager:
-        manager.pause()
-        manager.add(job1)
-        manager.add(job2)
-        
-        time.sleep(0.1)
-        assert len(manager.pending()) == 2
-        assert len(manager.running()) == 0
-        
-        manager.resume()
-        manager.wait()
-        
-    assert job1.status == DONE
-    assert job2.status == DONE
+def test_normal_exit_without_checks_is_not_pass(managers):
+    manager = managers()
+    job = manager.add(command("print('ordinary output')"))
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.NA
 
-def test_cmd_job_failure():
-    # Run a command that definitely fails
-    job = CmdJob("fail_job", "exit 1")
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
-        
-    assert job.status == FAILED
-    assert job.result != 0
 
-def test_on_queue_drained():
-    drained = False
-    def on_drained(mgr):
-        nonlocal drained
-        drained = True
-        
-    with JobManager(max_workers=1) as manager:
-        manager.on_queue_drained(on_drained)
-        manager.add(CmdJob("quick", "echo 1"))
-        manager.wait()
-        
-    # Wait slightly for event bus to fire
-    time.sleep(0.1)
-    assert drained
+def test_all_checks_and_execution_must_succeed(managers):
+    manager = managers()
+    job = manager.add(command("print('FIRST'); raise SystemExit(4)"))
+    job.check("first", match="FIRST")
+    job.check("second", match="SECOND")
+    manager.start()
+    assert manager._drain(5)
+    assert [c["state"] for c in job.result.checks] == ["OK", "FAIL"]
+    assert job.result.verdict is Result.FAIL
+    assert job.returncode == 4
 
-def test_manager_cancel_all():
-    job1 = FuncJob("j1", lambda: time.sleep(0.5))
-    job2 = FuncJob("j2", lambda: time.sleep(0.5))
-    
-    with JobManager(max_workers=1) as manager:
-        manager.add(job1)
-        manager.add(job2)
-        time.sleep(0.1) # Let j1 start
-        manager.cancel_all()
-        manager.wait()
-        
-    assert job1.status == CANCELLED
-    assert job2.status == CANCELLED
 
-def test_update_config():
-    ev = threading.Event()
-    job1 = FuncJob("j1", lambda: ev.wait(timeout=2.0))
-    job2 = FuncJob("j2", lambda: "ok")
-    
-    with JobManager(max_workers=1) as manager:
-        manager.add(job1)
-        manager.add(job2)
-        time.sleep(0.1)
-        assert len(manager.pending()) == 1
-        
-        manager.update_config(max_workers=2)
-        manager.wait(job2.id, timeout=1.0)
-        assert job2.status == DONE
-        
-        ev.set()
-        manager.wait()
+def test_all_same_line_evidence_precedes_stop(managers):
+    manager = managers()
+    job = manager.add(command("import time; print('BAD', flush=True); time.sleep(10)"))
+    first = job.check("first", match="BAD", expect=Expect.ABSENT)
+    job.on(first.events.failed, stop=True)
+    job.check("second", match="BAD", expect=Expect.ABSENT)
+    job.check("never_seen", match="COMPLETE")
+    manager.start()
+    assert manager._drain(6)
+    assert [c["state"] for c in job.result.checks] == ["FAIL", "FAIL", "INCOMPLETE"]
+    assert job.result.verdict is Result.FAIL
+    assert job.result.termination[0]["source"] == "monitor"
 
-def test_manager_stats():
-    ev1 = threading.Event()
-    ev2 = threading.Event()
-    
-    job1 = FuncJob("j1", lambda: ev1.wait(timeout=2.0), resources={"gpu": 1})
-    job2 = FuncJob("j2", lambda: ev2.wait(timeout=2.0), resources={"gpu": 1})
-    
-    with JobManager(max_workers=4, resources={"gpu": 2}) as manager:
-        manager.add(job1)
-        manager.add(job2)
-        time.sleep(0.2) # Allow both to start
-        
-        st = manager.stats()
-        assert st["workers"]["used"] == 2
-        assert st["workers"]["total"] == 4
-        assert st["resources"]["gpu"]["used"] == 2
-        assert st["resources"]["gpu"]["total"] == 2
-        assert st["jobs"]["running"] == 2
-        
-        ev1.set()
-        ev2.set()
-        manager.wait()
 
-def test_custom_job_id():
-    my_id = uuid.uuid4()
-    job1 = CmdJob("cmd", "echo 1", job_id=my_id)
-    job2 = FuncJob("func", lambda: 1, job_id=str(my_id))
-    
-    assert job1.id == my_id
-    assert job2.id == my_id
+def test_broken_match_is_disabled_others_continue(managers):
+    manager = managers()
+    job = manager.add(command("print('one'); print('two'); print('COMPLETE')"))
+    calls = []
 
-def test_cmd_send_input():
-    # Use a temp script to ensure reliable input() behavior across OS/CI
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write("print('ready', flush=True)\nx = input()\nprint(f'got:{x}', flush=True)\n")
-        script_path = f.name
-        
-    try:
-        job = CmdJob("interactive", f'python "{script_path}"')
-        with JobManager(max_workers=1) as manager:
-            manager.add(job)
-            
-            # Wait for 'ready'
-            t0 = time.time()
-            ready = False
-            while time.time() - t0 < 3.0:
-                if any("ready" in line for line in job.logs()):
-                    ready = True
-                    break
-                time.sleep(0.1)
-                
-            assert ready, "Job did not print 'ready' in time"
-            
-            # Send input
-            job.send_input("secret123\n")
-            
-            # Wait for finish
-            assert manager.wait(job.id, timeout=3.0), "Job did not finish after input"
-            
-        assert job.status == DONE
-        assert any("got:secret123" in line for line in job.logs())
-    finally:
-        os.remove(script_path)
+    def broken(line):
+        calls.append(line)
+        raise RuntimeError("monitor unavailable")
 
-def test_flush_tokens():
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        # Loop to ensure it doesn't drop the script too fast. Print prompt without newline.
-        f.write("import time, sys\nprint('ucli% ', end='')\nsys.stdout.flush()\ntime.sleep(2)\n")
-        script_path = f.name
+    job.check("broken", match=broken)
+    job.check("completion", match="COMPLETE")
+    manager.start()
+    assert manager._drain(5)
+    assert len(calls) == 1
+    assert [c["state"] for c in job.result.checks] == ["ERROR", "OK"]
+    assert job.result.verdict is Result.ERROR
+    assert job.returncode == 0
 
-    try:
-        # flush_tokens will force 'ucli% ' out immediately
-        job = CmdJob("flush_test", f'python "{script_path}"', flush_tokens=("ucli% ",))
-        with JobManager(max_workers=1) as manager:
-            manager.add(job)
-            
-            t0 = time.time()
-            found = False
-            while time.time() - t0 < 1.0:
-                # The line should be yielded well before the 2s sleep ends
-                if any("ucli% " in line for line in job.logs()):
-                    found = True
-                    break
-                time.sleep(0.1)
-            
-            assert found, "Flush token was not emitted immediately"
-            job.cancel()
-            manager.wait()
-    finally:
-        os.remove(script_path)
 
-def test_cmd_job_fast_path_without_flush_tokens(monkeypatch):
-    class FakeStdout:
-        def __init__(self, lines):
-            self._lines = iter(lines)
+def test_track_error_keeps_previous_value_and_no_string_fallback(managers):
+    manager = managers()
+    job = manager.add(command("print('value=3'); print('value=bad'); print('value=4')"))
+    track = job.track("value", r"value=(\w+)", cast=int)
+    changes = []
+    job.on(
+        track.events.changed,
+        callback=lambda j, old, new: changes.append((old, new)),
+        once=False,
+    )
+    manager.start()
+    assert manager._drain(5)
+    assert track.value == 3
+    assert changes == [(None, 3)]
+    assert job.result.verdict is Result.ERROR
 
-        def readline(self):
-            return next(self._lines, "")
 
-        def read(self, size=-1):
-            raise AssertionError("fast path should not use read()")
+def test_error_subscription_can_request_stop(managers):
+    manager = managers()
+    job = manager.add(command("import time; print('x', flush=True); time.sleep(10)"))
+    job.check("broken", match=lambda line: 1 / 0)
+    job.on(job.events.error, stop=True)
+    manager.start()
+    assert manager._drain(6)
+    assert job.result.verdict is Result.ERROR
+    assert job.status is JobStatus.CANCELLED
 
-    class FakeProc:
-        def __init__(self):
-            self.stdout = FakeStdout(["first line\n", "second line\n", "tail"])
-            self.stdin = None
-            self.returncode = 0
-            self.pid = 1234
 
-        def wait(self, timeout=None):
-            return self.returncode
+def test_fail_and_error_both_remain_visible(managers):
+    manager = managers()
+    job = manager.add(command("print('BAD')"))
+    job.check("forbidden", match="BAD", expect=Expect.ABSENT)
+    job.check("broken", match=lambda line: 1 / 0)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.FAIL
+    assert len(job.result.errors) == 1
 
-        def poll(self):
-            return self.returncode
 
-    proc = FakeProc()
-    monkeypatch.setattr("rpkbin.job_manager.cmd_job.subprocess.Popen", lambda *args, **kwargs: proc)
+def test_warning_counts_hits_not_once_notifications(managers):
+    manager = managers()
+    job = manager.add(command("print('WARN'); print('WARN'); print('WARN')"))
+    job.on(match="WARN", warn=True, name="review", once=True)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.NA
+    assert job.result.warnings[0]["count"] == 3
+    assert sum("Warning [review]" in line for line in job.logs()) == 1
 
-    job = CmdJob("fast_path", "fake command")
-    job._status = RUNNING
-    log_file = io.StringIO()
 
-    job._execute(log_file=log_file)
+def test_management_log_does_not_reenter_monitor(managers):
+    manager = managers()
+    job = manager.add(command("print('hello')"))
+    job.on(callback=lambda j, line: j.log("BAD"), once=False)
+    job.check("not_management", match="BAD", expect=Expect.ABSENT)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.PASS
 
-    assert job.logs() == ["first line", "second line", "tail"]
-    assert log_file.getvalue() == "first line\nsecond line\ntail"
-    assert job.result == 0
 
-def test_cmd_job_partial_eof_without_newline():
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write("import sys\nsys.stdout.write('tail-without-newline')\nsys.stdout.flush()\n")
-        script_path = f.name
+def test_completion_callback_failure_does_not_rewrite_result(managers):
+    manager = managers()
+    job = manager.add(command("print('COMPLETE')"))
+    job.check("completion", match="COMPLETE")
 
-    try:
-        job = CmdJob("partial_eof", f'python "{script_path}"')
-        with JobManager(max_workers=1) as manager:
-            manager.add(job)
-            manager.wait()
+    def notification(j, attempt):
+        assert j.result.verdict is Result.PASS
+        raise RuntimeError("notification unavailable")
 
-        assert job.status == DONE
-        assert job.logs()[-1] == "tail-without-newline"
-    finally:
-        os.remove(script_path)
+    job.on(job.events.attempt_finished, callback=notification)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.PASS
+    assert not job.result.errors
+    assert job.to_snapshot_dict()["diagnostics"]
 
-def test_cmd_job_log_file_preserves_raw_output():
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(
-            "import sys\n"
-            "print('line one')\n"
-            "print('line two')\n"
-            "sys.stdout.write('tail')\n"
-            "sys.stdout.flush()\n"
+
+def test_tick_has_explicit_time_source(managers):
+    manager = managers()
+    job = manager.add(command("import time; time.sleep(10)"))
+    deadline = job.check(
+        "deadline",
+        on=Event.TICK,
+        every=0.03,
+        match=lambda j, elapsed: elapsed > 0.06,
+        expect=Expect.ABSENT,
+    )
+    job.on(deadline.events.failed, stop=True)
+    manager.start()
+    assert manager._drain(6)
+    assert job.result.verdict is Result.FAIL
+
+
+def test_timeout_remains_fail_when_quit_exits_zero(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys; print('ready', flush=True); sys.stdin.readline()",
+            timeout=0.2,
+            stop_cmd="quit",
+            stop_timeout=1,
         )
-        script_path = f.name
-
-    try:
-        job = CmdJob("log_file_raw", f'python "{script_path}"')
-        job._status = RUNNING
-        log_file = io.StringIO()
-
-        job._execute(log_file=log_file)
-
-        assert job.logs() == ["line one", "line two", "tail"]
-        assert log_file.getvalue() == "line one\nline two\ntail"
-    finally:
-        os.remove(script_path)
-
-def test_try_start_edge_case():
-    ev = threading.Event()
-    job1 = FuncJob("j1", lambda: ev.wait(timeout=2.0), resources={"gpu": 1})
-    job2 = FuncJob("j2", lambda: 1, resources={"gpu": 1})
-    
-    with JobManager(max_workers=2, resources={"gpu": 1}) as manager:
-        manager.add(job1)
-        manager.add(job2)
-        time.sleep(0.1)
-        
-        # job2 is pending because GPU is occupied
-        assert job2.status == PENDING
-        
-        # Manually cancel job2 while it's pending in the queue
-        job2.cancel()
-        
-        # Now job1 finishes, releasing GPU
-        ev.set()
-        
-        # The manager will pick up job2, try to _manager_try_start(), 
-        # which will return False because status is CANCELLED (not PENDING).
-        # It should release the GPU and move on without throwing.
-        manager.wait(timeout=2.0)
-        
-    assert job2.status == CANCELLED
-    assert manager._used_resources.get("gpu", 0) == 0
-
-def test_stop_waits_for_running_workers():
-    ev = threading.Event()
-    timer = threading.Timer(0.2, ev.set)
-    job = FuncJob("slow_stop", lambda: ev.wait(timeout=1.0))
-
-    manager = JobManager(max_workers=1)
+    )
     manager.start()
+    assert manager._drain(6)
+    assert job.returncode == 0
+    assert job.result.verdict is Result.FAIL
+
+
+def test_text_send_and_prompt_does_not_get_stuck(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys; print('cmd> ', end='', flush=True); print('GOT:' + sys.stdin.readline().strip())",
+            prompts=("cmd> ",),
+        )
+    )
+    job.on(match=r"cmd> ", callback=lambda j, line: j.send("__CTRL_C__"))
+    job.check("echo", match="GOT:__CTRL_C__")
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.PASS
+    assert job.status is JobStatus.DONE
+
+
+@pytest.mark.parametrize("ending", ["", "\n"])
+def test_prompt_status_is_ready_before_callback_and_send_clears_it(managers, ending):
+    manager = managers()
+    job = manager.add(
+        command(
+            f"import sys; sys.stdout.write({'cmd> ' + ending!r}); sys.stdout.flush(); "
+            "print('REPLY=' + input(), flush=True)",
+            prompts=("cmd> ",),
+        )
+    )
+    observed = []
+
+    def respond(current, line):
+        observed.append(current.status)
+        assert current.send("hello")
+        observed.append(current.status)
+
+    job.on(match=r"^cmd>", callback=respond)
+    job.check("reply", match=r"^REPLY=hello$")
+    manager.start()
+    assert manager._drain(5)
+    assert observed == [JobStatus.WAITING_INPUT, JobStatus.RUNNING]
+    assert job.result.verdict is Result.PASS
+
+
+def test_impossible_resource_rejected_before_any_dispatch(managers):
+    manager = managers(resources={"slot": 1})
+    good = manager.add(command("print('unexpected')", name="good"))
+    manager.add(command("print('bad')", name="bad", resources={"slot": 2}))
+    with pytest.raises(ValueError, match="capacity"):
+        manager.start()
+    assert good.pid is None
+    assert not manager.started
+
+
+def test_delayed_newline_does_not_clear_detected_prompt(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys,time; sys.stdout.write('cmd>'); sys.stdout.flush(); "
+            "time.sleep(.1); sys.stdout.write('\\n'); sys.stdout.flush(); input()",
+            prompts=("cmd>",),
+        )
+    )
+    manager.start()
+    wait_for(lambda: "" in job.logs())
+    assert job.status is JobStatus.WAITING_INPUT
+    assert job.send("quit")
+    assert manager._drain(5)
+
+
+def test_retry_releases_slot_and_requeues_fairly(managers, tmp_path):
+    counter = tmp_path / "counter"
+    code = (
+        f"from pathlib import Path; p=Path({str(counter)!r}); n=int(p.read_text())+1 if p.exists() else 1; "
+        "p.write_text(str(n)); print('A'+str(n)); raise SystemExit(1 if n==1 else 0)"
+    )
+    manager = managers(max_workers=1, resources={"slot": 1})
+    first = manager.add(command(code, name="A", resources={"slot": 1}, max_retries=1))
+    manager.add(command("print('B')", name="B", resources={"slot": 1}))
+    order = []
+    manager.add_log_listener(
+        lambda record: (
+            order.append(record["text"])
+            if record["source"] == "stdout" and record["text"] in ("A1", "B", "A2")
+            else None
+        )
+    )
+    manager.start()
+    assert manager._drain(8)
+    assert order == ["A1", "B", "A2"]
+    assert first.result.verdict is Result.NA
+    assert first.history[0]["result"] == "FAIL"
+    assert first.history[0]["retry_scheduled"]
+    assert first.attempt_number == 2
+
+
+def test_old_control_cannot_target_new_attempt_and_report_is_frozen(managers):
+    manager = managers()
+    job = manager.add(
+        command("import sys; print('ready', flush=True); sys.stdin.readline()")
+    )
+    bound = []
+    job.on(match="ready", callback=lambda j, line: bound.append(j))
+    manager.start()
+    wait_for(lambda: len(bound) == 1)
+    original_id, original_submission = job.attempt_id, job.submission_id
+    assert job.send("quit")
+    assert manager._drain(5)
+    original_report = job.result
+    manager.rerun(job)
+    wait_for(lambda: len(bound) == 2)
+    with pytest.raises(ValueError, match="stale"):
+        bound[0].send("wrong target")
+    with pytest.raises(ValueError, match="stale"):
+        manager.control(
+            job.id,
+            "stop",
+            expected_attempt=original_id,
+            expected_submission=original_submission,
+        )
+    assert job.send("quit")
+    assert manager._drain(5)
+    assert bound[0].result is original_report
+    with pytest.raises((FrozenInstanceError, AttributeError)):
+        original_report.verdict = Result.PASS
+    assert len(job.history) == 1
+
+
+def test_bounded_logs_keep_failure_evidence(managers):
+    manager = managers()
+    job = manager.add(
+        command("print('BAD'); [print('noise') for _ in range(30)]", max_log_lines=5)
+    )
+    job.check("no_bad", match="BAD", expect=Expect.ABSENT)
+    manager.start()
+    assert manager._drain(5)
+    snapshot = job.to_snapshot_dict(include_logs=True)
+    assert len(snapshot["logs"]) == 5
+    assert snapshot["log_records"][0]["line_no"] > 1
+    assert snapshot["checks"][0]["evidence"]["line"] == "BAD"
+    assert job.result.verdict is Result.FAIL
+
+
+def test_runtime_capacity_change_does_not_preempt(managers):
+    manager = managers(max_workers=2, resources={"slot": 2})
+    jobs = [
+        manager.add(
+            command("import time; time.sleep(0.3)", name=str(i), resources={"slot": 1})
+        )
+        for i in range(3)
+    ]
+    manager.start()
+    wait_for(lambda: manager.snapshot()["active_workers"] == 2)
+    manager.update_settings(max_workers=1)
+    assert manager.snapshot()["active_workers"] == 2
+    assert manager._drain(6)
+    assert jobs[2]._attempt.started >= max(j._attempt.ended for j in jobs[:2])
+
+
+def test_monitor_definitions_freeze_and_enum_typoes_rejected(managers):
+    with pytest.raises(TypeError):
+        command("pass", stop_policy="gracefil")
+    job = command("print('value=1')")
+    with pytest.raises(TypeError):
+        job.check("bad", match="x", expect="present")
+    manager = managers()
     manager.add(job)
-    time.sleep(0.05)
+    manager.validate()
+    with pytest.raises(AttributeError):
+        job.cmd = "something else"
+    with pytest.raises(RuntimeError):
+        job.on(match="x", stop=True)
+    with pytest.raises(TypeError):
+        job.resources["slot"] = 1
 
-    timer.start()
-    t0 = time.monotonic()
-    manager.stop()
-    dt = time.monotonic() - t0
 
-    timer.cancel()
-    assert dt >= 0.15
-    assert job.status == DONE
-
-def test_wait_without_start_raises():
-    manager = JobManager(max_workers=1)
-    with pytest.raises(RuntimeError, match="JobManager is not running"):
-        manager.wait(timeout=0.1)
-
-def test_add_after_stop_raises():
-    manager = JobManager(max_workers=1)
+def test_eof_check_event_runs_before_final_result(managers):
+    manager = managers()
+    job = manager.add(command("print('ordinary output')"))
+    missing = job.check("completion", match="COMPLETE")
+    job.on(
+        missing.events.failed,
+        callback=lambda j, check: j.log("Missing: " + check["name"]),
+    )
     manager.start()
-    manager.stop()
+    assert manager._drain(5)
+    assert "Missing: completion" in job.logs()
+    assert job.result.verdict is Result.FAIL
 
-    with pytest.raises(RuntimeError, match="already been stopped"):
-        manager.add(FuncJob("late", lambda: None))
 
-def test_slow_async_callback_warns(monkeypatch, caplog):
-    times = iter([0.0, 1.2])
-    monkeypatch.setattr(manager_mod.time, "perf_counter", lambda: next(times))
-    caplog.set_level(logging.WARNING)
+def test_failed_track_does_not_manufacture_missing_check_fail(managers):
+    manager = managers()
+    job = manager.add(command("print('value=bad')"))
+    value = job.track("value", r"value=(\w+)", cast=int)
+    job.check("observed", on=value.events.changed, match=lambda j, old, new: True)
+    manager.start()
+    assert manager._drain(5)
+    assert job.result.verdict is Result.ERROR
+    assert job.result.checks[0]["state"] == "ERROR"
+    assert len(job.result.errors) == 1
 
-    called = []
-    job = FuncJob("cb_slow", lambda: "ok")
-    job.on_done(lambda j: called.append(j.name))
 
-    with JobManager(max_workers=1) as manager:
-        manager.add(job)
-        manager.wait()
+def test_final_notification_warning_does_not_change_frozen_warnings(managers):
+    manager = managers()
+    job = manager.add(command("print('COMPLETE')"))
+    job.check("completion", match="COMPLETE")
+    job.on(job.events.attempt_finished, warn=True, name="finished_notification")
+    manager.start()
+    assert manager._drain(5)
+    assert not job.result.warnings
+    assert job.to_snapshot_dict()["warning_count"] == 0
+    assert any("Notification [finished_notification]" in text for text in job.logs())
 
-    assert called == ["cb_slow"]
-    assert "Slow async callback detected" in caplog.text
 
-def test_wait_inside_manager_callback_raises():
-    errors = []
-    callback_ran = threading.Event()
+def test_bound_track_getters_keep_original_retry_attempt(managers, tmp_path):
+    counter = tmp_path / "track_counter"
+    code = (
+        f"from pathlib import Path; p=Path({str(counter)!r}); n=int(p.read_text())+1 if p.exists() else 1; "
+        "p.write_text(str(n)); print('value='+str(n)); raise SystemExit(1 if n==1 else 0)"
+    )
+    manager = managers(max_workers=1)
+    job = manager.add(command(code, max_retries=1))
+    value = job.track("value", r"value=(\d+)", cast=int)
+    observed = job.check(
+        "observed", on=value.events.changed, match=lambda j, old, new: new > 0
+    )
+    records = []
+    job.on(
+        job.events.attempt_finished,
+        callback=lambda j, attempt: records.append(
+            (j.attempt_number, value.value, observed.state)
+        ),
+        once=False,
+    )
+    manager.start()
+    assert manager._drain(8)
+    assert records == [(1, 1, "OK"), (2, 2, "OK")]
 
-    manager = JobManager(max_workers=1)
-    job = FuncJob("cb_wait", lambda: "ok")
 
-    def on_done(j):
+def test_close_prevents_new_jobs_from_completion_callbacks(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys; print('ready', flush=True); sys.stdin.readline()",
+            stop_cmd="quit",
+        )
+    )
+    rejected = []
+
+    def notification(j, attempt):
         try:
-            manager.wait(timeout=0.1)
-        except RuntimeError as exc:
-            errors.append(str(exc))
-        finally:
-            callback_ran.set()
+            manager.add(command("print('must not run')", name="late"))
+        except RuntimeError:
+            rejected.append(True)
 
-    job.on_done(on_done)
-
-    with manager:
-        manager.add(job)
-        assert manager.wait(timeout=1.0)
-
-    assert callback_ran.wait(timeout=1.0)
-    assert errors
-    assert "cannot be called from a manager callback" in errors[0]
-
-def test_add_rejects_impossible_resource_request():
-    job = FuncJob("need_gpu", lambda: "ok", resources={"gpu": 2})
-    with JobManager(max_workers=1, resources={"gpu": 1}) as manager:
-        with pytest.raises(ValueError, match="Impossible Resource Request"):
-            manager.add(job)
-
-def test_add_rejects_undeclared_or_invalid_resource_request():
-    with JobManager() as manager:
-        with pytest.raises(ValueError, match="undeclared resource"):
-            manager.add(FuncJob("typo", lambda: None, resources={"gup": 1}))
-        with pytest.raises(ValueError, match="non-negative integer"):
-            manager.add(FuncJob("negative", lambda: None, resources={"gpu": -1}))
-
-def test_invalid_dynamic_capacity_does_not_kill_scheduler(caplog):
-    capacity = ["bad"]
-    manager = JobManager(resources={"gpu": lambda: capacity[0]}, poll_interval=0.01)
-    job = FuncJob("dynamic", lambda: "ok", resources={"gpu": 1})
-    manager.add(job)
+    job.on(job.events.attempt_finished, callback=notification)
     manager.start()
-    try:
-        assert not manager.wait(timeout=0.05)
-        assert manager._bg_thread.is_alive()
-        assert job.status == PENDING
-        capacity[0] = 1
-        assert manager.wait(timeout=1.0)
-    finally:
-        manager.stop()
-    assert job.status == DONE
-    assert "capacity must be a non-negative integer" in caplog.text
+    wait_for(lambda: any(line == "ready" for line in job.logs()))
+    manager.close()
+    assert rejected == [True]
+    assert len(manager.jobs) == 1
 
-def test_max_history_is_enforced_when_jobs_finish():
-    manager = JobManager(max_history=1)
-    for i in range(3):
-        manager.add(FuncJob(str(i), lambda: None))
+
+def test_final_status_event_preserves_stopping_source(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys; print('ready', flush=True); sys.stdin.readline()",
+            stop_cmd="quit",
+        )
+    )
+    transitions = []
+    job.on(
+        job.events.status_changed,
+        callback=lambda j, old, new: transitions.append((old, new)),
+        once=False,
+    )
     manager.start()
-    try:
-        assert manager.wait(timeout=1.0)
-        assert len(manager.jobs()) == 1
-    finally:
-        manager.stop()
+    wait_for(lambda: "ready" in job.logs())
+    job.stop()
+    assert manager._drain(5)
+    assert transitions[-1] == (JobStatus.STOPPING, JobStatus.CANCELLED)
+    assert job.result.termination[0]["actual"] == "GRACEFUL"
 
-def test_cancelling_pending_func_job_does_not_warn(caplog):
-    job = FuncJob("pending", lambda: None)
-    job.cancel()
-    assert job.status == CANCELLED
-    assert "cannot be force-stopped" not in caplog.text
 
-def test_add_rejects_duplicate_job_id():
-    jid = uuid.uuid4()
-    job1 = FuncJob("a", lambda: 1, job_id=jid)
-    job2 = FuncJob("b", lambda: 2, job_id=jid)
-    with JobManager(max_workers=1) as manager:
-        manager.add(job1)
-        with pytest.raises(ValueError, match="already in the manager"):
-            manager.add(job2)
-        manager.wait()
+def test_one_job_cannot_be_registered_with_two_managers(managers):
+    first, second = managers(), managers()
+    job = first.add(command("pass"))
+    with pytest.raises(ValueError, match="different manager"):
+        second.add(job)
 
-def test_worker_setup_error_fails_job(monkeypatch):
-    def boom_open(*args, **kwargs):
-        raise OSError("log open boom")
 
-    monkeypatch.setattr(manager_mod, "open", boom_open, raising=False)
+def test_frozen_identity_and_track_are_not_editable(managers):
+    manager = managers()
+    job = manager.add(command("print('v=1')"))
+    value = job.track("v", r"v=(\d+)", cast=int)
+    manager.validate()
+    with pytest.raises(AttributeError):
+        job.id = "different"
+    with pytest.raises(AttributeError):
+        value.pattern = "different"
+    with pytest.raises(AttributeError):
+        value.events.changed = Event.LOG
 
-    job = FuncJob("setup_error", lambda: "ok")
-    td = f".tmp_sched_{uuid.uuid4().hex}"
-    os.makedirs(td, exist_ok=True)
-    try:
-        with JobManager(max_workers=1, log_dir=td) as manager:
-            manager.add(job)
-            assert manager.wait(job.id, timeout=1.0)
-    finally:
-        shutil.rmtree(td, ignore_errors=True)
 
-    assert job.status == FAILED
-    assert job.error is not None
+def test_snapshot_is_detached_and_history_keeps_original_priority(managers):
+    manager = managers()
+    job = manager.add(command("print('value=1')", priority=3))
+    job.track("nested", r"value=(\d+)", cast=lambda text: {"items": [int(text)]})
+    manager.start()
+    assert manager._drain(5)
+    original = job.attempt_id
+    snapshot = job.to_snapshot_dict()
+    snapshot["data"]["nested"]["items"].append(99)
+    assert job.data["nested"]["items"] == (1,)
+    manager.pause()
+    manager.rerun(job)
+    manager.set_priority(job.id, 9)
+    assert job.to_snapshot_dict()["priority"] == 9
+    assert job.to_snapshot_dict(attempt_id=original)["priority"] == 3
 
+
+def test_runtime_log_retention_shrink_enlarge_and_history_isolation(managers):
+    manager = managers()
+    job = manager.add(
+        command(
+            "import sys\n"
+            "for i in range(1, 6):\n"
+            "    print(f'LINE={i}', flush=True)\n"
+            "print('READY', flush=True)\n"
+            "sys.stdin.readline()\n"
+            "for i in range(6, 9):\n"
+            "    print(f'LINE={i}', flush=True)\n"
+        )
+    )
+    other = manager.add(command("print('OTHER=1')"))
+    assert job.max_log_lines == 10000
+    tracked = job.track("last_line", r"LINE=(\d+)", cast=int)
+    chk = job.check("first_line_seen", match="LINE=1", expect=Expect.PRESENT)
+    manager.validate()
+
+    with pytest.raises(AttributeError):
+        job.max_log_lines = 5
+    for bad in (0, -3, True, "10"):
+        with pytest.raises(ValueError):
+            job.set_max_log_lines(bad)
+
+    manager.start()
+    wait_for(lambda: "READY" in job.logs())
+    before = job.to_snapshot_dict(include_logs=True)
+    first_evidence = before["checks"][0]["evidence"]
+    assert first_evidence["line"] == "LINE=1"
+
+    evicted = job.set_max_log_lines(3, expected_attempt=job.attempt_id)
+    assert evicted == before["log_count"] - 3
+    assert job.max_log_lines == 3
+    snap_mid = job.to_snapshot_dict(include_logs=True)
+    assert snap_mid["log_records"] == before["log_records"][-3:]
+    assert snap_mid["total_lines"] == before["total_lines"]
+    assert snap_mid["log_count"] == 3
+    assert chk.state == "OK"
+    assert snap_mid["checks"][0]["evidence"] == first_evidence
+
+    # Enlarging does not restore already evicted lines, but allows more lines to be kept
+    assert job.set_max_log_lines(5) == 0
+    assert job.to_snapshot_dict(include_logs=True)["log_records"] == snap_mid["log_records"]
+
+    job.send("go")
+    assert manager._drain(5)
+
+    first_attempt_id = job.attempt_id
+    snap_done = job.to_snapshot_dict(include_logs=True)
+    assert [r["text"] for r in snap_done["log_records"][-3:]] == [
+        "LINE=6", "LINE=7", "LINE=8"
+    ]
+    assert [r["line_no"] for r in snap_done["log_records"]] == list(
+        range(snap_done["total_lines"] - 4, snap_done["total_lines"] + 1)
+    )
+    assert snap_done["total_lines"] > before["total_lines"]
+    assert snap_done["log_count"] == 5
+    assert tracked.value == 8
+    assert snap_done["result"] == "PASS"
+    assert snap_done["checks"][0]["evidence"] == first_evidence
+
+    # Shrinking after completion for future attempts must not retroactively truncate completed history
+    manager.rerun(job)
+    wait_for(lambda: "READY" in job.logs())
+    job.send("go")
+    assert manager._drain(5)
+    job.set_max_log_lines(2)
+    hist_snap = job.to_snapshot_dict(include_logs=True, attempt_id=first_attempt_id)
+    assert hist_snap["log_records"] == snap_done["log_records"]
+    assert hist_snap["attempt_max_log_lines"] == 5
+
+    # Batch manager.set_max_log_lines applies to all jobs
+    manager.set_max_log_lines(4)
+    assert job.max_log_lines == 4 and other.max_log_lines == 4
+
+
+def test_runtime_history_retention_evicts_oldest_without_recomputing_result(managers):
+    manager = managers()
+    assert manager.max_history == 20
+    job = manager.add(command("print('OK')"))
+    job.check("ok", match="OK", expect=Expect.PRESENT)
+    manager.start()
+    assert manager._drain(5)
+    a1 = job.attempt_id
+
+    for _ in range(3):
+        manager.rerun(job)
+        assert manager._drain(5)
+
+    assert len(job.history) == 3
+    a2, a3 = job.history[1]["attempt_id"], job.history[2]["attempt_id"]
+
+    for bad in (0, -1, False, "2"):
+        with pytest.raises(ValueError):
+            manager.set_max_history(bad)
+
+    res = manager.update_settings(max_history=2)
+    assert res["evicted_history"] == 1
+    assert manager.max_history == 2
+    assert [h["attempt_id"] for h in job.history] == [a2, a3]
+    assert job.to_snapshot_dict()["history_truncated"] == 1
+    with pytest.raises(ValueError, match="no longer retained"):
+        job.to_snapshot_dict(attempt_id=a1)
+    assert job.to_snapshot_dict(attempt_id=a2)["result"] == "PASS"
+    assert job.to_snapshot_dict()["result"] == "PASS"

@@ -1,3 +1,0 @@
-"""
-utils - General utility components.
-"""

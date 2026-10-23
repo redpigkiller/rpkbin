@@ -1,166 +1,177 @@
-# rpkbin — IC Design & Verification Utilities
+# rpkbin — Wave, MapBV, TablePack & rpk-calc
 
-[![English](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
-[![繁體中文](https://img.shields.io/badge/語言-繁體中文-blue.svg)](README_zh.md)
+`rpkbin` is a lightweight Python toolkit designed for IC design and verification workflows. It provides four self-contained tools:
 
-`rpkbin` is a Python toolkit for IC design and verification workflows: bit/register mapping, bit-true fixed-point simulation, spreadsheet extraction, control-flow modeling, compiler-backend experiments, and observable batch execution.
+1. **Wave**: A Python-defined external command scheduler and monitoring engine with a local Web GUI and headless CLI runner. It manages job concurrency, resource quotas, streaming log observation, declarative `track` / `check` / `on` rules, immutable verification reports, and bounded execution history.
+2. **MapBV**: A bitfield utility designed for hardware register modeling. It supports live bidirectional register slicing, bus concatenation (`concat`), read-only constant protection, and combinational logic expression trees with deferred and symbolic evaluation.
+3. **TablePack**: A schema-driven codec that packs a table of rows into a compact `bytes` blob (typed columns, delta/repeat/nullable encoding, optional brotli) and restores it exactly. A pure library: it never reads files.
+4. **rpk-calc**: An interactive Python workspace for engineering calculations, NumPy, and explicit APyTypes fixed-point (FXP) modeling, with GUI inspection and editing of values and arrays.
 
-## Why rpkbin?
+[繁體中文](README_zh.md) · [Documentation Index](docs/en/README.md) · [MIT License](LICENSE)
 
-The package keeps small, hardware-oriented utilities composable instead of forcing a single end-to-end framework. Each module exposes a focused Python API, while Wave adds a CLI and live/headless controls for longer-running jobs.
+---
 
-## Quick start
+## Installation
 
-The shortest path from a clean checkout to a working result is the Wave smoke flow.
-
-1. Install Python 3.11+ and the Wave extra.
-
-   ```bash
-   python -m pip install -e ".[wave]"
-   ```
-
-2. Generate a starter wave file with a parser example.
-
-   ```bash
-   rpk-wave init hello --profile parser
-   ```
-
-   Expected output:
-
-   ```text
-   [Wave] Created hello.wave.py
-          Edit the file, then run:  rpk-wave run hello.wave.py
-   ```
-
-3. Run it in headless mode and print the lightweight performance summary.
-
-   ```bash
-   rpk-wave run hello.wave.py --no-tui --perf
-   ```
-
-   A successful run includes:
-
-   ```text
-   [Wave][perf] summary
-   [Wave][perf] total lines=2 parser=2 ...
-   ```
-
-   The timing fields vary by machine; the process exits with code `0` when the batch succeeds.
-
-## Installation and feature extras
-
-The core install provides the package, NumPy, and Click. Optional functionality is installed with extras:
-
-| Extra | Enables | Main dependency |
-| --- | --- | --- |
-| `wave` | Wave CLI, TUI, parsers, hooks, PTY jobs | Textual, prompt-toolkit, Rich |
-| `excel` | Excel Extractor | openpyxl, xlrd, rapidfuzz |
-| `cfg` / `dot` | NetworkX analysis / `CFG.export_dot()` | networkx / pydot |
-| `jax` | NumBV JAX backend | JAX |
+Requires Python 3.11 or newer:
 
 ```bash
-python -m pip install -e "."             # core
-python -m pip install -e ".[excel]"      # Excel Extractor
-python -m pip install -e ".[all]"        # all listed extras except jax
-python -m pip install -e ".[all,jax]"    # everything, including JAX
+# Core package (Wave, MapBV and TablePack; standard library plus NumPy)
+pip install -e .
+
+# Optional: include brotli compression for TablePack (zlib is used without it)
+pip install -e ".[table]"
+
+# Optional: include fixed-point math modeling support (apytypes)
+pip install -e ".[fixed]"
+
+# Optional: include rpk-calc GUI and fixed-point support
+pip install -e ".[calc]"
 ```
 
-The package requires Python `>=3.11`. The authoritative dependency and entry-point definitions are in [pyproject.toml](pyproject.toml).
+---
 
-## Common usage
+## Quickstart: Getting Your First Verifiable Results
 
-### Bit-true fixed-point arithmetic
+### 1. Wave: Run Your First Batch
+
+Create `work.py` to define your jobs. A work file only registers jobs and monitoring rules; it does not dispatch processes:
 
 ```python
-from rpkbin.numbv import Format, scalar
+import sys
+from rpkbin.wave import Job, JobManager, Expect
 
-fmt = Format(8, 4)
-a = scalar(1.25, fmt=fmt)
-b = scalar(0.5, fmt=fmt)
+# Concurrency limit: at most two jobs running simultaneously
+mgr = JobManager(max_workers=2)
 
-print((a + b).val)
+for name in ("sim_core", "sim_dma"):
+    job = mgr.add(Job(name, [sys.executable, "-u", "-c", "print('TEST_PASS'); print('DONE')"]))
+    # Verification criteria: must print TEST_PASS and exit with returncode 0
+    job.check("pass_marker", match=r"^TEST_PASS$", expect=Expect.PRESENT)
 ```
+
+**Run in terminal (Headless batch mode):**
+
+```bash
+rpk-wave work.py --headless
+```
+
+The terminal streams child logs in real time and concludes with an immutable summary:
 
 ```text
-1.75
+[Wave] Starting 2 job(s); workers=2
+[child sim_core #1] TEST_PASS
+[child sim_core #1] DONE
+[child sim_dma #1] TEST_PASS
+[child sim_dma #1] DONE
+
+[Wave] Final summary
+JOB                        STATE           RESULT       WARNINGS  EXIT
+sim_core                   DONE            PASS         0         0
+  checks: pass_marker: OK
+sim_dma                    DONE            PASS         0         0
+  checks: pass_marker: OK
 ```
 
-Use the function-level API (`add`, `mul`, `sum`, `dot`, `mac`) when each pipeline stage needs an explicit output format. See [NumBV](docs/numbv/README.md).
+**Run with the local Web GUI:**
 
-### Concurrent Python and shell jobs
+```bash
+rpk-wave work.py
+```
+
+The browser opens the monitoring dashboard. The work file is loaded into **Preview** mode; click the **Start** button in the top bar to explicitly begin dispatch.
+
+---
+
+### 2. MapBV: Create and Slice Register Fields
+
+Define a 16-bit register variable, extract slices, and verify bidirectional live linkage:
 
 ```python
-from rpkbin.job_manager import JobManager, FuncJob
+import rpkbin.mapbv as mbv
 
-job = FuncJob("hello", lambda: "ok")
-with JobManager(max_workers=1) as manager:
-    manager.add(job)
-    manager.wait()
+# Create a 16-bit register initialized to 0x1234
+reg = mbv.var("CSR", 16, 0x1234)
 
-print(job.status, job.result)
+# Slice [15:8] (high byte) and [3:0] (low nibble)
+# Slices are live, bidirectional views linked to the parent register
+high_byte = reg[15:8]
+low_nibble = reg[3:0]
+
+print(f"Original register: {reg:hex} (0x{reg.value:04X})")  # 0x1234
+print(f"High byte slice:   {high_byte:hex}")                 # 0x12
+print(f"Low nibble slice:  {low_nibble:hex}")                # 0x4
+
+# Modifying the slice immediately updates the underlying register
+high_byte.value = 0xAB
+print(f"After modifying slice: {reg:hex}")                  # 0xAB34
 ```
 
-```text
-done ok
+Running this script immediately confirms the value update and linkage.
+
+> [!IMPORTANT]
+> **Comparison Semantics**: `reg == 0xAB34` tests Python object identity and raises `TypeError` to prevent accidental logic bugs. Always compare values with `reg.value == 0xAB34` or `reg.value_eq(0xAB34)`.
+
+### 3. TablePack: Pack a Table into Bytes and Back
+
+Describe the columns once, pack rows into a compact `bytes` blob, and restore them exactly:
+
+```python
+from rpkbin.tablepack import Schema, Uint, Enum, Str, pack, unpack
+
+schema = Schema(
+    Str("module", repeat=True),             # often equal to the previous row: repeats cost 1 bit
+    Uint("addr", bits=16, delta=True),      # store the step from the previous row
+    Enum("kind", ["RW", "RO", "W1C"]),      # a known set of values
+    Str("note", nullable=True),             # may be None
+)
+rows = [
+    {"module": "uart", "addr": 0x10, "kind": "RW", "note": None},
+    {"module": "uart", "addr": 0x14, "kind": "RO", "note": "status"},
+    {"module": "spi", "addr": 0x40, "kind": "W1C", "note": None},
+]
+
+blob = pack(rows, schema)
+assert unpack(blob) == rows               # the schema is embedded in the blob by default
+print(unpack(blob)[1])                    # {'module': 'uart', 'addr': 20, 'kind': 'RO', 'note': 'status'}
 ```
 
-Use [Wave](docs/wave/README.md) when the same jobs need parsers, hooks, PTY support, logs, or an interactive TUI.
+TablePack never reads files: pass it rows from any source and it returns `bytes`. `pack(rows)` without a schema infers one for you. For brotli compression install `pip install -e ".[table]"`; without it zlib is used.
 
-## Module guide
+---
 
-| Status | Module | Use it for |
-| --- | --- | --- |
-| Stable | [MapBV](docs/mapbv/README.md), [NumBV](docs/numbv/README.md), [StageTracker](docs/utils/README.md), [Job Manager](docs/job_manager/README.md), [Wave](docs/wave/README.md) | Register/bit views, fixed-point simulation, stage reporting, concurrent jobs, and observable workflows |
-| Beta | [CFG](docs/cfg/README.md), [Excel Extractor](docs/excel_extractor/README.md) | Low-level flow/layout analysis and template-based Excel extraction |
-| Experimental | [Codegen](docs/codegen/README.md), [Debug & DAP](docs/debug/README.md) | Compiler-backend experiments and target-neutral debugger/DAP integration contracts |
+## Where to Read Next
 
-Each module has a short English/Traditional Chinese entry point under [`docs/`](docs/); the longer `*.md` pages are the detailed references.
+### Wave Guides & Reference
+- **[Wave Quickstart](docs/en/wave/README.md)**: Completing your first batch, understanding Preview and Start.
+- **[Python Scenarios](docs/en/wave/scenarios.md)**: Progressing from single jobs to concurrency, multi-check combinations, warnings, data tracking, interactive stdin/signals, resource quotas, retries, and bounded history.
+- **[Web GUI Manual](docs/en/wave/gui.md)**: Dashboard layout, job selection, log filtering, batch controls, and Settings (Execution Limits, Memory Retention, Display Preferences).
+- **[Python API Reference](docs/en/wave/reference/python.md)** & **[CLI Reference](docs/en/wave/reference/cli.md)**: Exact parameter types, defaults, and CLI exit codes.
+- **[Architecture & Contracts](docs/en/wave/architecture.md)** and **[Troubleshooting Guide](docs/en/wave/troubleshooting.md)**.
 
-## Architecture
+### MapBV Guides & Reference
+- **[MapBV Quickstart](docs/en/mapbv/README.md)**: Creating variables, constants, and formatting hexadecimal/binary representations.
+- **[Practical Scenarios](docs/en/mapbv/scenarios.md)**: Slicing live views, hardware bus concatenation (`concat`), read-only constant bit enforcement, and combinational logic expressions with symbolic `eval()`.
+- **[API & Semantics Reference](docs/en/mapbv/reference.md)**: Class methods, operator tables, and boundary conditions.
 
-At the top level, callers choose a focused module. Wave is layered on Job Manager; Codegen is a target-neutral HIR-to-pseudo-ASM backend and does not parse a DSL or encode a real MCU instruction set.
+### TablePack Guides & Reference
+- **[TablePack Quickstart](docs/en/tablepack/README.md)**: Packing rows without a schema, describing columns, and the first size comparison.
+- **[Usage Scenarios](docs/en/tablepack/scenarios.md)**: Column types, `infer`/`explain`, schema sharing, column-oriented data, tuning, compressors, build-time verification, and errors.
+- **[API & Semantics Reference](docs/en/tablepack/reference.md)**: Functions, column types and options, exceptions, and the binary format.
 
-```text
-Python / Excel / HIR input
-        │
-        ├─ MapBV · NumBV · Excel Extractor · CFG · StageTracker
-        │
-        ├─ Wave CLI/TUI ──> Job Manager ──> local commands / Python callables
-        │
-        └─ Codegen: HIR ─> validate ─> LIR ─> rewrite ─> allocate ─> Target ─> pseudo ASM
-```
-
-See [architecture.md](docs/architecture.md) for responsibilities, session boundaries, invariants, and trade-offs.
-
-## Reference
-
-| Need | Start here |
-| --- | --- |
-| Wave commands, options, and exit codes | [CLI reference](docs/cli-reference.md) |
-| Codegen HIR/LIR constructs and pipeline errors | [Syntax reference](docs/syntax-reference.md) |
-| Module-specific API and examples | The relevant page under [`docs/`](docs/) |
-
-## Known limitations and troubleshooting
-
-- Installing `rpkbin` without an extra does not install Wave, Excel, NetworkX, pydot, or JAX. Install the extra for the module you use.
-- NumBV selects its process-global backend before creating `NumBV` objects; JAX is optional and is not included by `.[all]`.
-- Codegen is experimental. It intentionally excludes DSL parsing, real MCU ISAs, assemblers, linkers, binary encoding, production spilling, and a one-call module-to-ASM pipeline. Check [status.md](docs/codegen/status.md) before depending on it.
-- Debug & DAP is experimental. Targets retain execution semantics, source mapping, breakpoint-condition evaluation, register schemas, and memory serialization; `rpkbin.debug` only supplies the integration contract and stdio DAP lifecycle.
-- Wave defaults to the full-screen TUI in an interactive terminal. Use `--no-tui` in CI or when only batch completion is required; install the `wave` extra first.
-- If a Wave job fails, inspect its status and logs in the TUI/headless controls; the CLI returns a non-zero status when the batch is unsuccessful.
-
-## Contributing
-
-`rpkbin` is published as an MIT-licensed public package. For bugs, proposals, or pull requests, use the [GitHub repository](https://github.com/redpigkiller/rpkbin). See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and documentation checks.
+### rpk-calc Guide
+- **[rpk-calc Quickstart](docs/en/calc/README.md)**: Start a clean IPython workspace, use Python and FXP together, inspect and edit arrays, and learn execution controls. `rpk-calc --eval` is a separate headless `WorkspaceSession` command.
+- **[Architecture and Data Boundaries](docs/en/calc/architecture.md)**: Kernel ownership, JSON snapshots, matrix paging limits, and build compatibility.
 
 ## License
 
-The package is released under the [MIT License](LICENSE).
-
-## Testing
-
-From the repository root:
-
-```bash
-python -m pytest tests/ -v
-```
+This project's code is licensed under the [MIT License](LICENSE). Embedded SVG
+icons include Feather (MIT) and Lucide (ISC) designs; their notices are retained in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The distribution therefore declares
+`MIT AND ISC`. Third-party
+dependencies keep their own licenses; MIT does not relicense those packages.
+In particular, Calc uses PySide6 / Qt for Python, whose community distribution
+has [LGPL/GPL licensing terms](https://doc.qt.io/qtforpython-6/licenses.html).
+The rpkbin wheel contains this project's code, not bundled copies of Qt or its
+other dependencies. Redistributing a standalone application with those dependencies
+requires reviewing their licenses and distribution requirements separately.

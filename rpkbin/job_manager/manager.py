@@ -1,600 +1,550 @@
-"""
-manager.py — Thread-pool based job manager.
-"""
+"""Fixed-quota scheduler shared by Python, headless and the browser."""
 
 from __future__ import annotations
 
-import logging
+import contextvars
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Any
 
-from .job import Job, PENDING, RUNNING, DONE, FAILED, CANCELLED
+from .job import Job, _BoundJob, _CALLBACK, _integer
+from .model import JobStatus, freeze
 
-logger = logging.getLogger(__name__)
-SLOW_ASYNC_CALLBACK_WARNING_S = 1.0
+_DEFINING = contextvars.ContextVar("wave_defining", default=False)
+
+
+@contextmanager
+def definition_scope():
+    token = _DEFINING.set(True)
+    try:
+        yield
+    finally:
+        _DEFINING.reset(token)
+
 
 class JobManager:
-    """Manages concurrent job execution.
-    
-    Args:
-        max_workers:   Number of worker threads (default 4).
-        resources:     Capacity limits. Can be static ints or dynamic Callables returning ints.
-        log_dir:       Directory to store standard job logs. None to disable files.
-        max_history:   How many terminal jobs to keep in memory before GC.
-        poll_interval: Seconds between scheduler loops if no jobs ready (default 0.5s).
+    """Register first, validate atomically, then explicitly dispatch.
+
+    Runtime capacity changes do not preempt active jobs. Failed command attempts
+    release resources before retries rejoin the queue at their priority's tail.
     """
 
     def __init__(
         self,
-        max_workers: int = 4,
-        resources: dict[str, int | Callable[[], int]] | None = None,
-        log_dir: str | Path | None = None,
-        max_history: int = 1000,
-        poll_interval: float = 0.5,
-    ) -> None:
-        self._max_workers = max(1, max_workers)
-        self._resources: dict[str, int | Callable[[], int]] = dict(resources or {})
-        for name, limit in self._resources.items():
-            if not callable(limit) and (
-                not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
+        *,
+        max_workers=4,
+        resources=None,
+        log_dir=None,
+        columns=None,
+        max_history=20,
+    ):
+        self._cond = threading.Condition(threading.RLock())
+        # One serial monitor dispatch per manager also makes callbacks which
+        # control another Job safe without acquiring two independent Job locks.
+        self._events_lock = threading.RLock()
+        self.max_workers = _integer(max_workers, "max_workers", minimum=1)
+        self.resources = self._capacities({} if resources is None else resources)
+        self.log_dir = Path(log_dir) if log_dir is not None else None
+        if columns is not None and (
+            not isinstance(columns, (list, tuple))
+            or not all(isinstance(c, str) for c in columns)
+        ):
+            raise TypeError("columns must be a sequence of names")
+        self.columns = None if columns is None else list(dict.fromkeys(columns))
+        self.max_history = _integer(max_history, "max_history", minimum=1)
+        self.jobs = []
+        self.paused, self.started, self.ready = True, False, False
+        self._closed = False
+        self._closing = False
+        self._order, self._counter = {}, 0
+        self._active_workers = 0
+        self._used = {}
+        self._threads = set()
+        self._scheduler = None
+        self._listeners = []
+
+    @staticmethod
+    def _capacities(resources):
+        if not isinstance(resources, dict):
+            raise TypeError("resources must be a dictionary")
+        out = {}
+        for name, value in resources.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("resource name must be nonempty")
+            out[name] = _integer(value, f"capacity {name}", minimum=0)
+        return out
+
+    def _validate_job(self, job):
+        if job._manager_ref is not None and job._manager_ref is not self:
+            raise ValueError("Job already belongs to a different manager")
+        for name, needed in job.resources.items():
+            if name not in self.resources:
+                raise ValueError(f"{job.name}: unknown resource {name}")
+            if needed > self.resources[name]:
+                raise ValueError(
+                    f"{job.name}: needs {needed} {name}, capacity is {self.resources[name]}"
+                )
+        job._freeze()
+
+    def add(self, job):
+        if not isinstance(job, Job):
+            raise TypeError("add expects a Job")
+        with self._cond:
+            if self._closed or self._closing:
+                raise RuntimeError("manager is closing or closed")
+            if job in self.jobs:
+                raise ValueError("Job is already registered")
+            if job._manager_ref is not None and job._manager_ref is not self:
+                raise ValueError("Job already belongs to a different manager")
+            if self.started:
+                self._validate_job(job)
+            self.jobs.append(job)
+            job._manager_ref = self
+            job._events_lock = self._events_lock
+            self._enqueue(job)
+            self.ready = self.started
+            self._cond.notify_all()
+        return job
+
+    def add_many(self, jobs):
+        return [self.add(job) for job in jobs]
+
+    def get_job(self, job_id_or_name):
+        if isinstance(job_id_or_name, _BoundJob):
+            job_id_or_name = job_id_or_name._job
+        if isinstance(job_id_or_name, Job):
+            return job_id_or_name if job_id_or_name in self.jobs else None
+        with self._cond:
+            found = [job for job in self.jobs if job.id == job_id_or_name]
+            if found:
+                return found[0]
+            found = [job for job in self.jobs if job.name == job_id_or_name]
+            if len(found) > 1:
+                raise ValueError("ambiguous job name; use job.id")
+            return found[0] if found else None
+
+    def validate(self):
+        with self._cond:
+            if self._closed or self._closing:
+                raise RuntimeError("manager is closing or closed")
+            if not self.jobs:
+                raise ValueError("work file contains no jobs")
+            # No worker is started during validation, including when a later job is invalid.
+            for job in self.jobs:
+                if not job._frozen:
+                    self._validate_job(job)
+            if self.columns is not None and not set(self.columns).issubset(
+                self._available_columns()
             ):
-                raise ValueError(
-                    f"Resource capacity {name!r} must be a non-negative integer or callable."
+                raise ValueError("unknown display column")
+            self.ready = True
+
+    def start(self):
+        if _DEFINING.get():
+            raise ValueError(
+                "work files define jobs; remove start()/resume() and let Wave start dispatch"
+            )
+        self.validate()
+        with self._cond:
+            self.started, self.paused = True, False
+            if self._scheduler is None:
+                self._scheduler = threading.Thread(
+                    target=self._schedule, daemon=True, name="Wave-scheduler"
                 )
-        
-        self._log_dir = Path(log_dir) if log_dir else None
-        self._max_history = max_history
-        self._poll_interval = poll_interval
-
-        # Internal State tracking
-        self._jobs: list[Job] = []
-        self._used_resources: dict[str, int] = {}
-        
-        self._lock = threading.RLock()
-        self._cond = threading.Condition(self._lock)
-        
-        # Runtime state and event bus
-        self._active_workers: int = 0
-        self._stop_event = threading.Event()
-        self._paused = False
-        self._bg_thread: threading.Thread | None = None
-        self._worker_threads: set[threading.Thread] = set()
-        self._callback_context = threading.local()
-
-        self._event_bus = ThreadPoolExecutor(max_workers=2, thread_name_prefix="JobEventBus")
-        self._event_bus_shutdown = False
-        self._inflight_callbacks: int = 0
-        self._jobs_finishing: int = 0
-        
-        # Callbacks
-        self._on_queue_drained_cbs: list[Callable[['JobManager'], None]] = []
-
-    def update_config(
-        self, 
-        max_workers: int | None = None, 
-        resources: dict[str, int | Callable[[], int]] | None = None
-    ) -> None:
-        """Dynamically update manager configuration."""
-        with self._lock:
-            if max_workers is not None:
-                self._max_workers = max(1, max_workers)
-            if resources is not None:
-                for name, limit in resources.items():
-                    if not callable(limit) and (
-                        not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
-                    ):
-                        raise ValueError(
-                            f"Resource capacity {name!r} must be a non-negative integer or callable."
-                        )
-                self._resources = dict(resources)
+                self._scheduler.start()
             self._cond.notify_all()
 
-    def stats(self) -> dict[str, Any]:
-        """Return a snapshot of current system load and resources for telemetry."""
-        with self._lock:
-            capacities = {}
-            for res_name, limit_val in self._resources.items():
-                try:
-                    capacity = limit_val() if callable(limit_val) else limit_val
-                    if (
-                        not isinstance(capacity, int)
-                        or isinstance(capacity, bool)
-                        or capacity < 0
-                    ):
-                        raise ValueError("capacity must be a non-negative integer")
-                    capacities[res_name] = capacity
-                except Exception:
-                    capacities[res_name] = 0
+    def pause(self):
+        with self._cond:
+            self.paused = True
+            self._cond.notify_all()
 
-            return {
-                "workers": {"used": self._active_workers, "total": self._max_workers},
-                "resources": {
-                    k: {"used": self._used_resources.get(k, 0), "total": v}
-                    for k, v in capacities.items()
-                },
-                "jobs": {
-                    "pending": len([j for j in self._jobs if j.status == PENDING]),
-                    "running": len([j for j in self._jobs if j.status == RUNNING])
-                }
-            }
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-    def __enter__(self) -> JobManager:
+    def resume(self):
         self.start()
-        return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        if exc_type is not None:
-            self.cancel_all()
-            self.stop()
-        else:
-            self.wait()
-            self.stop()
+    def _enqueue(self, job):
+        self._counter += 1
+        self._order[job.id] = self._counter
 
-    def start(self) -> None:
-        """Start the background scheduling loop."""
-        if self._bg_thread and self._bg_thread.is_alive():
-            return
-            
-        if self._event_bus_shutdown:
-            self._event_bus = ThreadPoolExecutor(max_workers=2, thread_name_prefix="JobEventBus")
-            self._event_bus_shutdown = False
-            
-        self._stop_event.clear()
-        with self._lock:
-            self._worker_threads = {t for t in self._worker_threads if t.is_alive()}
-        self._bg_thread = threading.Thread(
-            target=self._execute_loop, daemon=True, name="JobManagerLoop"
-        )
-        self._bg_thread.start()
+    def _pending_reason(self, job):
+        if not self.started:
+            return "Ready to start" if self.ready else "Not started"
+        if self.paused:
+            return "Paused (dispatch is paused)"
+        if job._attempt.reserved:
+            return "Dispatching"
+        if self._active_workers >= self.max_workers:
+            return f"Waiting for worker slot ({self._active_workers}/{self.max_workers} busy)"
+        for name, needed in job.resources.items():
+            capacity = self.resources.get(name, 0)
+            used = self._used.get(name, 0)
+            if used + needed > capacity:
+                return f"Waiting for {name} ({used}/{capacity} in use, need {needed})"
+        return "Ready to start"
 
-    def stop(self) -> None:
-        """Stop the scheduler from dispatching new jobs."""
-        self._stop_event.set()
+    def explain_pending(self, job):
         with self._cond:
-            self._cond.notify_all()
-        if self._bg_thread:
-            self._bg_thread.join()
-        with self._lock:
-            workers = list(self._worker_threads)
-        for t in workers:
-            t.join()
-        if not self._event_bus_shutdown:
-            self._event_bus.shutdown(wait=True)
-            self._event_bus_shutdown = True
-
-    def pause(self) -> None:
-        with self._lock:
-            self._paused = True
-
-    def resume(self) -> None:
-        with self._lock:
-            self._paused = False
-            self._cond.notify_all()
-
-    def wait(self, target_id: str | uuid.UUID | None = None, timeout: float | None = None) -> bool:
-        """Wait for a target job or for the manager to become quiescent.
-
-        When ``target_id`` is provided, this waits only for that specific job to
-        reach a terminal state (``done``, ``failed``, or ``cancelled``).
-
-        When ``target_id`` is omitted, this waits for the whole manager to become
-        idle: all known jobs must be terminal, worker-side finishing logic must be
-        done, and async callbacks submitted by the manager must have drained. This
-        stronger "quiescent" wait avoids races where callbacks enqueue follow-up
-        work after the last visible job has already finished.
-        """
-        if getattr(self._callback_context, "inside_manager_callback", False):
-            raise RuntimeError(
-                "JobManager.wait() cannot be called from a manager callback "
-                "(on_done/on_fail/on_retry/on_queue_drained), because it can deadlock. "
-                "Schedule follow-up work without waiting for manager quiescence."
+            job = self.get_job(job)
+            if job is None:
+                raise ValueError("unknown Job")
+            return (
+                self._pending_reason(job)
+                if job.status is JobStatus.PENDING
+                else job.status.value
             )
-        if not self._bg_thread or not self._bg_thread.is_alive():
-            raise RuntimeError(
-                "JobManager is not running. Call start() before wait(), "
-                "or use 'with JobManager(...) as manager:'."
-            )
-            
-        if isinstance(target_id, str):
-            target_id = uuid.UUID(target_id)
-        deadline = time.monotonic() + timeout if timeout is not None else None
 
-        def _is_done() -> bool:
-            if target_id is not None:
-                j = self.get(target_id)
-                if not j:
-                    return True
-                return j.status in (DONE, FAILED, CANCELLED)
-            jobs_done = all(j.status in (DONE, FAILED, CANCELLED) for j in self._jobs)
-            # Also wait for async callbacks; they may enqueue follow-up jobs.
-            return jobs_done and self._inflight_callbacks == 0 and self._jobs_finishing == 0
-
-        try:
+    def _schedule(self):
+        while True:
+            launch = []
             with self._cond:
-                while not _is_done():
-                    if self._stop_event.is_set():
-                        break
-                    t_rem = 0.1
-                    if deadline is not None:
-                        t_rem = deadline - time.monotonic()
-                        if t_rem <= 0:
-                            return False
-                        t_rem = min(t_rem, 0.1)
-                    self._cond.wait(timeout=t_rem)
-                return True
-        except KeyboardInterrupt:
-            self.cancel_all()
-            self.stop()
-            raise
-
-    # ------------------------------------------------------------------
-    # Job Management
-    # ------------------------------------------------------------------
-    def add(self, job: Job) -> None:
-        """Enqueue a job for execution."""
-        # Static Resource Validation (Fail Fast if impossible)
-        for res_name, req_val in job.resources.items():
-            if not isinstance(req_val, int) or isinstance(req_val, bool) or req_val < 0:
-                raise ValueError(
-                    f"Resource request {res_name!r} must be a non-negative integer."
-                )
-            limit_val = self._resources.get(res_name)
-            if res_name in self._resources:
-                # If static int, we can check capability
-                if isinstance(limit_val, int) and req_val > limit_val:
-                    raise ValueError(
-                        f"Impossible Resource Request: Job requires {req_val} '{res_name}' "
-                        f"but JobManager only supports up to {limit_val}."
+                if self._closed:
+                    return
+                if not self.paused and not self._closing:
+                    pending = sorted(
+                        (
+                            j
+                            for j in self.jobs
+                            if j.status is JobStatus.PENDING and not j._attempt.reserved
+                        ),
+                        key=lambda j: (-j.priority, self._order[j.id]),
                     )
-                # If dynamic Callable, we trust it or let it fail at runtime
-            else:
-                raise ValueError(
-                    f"Job {job.name!r} requests undeclared resource {res_name!r}."
-                )
+                    for job in pending:
+                        if self._pending_reason(job) != "Ready to start":
+                            continue
+                        a = job._attempt
+                        a.reserved = True
+                        self._active_workers += 1
+                        for name, amount in job.resources.items():
+                            self._used[name] = self._used.get(name, 0) + amount
+                        thread = threading.Thread(
+                            target=self._worker,
+                            args=(job, a),
+                            daemon=True,
+                            name=f"Wave-worker-{a.id}",
+                        )
+                        self._threads.add(thread)
+                        launch.append(thread)
+                if not launch:
+                    self._cond.wait(timeout=0.1)
+            for thread in launch:
+                thread.start()
 
-        with self._lock:
-            if self._stop_event.is_set() and (self._bg_thread is None or not self._bg_thread.is_alive()):
-                raise RuntimeError(
-                    "JobManager has already been stopped and cannot accept new jobs."
-                )
-            if getattr(job, '_on_state_change_cb', None) is not None:
-                raise ValueError(f"Job with ID {job.id} is already managed by a JobManager.")
-            if any(j.id == job.id for j in self._jobs):
-                raise ValueError(f"Job with ID {job.id} is already in the manager.")
-            
-            # SRE wake-up hook injection
-            def _wake_up():
+    def _archive(self, job, attempt):
+        job._history.append(attempt)
+        while len(job._history) > self.max_history:
+            job._history.popleft()
+            job._history_truncated += 1
+
+    def _worker(self, job, a):
+        try:
+            job._execute(a)
+        finally:
+            with job._events_lock:
                 with self._cond:
-                    self._cond.notify_all()
-            job._manager_set_wakeup_cb(_wake_up)
-
-            self._jobs.append(job)
-            self._cleanup_history()
-            self._cond.notify_all()
-
-    def get(self, target_id: str | uuid.UUID) -> Job | None:
-        if isinstance(target_id, str):
-            target_id = uuid.UUID(target_id)
-        with self._lock:
-            for j in self._jobs:
-                if j.id == target_id:
-                    return j
-        return None
-
-    def cancel_all(self) -> None:
-        with self._lock:
-            for j in self._jobs:
-                if j.status in (PENDING, RUNNING):
-                    j.cancel()
-
-    # ------------------------------------------------------------------
-    # Manager Events
-    # ------------------------------------------------------------------
-    def on_queue_drained(self, cb: Callable[['JobManager'], None]) -> None:
-        """Register a callback to fire whenever the manager has no pending or running jobs."""
-        with self._lock:
-            self._on_queue_drained_cbs.append(cb)
-
-    # ------------------------------------------------------------------
-    # Query API
-    # ------------------------------------------------------------------
-    def jobs(self) -> list[Job]:
-        with self._lock:
-            return list(self._jobs)
-
-    def running(self) -> list[Job]:
-        with self._lock:
-            return [j for j in self._jobs if j.status == RUNNING]
-
-    def pending(self) -> list[Job]:
-        with self._lock:
-            return [j for j in self._jobs if j.status == PENDING]
-
-    def finished(self) -> list[Job]:
-        with self._lock:
-            return [j for j in self._jobs if j.status in (DONE, FAILED, CANCELLED)]
-
-    def jobs_by_tag(self, tag: str) -> list[Job]:
-        """Return all known jobs that have *tag* in their ``tags`` set."""
-        with self._lock:
-            return [j for j in self._jobs if tag in j.tags]
-
-    def cancel_by_tag(self, tag: str) -> int:
-        """Cancel all non-terminal jobs that have *tag* in their ``tags`` set.
-
-        Returns the number of jobs cancelled.  Cancellation is performed
-        outside the manager lock so that each job's own ``cancel()`` can
-        run without nested-lock concerns.
-        """
-        with self._lock:
-            targets = [
-                j for j in self._jobs
-                if tag in j.tags and j.status in (PENDING, RUNNING)
-            ]
-        for j in targets:
-            j.cancel()
-        return len(targets)
-
-    # ------------------------------------------------------------------
-    # Inner Execution Loop
-    # ------------------------------------------------------------------
-    def _execute_loop(self) -> None:
-        while not self._stop_event.is_set():
-            with self._cond:
-                ready_job = self._get_ready_job()
-                if ready_job is None:
-                    self._cond.wait(timeout=self._poll_interval)
-                    continue
-
-                # Dispatch job
-                self._acquire_resources(ready_job)
-                self._active_workers += 1
-                
-                if not ready_job._manager_try_start():
-                    self._release_resources(ready_job)
                     self._active_workers -= 1
-                    continue
-
-                worker = threading.Thread(
-                    target=self._run_job_wrapper_safe,
-                    args=(ready_job,),
-                    daemon=True,
-                    name=f"JobWorker-{ready_job.name}",
-                )
-                self._worker_threads.add(worker)
-                worker.start()
-
-    def _run_job_wrapper_safe(self, job: Job) -> None:
-        try:
-            self._run_job_wrapper(job)
-        except Exception as e:
-            # Last-resort safeguard: ensure the job reaches a terminal state.
-            with job._lock:
-                if job._status in (PENDING, RUNNING):
-                    job._status = FAILED
-                    if not job._error:
-                        job._error = str(e)
-            try:
-                job._manager_set_end_time()
-            except Exception:
-                logger.exception("Failed to set end time for job %r after worker error", job.name)
+                    for name, amount in job.resources.items():
+                        self._used[name] = max(0, self._used.get(name, 0) - amount)
+                    a.reserved = False
+                    retry = (
+                        not self._closed
+                        and not self._closing
+                        and not a.stop_requested
+                        and a.returncode not in (None, 0)
+                        and a.retry_index < job.max_retries
+                    )
+                    a.retry_scheduled = retry
+                    if retry:
+                        self._archive(job, a)
+                        job._attempt = job._new_attempt(
+                            a.submission_id, a.retry_index + 1
+                        )
+                        self._enqueue(job)
+                    self._cond.notify_all()
+            # Observers receive the completed attempt, even if the next one has already started.
+            job._dispatch(
+                a,
+                [
+                    (job.events.status_changed, (a.previous_status, a.status), None),
+                    (
+                        job.events.attempt_finished,
+                        (freeze(job._snapshot_attempt(a)),),
+                        None,
+                    ),
+                ],
+                final=True,
+            )
             with self._cond:
+                self._threads.discard(threading.current_thread())
                 self._cond.notify_all()
-            logger.exception("Unexpected worker error while running job %r", job.name)
-        finally:
-            with self._lock:
-                self._worker_threads.discard(threading.current_thread())
 
-    def _get_ready_job(self) -> Job | None:
-        if self._paused:
-            return None
-            
-        if self._active_workers >= self._max_workers:
-            return None
-
-        # Gather dynamic capacities
-        capacities = {}
-        for res_name, limit_val in self._resources.items():
-            try:
-                capacity = limit_val() if callable(limit_val) else limit_val
-                if (
-                    not isinstance(capacity, int)
-                    or isinstance(capacity, bool)
-                    or capacity < 0
-                ):
-                    raise ValueError("capacity must be a non-negative integer")
-                capacities[res_name] = capacity
-            except Exception as e:
-                logger.error("Error computing dynamic resource %r: %s", res_name, e)
-                capacities[res_name] = 0
-
-        # Find highest priority pending job that fits
-        pending_obs = sorted(
-            [j for j in self._jobs if j.status == PENDING],
-            key=lambda j: j.priority,
-            reverse=True
+    def _cancelled(self, job, a):
+        with self._cond:
+            self._cond.notify_all()
+        job._dispatch(
+            a,
+            [
+                (job.events.status_changed, (JobStatus.PENDING, a.status), None),
+                (
+                    job.events.attempt_finished,
+                    (freeze(job._snapshot_attempt(a)),),
+                    None,
+                ),
+            ],
+            final=True,
         )
 
-        for j in pending_obs:
-            can_fit = True
-            for res_name, req_val in j.resources.items():
-                limit = capacities.get(res_name, 0)
-                used = self._used_resources.get(res_name, 0)
-                if used + req_val > limit:
-                    can_fit = False
-                    break
-            if can_fit:
-                return j
-
-        return None
-
-    def _acquire_resources(self, job: Job) -> None:
-        # Called from _execute_loop which already holds self._cond (== self._lock).
-        for res_name, req_val in job.resources.items():
-            self._used_resources[res_name] = self._used_resources.get(res_name, 0) + req_val
-
-    def _release_resources(self, job: Job) -> None:
-        with self._lock:
-            for res_name, req_val in job.resources.items():
-                self._used_resources[res_name] = max(0, self._used_resources.get(res_name, 0) - req_val)
-            self._cond.notify_all()
-
-    def _cleanup_history(self) -> None:
-        if len(self._jobs) <= self._max_history:
-            return
-        
-        # Pop oldest finished
-        finished_list = [j for j in self._jobs if j.status in (DONE, FAILED, CANCELLED)]
-        diff = len(self._jobs) - self._max_history
-        if diff > 0 and finished_list:
-            to_remove = finished_list[:diff]
-            for j in to_remove:
-                # Remove callback hook to avoid leaks
-                j._manager_set_wakeup_cb(None)
-                self._jobs.remove(j)
-
-    def _run_job_wrapper(self, job: Job) -> None:
-        """Worker thread entrypoint for running constraints, retry logic, and cleanup."""
+    def add_log_listener(self, callback):
+        if not callable(callback):
+            raise TypeError("listener must be callable")
         with self._cond:
-            self._jobs_finishing += 1
+            self._listeners.append(callback)
 
-        try:
-            attempt = job._retry_count
-            log_file = None
-            should_retry = False
-            is_drained = False
-
+    def _publish(self, record):
+        # Presentation observers are not monitoring rules and cannot change a verdict.
+        for callback in tuple(self._listeners):
             try:
-                if self._log_dir:
-                    self._log_dir.mkdir(parents=True, exist_ok=True)
-                    path = self._log_dir / f"{job.name}_{job.id.hex[:8]}.log"
-                    log_file = open(path, "a", encoding="utf-8")
+                callback(dict(record))
+            except Exception:
+                pass
 
-                # Execute
-                try:
-                    job._execute(log_file=log_file)
-                except Exception as e:
-                    with job._lock:
-                        if job._status == RUNNING:
-                            job._status = FAILED
-                            job._error = str(e)
-
-                with job._lock:
-                    if job._status == RUNNING:
-                        if job._error is not None:
-                            job._status = FAILED
-                        else:
-                            job._status = DONE
-
-                    # Capture state for atomic cleanup outside the lock
-                    status = job._status
-                    is_cancelled = job.is_cancelled
-
-                # Retry evaluation
-                if status == FAILED and attempt < job.max_retries and not is_cancelled:
-                    job._manager_reset_for_retry()
-                    should_retry = True
+    def _drain(self, timeout=None):
+        if _CALLBACK.get() is not None:
+            raise RuntimeError("cannot block the runner from a callback")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while (
+                any(not j._attempt.finalized for j in self.jobs)
+                or self._active_workers
+                or self._threads
+            ):
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._cond.wait(min(0.1, remaining))
                 else:
-                    # Final cleanup for terminal jobs
-                    job._manager_set_end_time()
-            finally:
-                if log_file:
-                    try:
-                        log_file.close()
-                    except Exception:
-                        logger.exception("Failed to close log file for job %r", job.name)
+                    self._cond.wait(0.1)
+        return True
 
-                try:
-                    self._release_resources(job)
-                except Exception:
-                    logger.exception("Failed to release resources for job %r", job.name)
-
-                with self._lock:
-                    self._active_workers = max(0, self._active_workers - 1)
-                    if not should_retry and self._active_workers == 0 and not any(j.status in (PENDING, RUNNING) for j in self._jobs):
-                        is_drained = True
-                    self._cond.notify_all()
-
-            if should_retry:
-                # Dispatch retry callbacks before dropping out of the worker thread
-                with job._lock:
-                    attempt_num = job._retry_count
-                    retry_cbs = list(job._on_retry_cbs)
-                for cb in retry_cbs:
-                    self._submit_callback(cb, job, attempt_num)
-                return # Exit wrapper, let _execute_loop pick it up again
-
-            # Dispatch final callbacks
-            try:
-                self._dispatch_callbacks(job)
-            except Exception:
-                logger.exception("Failed to dispatch callbacks for job %r", job.name)
-
-            if is_drained:
-                cbs = list(self._on_queue_drained_cbs)
-                for cb in cbs:
-                    try:
-                        self._submit_callback(cb, self)
-                    except Exception:
-                        logger.exception("Failed to submit queue-drained callback")
-        finally:
-            with self._cond:
-                self._jobs_finishing = max(0, self._jobs_finishing - 1)
-                self._cleanup_history()
-                self._cond.notify_all()
-
-    def _dispatch_callbacks(self, job: Job) -> None:
-        with job._lock:
-            status = job._status
-            done_cbs = list(job._on_done_cbs)
-            fail_cbs = list(job._on_fail_cbs)
-            err = job._error or "Unknown failure"
-
-        if status == DONE:
-            for cb in done_cbs:
-                self._submit_callback(cb, job)
-        elif status == FAILED:
-            for cb in fail_cbs:
-                self._submit_callback(cb, job, err)
-
-    def _submit_callback(self, cb: Callable[..., Any], *args: Any) -> None:
-        """Submit a callback to the event bus and track in-flight count."""
+    def stop_all(self, *, force=False, source="user", reason=None):
+        self.pause()
         with self._cond:
-            self._inflight_callbacks += 1
+            jobs = list(self.jobs)
+        count = 0
+        # Cancel pending jobs first so freed slots can never dispatch more work during shutdown.
+        for job in sorted(jobs, key=lambda j: j.status is not JobStatus.PENDING):
+            if job.stop(force=force, source=source, reason=reason):
+                count += 1
+        return count
 
-        def _wrapped() -> None:
-            try:
-                self._callback_context.inside_manager_callback = True
-                t0 = time.perf_counter()
-                cb(*args)
-                dt = time.perf_counter() - t0
-                if dt > SLOW_ASYNC_CALLBACK_WARNING_S:
-                    logger.warning(
-                        "Slow async callback detected (took %.2fs): %r. "
-                        "Consider moving heavy work out of job/session callbacks.",
-                        dt,
-                        cb,
-                    )
-            except Exception:
-                logger.exception("Async callback raised (ignored): %r", cb)
-            finally:
-                self._callback_context.inside_manager_callback = False
-                with self._cond:
-                    self._inflight_callbacks = max(0, self._inflight_callbacks - 1)
-                    self._cond.notify_all()
+    def control(
+        self, job_id, action, *, expected_attempt, expected_submission, text=None
+    ):
+        job = self.get_job(job_id)
+        if job is None:
+            raise ValueError("unknown Job")
+        with job._events_lock:
+            a = job._guard(expected_attempt, expected_submission)
+            if action == "stop":
+                return job.stop(expected_attempt=a.id)
+            if action == "force_stop":
+                return job.stop(force=True, expected_attempt=a.id)
+            if action == "send":
+                return job.send(text, expected_attempt=a.id)
+            if action == "interrupt":
+                return job.send_ctrl_c(expected_attempt=a.id)
+            raise ValueError(f"unknown action: {action}")
 
-        try:
-            self._event_bus.submit(_wrapped)
-        except Exception:
-            # Roll back counter if submission itself fails.
+    def set_priority(
+        self, job_id, priority, *, expected_attempt=None, expected_submission=None
+    ):
+        job = self.get_job(job_id)
+        if job is None:
+            raise ValueError("unknown Job")
+        with job._events_lock:
+            a = job._guard(expected_attempt, expected_submission)
             with self._cond:
-                self._inflight_callbacks = max(0, self._inflight_callbacks - 1)
+                if a.status is not JobStatus.PENDING or a.reserved:
+                    raise ValueError("priority can change only while queued")
+                job._priority = _integer(priority, "priority")
+                job._attempt.priority = job._priority
                 self._cond.notify_all()
-            raise
+
+    def rerun(self, job_id, *, expected_attempt=None, expected_submission=None):
+        bound = job_id if isinstance(job_id, _BoundJob) else None
+        job = self.get_job(job_id)
+        if job is None:
+            raise ValueError("unknown Job")
+        with job._events_lock:
+            a = job._guard(
+                expected_attempt or (bound._attempt.id if bound else None),
+                expected_submission,
+            )
+            if not a.finalized or a.reserved:
+                raise ValueError("rerun requires a fully finished attempt")
+            with self._cond:
+                if self._closed or self._closing:
+                    raise RuntimeError("manager is closing or closed")
+                self._archive(job, a)
+                job._attempt = job._new_attempt(uuid.uuid4().hex, 0)
+                self._enqueue(job)
+                self._cond.notify_all()
+        return job
+
+    def set_max_log_lines(
+        self,
+        max_log_lines,
+        job_id=None,
+        *,
+        expected_attempt=None,
+        expected_submission=None,
+    ):
+        lines = _integer(max_log_lines, "max_log_lines", minimum=1)
+        if job_id is not None:
+            job = self.get_job(job_id)
+            if job is None:
+                raise ValueError("unknown Job")
+            return job.set_max_log_lines(
+                lines,
+                expected_attempt=expected_attempt,
+                expected_submission=expected_submission,
+            )
+        if expected_attempt is not None or expected_submission is not None:
+            raise ValueError("attempt/submission identity requires a specific Job")
+        with self._cond:
+            jobs = list(self.jobs)
+        return sum(job.set_max_log_lines(lines) for job in jobs)
+
+    def set_max_history(self, max_history):
+        limit = _integer(max_history, "max_history", minimum=1)
+        evicted = 0
+        with self._events_lock:
+            with self._cond:
+                self.max_history = limit
+                for job in self.jobs:
+                    while len(job._history) > limit:
+                        job._history.popleft()
+                        job._history_truncated += 1
+                        evicted += 1
+                self._cond.notify_all()
+        return evicted
+
+    def update_settings(
+        self, *, max_workers=None, resources=None, columns=None, max_history=None
+    ):
+        workers = (
+            None
+            if max_workers is None
+            else _integer(max_workers, "max_workers", minimum=1)
+        )
+        capacities = None if resources is None else self._capacities(resources)
+        history_limit = (
+            None
+            if max_history is None
+            else _integer(max_history, "max_history", minimum=1)
+        )
+        if columns is not None and (
+            not isinstance(columns, (list, tuple))
+            or not all(isinstance(c, str) for c in columns)
+        ):
+            raise TypeError("columns must be a sequence of names")
+        evicted_history = 0
+        with self._events_lock:
+            with self._cond:
+                workers = self.max_workers if workers is None else workers
+                capacities = self.resources if capacities is None else capacities
+                required = {name for j in self.jobs for name in j.resources}
+                if not required.issubset(capacities):
+                    raise ValueError(
+                        "cannot remove a resource referenced by a Job; set capacity to 0 to pause it"
+                    )
+                if columns is not None and not set(columns).issubset(
+                    self._available_columns()
+                ):
+                    raise ValueError("unknown display column")
+                self.max_workers, self.resources = workers, dict(capacities)
+                if columns is not None:
+                    self.columns = list(dict.fromkeys(columns))
+                if history_limit is not None:
+                    self.max_history = history_limit
+                    for job in self.jobs:
+                        while len(job._history) > history_limit:
+                            job._history.popleft()
+                            job._history_truncated += 1
+                            evicted_history += 1
+                self._cond.notify_all()
+        return {"evicted_history": evicted_history}
+
+    def _available_columns(self):
+        return list(
+            dict.fromkeys(track.name for job in self.jobs for track in job._tracks)
+        )
+
+    def snapshot(self, *, selected_job_id=None, attempt_id=None, include_logs=True):
+        with self._cond:
+            jobs = list(self.jobs)
+            result = dict(
+                paused=self.paused,
+                started=self.started,
+                ready=self.ready,
+                max_workers=self.max_workers,
+                active_workers=self._active_workers,
+                resources=dict(self.resources),
+                resources_in_use=dict(self._used),
+                max_history=self.max_history,
+                configured_columns=None if self.columns is None else list(self.columns),
+                available_columns=self._available_columns(),
+            )
+            result["columns"] = (
+                result["available_columns"]
+                if self.columns is None
+                else list(self.columns)
+            )
+            reasons = {
+                j.id: self._pending_reason(j)
+                for j in jobs
+                if j.status is JobStatus.PENDING
+            }
+        snapshots = []
+        detail = None
+        for job in jobs:
+            snapshot = job.to_snapshot_dict(
+                include_logs=include_logs
+                and job.id == selected_job_id
+                and not attempt_id
+            )
+            if job.id in reasons:
+                snapshot["pending_reason"] = reasons[job.id]
+            snapshots.append(snapshot)
+            if job.id == selected_job_id:
+                detail = job.to_snapshot_dict(
+                    include_logs=include_logs,
+                    attempt_id=attempt_id,
+                    include_monitor_definitions=True,
+                )
+                if detail["attempt_id"] == snapshot["attempt_id"]:
+                    detail["pending_reason"] = snapshot["pending_reason"]
+        result.update(jobs=snapshots, detail=detail)
+        return result
+
+    def close(self):
+        if _CALLBACK.get() is not None:
+            raise RuntimeError(
+                "cannot close the runner inside a callback; request stop instead"
+            )
+        with self._cond:
+            if self._closed:
+                return
+            self._closing = True
+            self.paused = True
+        self.stop_all(source="runner", reason="core shutdown")
+        if not self._drain(timeout=max([j.stop_timeout for j in self.jobs] + [0]) + 5):
+            self.stop_all(force=True, source="runner", reason="shutdown deadline")
+            self._drain(timeout=5)
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+        if self._scheduler and self._scheduler is not threading.current_thread():
+            self._scheduler.join(timeout=2)

@@ -8,11 +8,13 @@ Classes:
 Factory functions (preferred user-facing API):
     const(value, width)        — Create a constant MapBV.
     var(name, width[, value])  — Create a named variable MapBV.
-    concat(name, *parts)       — Create a linked MapBV from parts (MSB → LSB).
+    concat(name, *parts)       — Create a live, writable view of parts (MSB → LSB).
 """
 
 from __future__ import annotations
 
+import numbers
+import operator
 import warnings
 from abc import ABC, abstractmethod
 
@@ -24,6 +26,9 @@ from abc import ABC, abstractmethod
 class _BVBase(ABC):
     """Mixin providing &, |, ^, ~, <<, >> operators."""
     __slots__ = ()
+
+    # Make numpy scalars defer to our reflected operators (np.uint8(3) & bv).
+    __array_ufunc__ = None
 
     @property
     @abstractmethod
@@ -43,7 +48,21 @@ class _BVBase(ABC):
     def __int__(self) -> int:
         return self.value
 
+    def __bool__(self) -> bool:
+        return self.value != 0
+
     def __eq__(self, other: object) -> bool:
+        """Identity comparison (NOT value comparison); use :meth:`value_eq` for values.
+
+        MapBV is mutable and live-linked, so it is hashed by identity to stay
+        safe in sets/dicts.  Comparing with an integer raises ``TypeError``
+        because it can only ever be a mistake; use ``bv.value == n``.
+        """
+        if not isinstance(other, _BVBase) and isinstance(other, numbers.Integral):
+            raise TypeError(
+                "MapBV == int compares identity and is almost certainly a bug; "
+                "use `bv.value == n` or `bv.value_eq(n)`"
+            )
         return self is other
 
     def __hash__(self) -> int:
@@ -67,48 +86,69 @@ class _BVBase(ABC):
         return f"0b{self.value:0{self.width}b}"
 
     def __format__(self, spec: str) -> str:
-        if spec in ("x", "X", "hex"):
+        if spec == "hex":
             return self.to_hex()
-        if spec in ("b", "bin"):
+        if spec == "bin":
             return self.to_bin()
         return format(self.value, spec)
 
     # -- formatting ---------------------------------------------------------
 
-    def __and__(self, other: MapBV | MapBVExpr | int) -> "MapBVExpr":
-        w = self.width if isinstance(other, int) else max(self.width, other.width)
-        return MapBVExpr("&", [self, other], w)
+    def _binary(self, op: str, other, reflected: bool = False):
+        if isinstance(other, _BVBase):
+            width = max(self.width, other.width)
+            operand = other
+        else:
+            try:
+                operand = operator.index(other)
+            except TypeError:
+                return NotImplemented
+            width = self.width
+            if operand < 0:
+                raise ValueError(f"MapBV does not support negative operand {operand}")
+            if operand.bit_length() > width:
+                raise ValueError(
+                    f"Operand 0x{operand:X} does not fit in {width} bits for '{op}'"
+                )
+        operands = [operand, self] if reflected else [self, operand]
+        return MapBVExpr(op, operands, width)
 
-    def __rand__(self, other: int) -> "MapBVExpr":
-        return MapBVExpr("&", [other, self], self.width)
+    def _shift(self, op: str, n):
+        try:
+            n = operator.index(n)
+        except TypeError:
+            return NotImplemented
+        if n < 0:
+            raise ValueError(f"Negative shift count {n}")
+        return MapBVExpr(op, [self, n], self.width)
 
-    def __or__(self, other: MapBV | MapBVExpr | int) -> "MapBVExpr":
-        w = self.width if isinstance(other, int) else max(self.width, other.width)
-        return MapBVExpr("|", [self, other], w)
+    def __and__(self, other):
+        return self._binary("&", other)
 
-    def __ror__(self, other: int) -> "MapBVExpr":
-        return MapBVExpr("|", [other, self], self.width)
+    def __rand__(self, other):
+        return self._binary("&", other, reflected=True)
 
-    def __xor__(self, other: MapBV | MapBVExpr | int) -> "MapBVExpr":
-        w = self.width if isinstance(other, int) else max(self.width, other.width)
-        return MapBVExpr("^", [self, other], w)
+    def __or__(self, other):
+        return self._binary("|", other)
 
-    def __rxor__(self, other: int) -> "MapBVExpr":
-        return MapBVExpr("^", [other, self], self.width)
+    def __ror__(self, other):
+        return self._binary("|", other, reflected=True)
+
+    def __xor__(self, other):
+        return self._binary("^", other)
+
+    def __rxor__(self, other):
+        return self._binary("^", other, reflected=True)
 
     def __invert__(self) -> "MapBVExpr":
         return MapBVExpr("~", [self], self.width)
 
-    def __lshift__(self, n: int) -> "MapBVExpr":
-        if not isinstance(n, int):
-            return NotImplemented
-        return MapBVExpr("<<", [self, n], self.width)
+    def __lshift__(self, n):
+        return self._shift("<<", n)
 
-    def __rshift__(self, n: int) -> "MapBVExpr":
-        if not isinstance(n, int):
-            return NotImplemented
-        return MapBVExpr(">>", [self, n], self.width)
-    
+    def __rshift__(self, n):
+        return self._shift(">>", n)
+
 
 # ---------------------------------------------------------------------------
 # MapBVExpr  — logic expression node
@@ -189,6 +229,7 @@ class MapBV(_BVBase):
         low: int,
         value: int = 0,
     ) -> None:
+        value = operator.index(value)
         if parent is None or isinstance(parent, str):
             # New instance
             if low != 0:
@@ -283,7 +324,7 @@ class MapBV(_BVBase):
     def value(self) -> int:
         """Read value.  If linked, concatenate children (MSB-first)."""
         if self._parent is not None:
-            return (self._parent.value >> self._low) & self._mask
+            return (self._parent.value >> (self._low - self._parent._low)) & self._mask
         
         if self._link_bv_list:
             result = 0
@@ -297,38 +338,58 @@ class MapBV(_BVBase):
     def value(self, val: int) -> None:
         """Write value.  If linked, split and push to children.
 
-        Writing to a constant raises a warning and is ignored.
+        Writing directly to a constant (or a slice of one) raises ``TypeError``.
+        Negative values and values wider than the MapBV raise ``ValueError``.
+
+        When a constant is part of a linked bus, bits written to it are ignored
+        (like reserved/read-only bits); a ``UserWarning`` is emitted only if the
+        written bits differ from the constant.
         """
-        if self._parent is not None:
-            val &= self._mask
-            clear = ~(self._mask << self._low) & ((1 << self._parent.width) - 1)
-            self._parent.value = (self._parent.value & clear) | (val << self._low)
-        
-        elif self._kind == "CONST":
-            warnings.warn(
-                f"Attempted to write 0x{val:X} to constant MapBV "
-                f"(width={self._width}). Write ignored.",
-                UserWarning,
-                stacklevel=2,
+        if self._kind == "CONST":
+            raise TypeError(
+                f"Cannot write 0x{val:X} to a constant MapBV (width={self._width})."
             )
-        
+
+        val = operator.index(val)
+        if val < 0:
+            raise ValueError(f"MapBV does not support negative values, got {val}")
+        if val > self._mask:
+            raise ValueError(
+                f"Value 0x{val:X} out of bounds for {self._width}-bit MapBV "
+                f"(max 0x{self._mask:X})"
+            )
+        if self._parent is not None:
+            rel = self._low - self._parent._low
+            clear = ~(self._mask << rel) & self._parent._mask
+            self._parent.value = (self._parent.value & clear) | (val << rel)
+        elif self._link_bv_list:
+            offset = 0
+            for child in reversed(self._link_bv_list):
+                child._bus_write((val >> offset) & child._mask)
+                offset += child.width
         else:
-            val &= self._mask
-            if self._link_bv_list:
-                offset = 0
-                for child in reversed(self._link_bv_list):
-                    child_mask = (1 << child.width) - 1
-                    child.value = (val >> offset) & child_mask
-                    offset += child.width
-            else:
-                self._raw_value = val
+            self._raw_value = val
+
+    def _is_const_backed(self) -> bool:
+        node = self
+        while node._parent is not None:
+            node = node._parent
+        return node._kind == "CONST"
+
+    def _bus_write(self, val: int) -> None:
+        """Write from a parent bus: constant bits are ignored, warn if they differ."""
+        if self._is_const_backed():
+            if val != self.value:
+                warnings.warn(
+                    f"Write of 0x{val:X} to constant bits of {self._name} "
+                    f"(width={self._width}, value=0x{self.value:X}) ignored.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+            return
+        self.value = val
 
     # -- linking ------------------------------------------------------------
-
-    def _collect_linked(self, visited: set) -> None:
-        for child in self._link_bv_list:
-            visited.add(id(child))
-            child._collect_linked(visited)  # pylint: disable=protected-access
 
     def _write_targets(self) -> list[tuple[int, int] | None]:
         """Return underlying writable bits in LSB-first order."""
@@ -345,28 +406,18 @@ class MapBV(_BVBase):
             ]
         return [(id(self), bit) for bit in range(self._width)]
 
-    def link(self, *parts: MapBV, _force: bool = False) -> None:
-        """Define this MapBV as a concatenation of *parts* (MSB → LSB order).
+    def _link(self, *parts: MapBV) -> None:
+        """Make this (fresh, unlinked) VAR a live view of *parts* (MSB → LSB).
 
-        The total width of all parts must equal ``self.width``.
-        Re-linking a MapBV that is already linked emits a warning.
-
-        Only valid on VAR MapBVs. Calling this on a CONST or SLICE raises
-        TypeError; create an explicit VAR to represent the mapping instead.
+        Internal: use :func:`concat`.  Parts must already exist, so links can
+        never form a cycle.
         """
-        if self._kind != "VAR":
-            raise TypeError(
-                f"Cannot call link() on a {self._kind} MapBV; only VAR MapBVs can be linked."
-            )
-
         for p in parts:
-            reachable: set[int] = set()
-            p._collect_linked(reachable)    # pylint: disable=protected-access
-            if id(self) in reachable or id(p) == id(self):
-                raise ValueError(
-                    f"Circular link detected: '{self._name}' cannot link to '{p.name}'"
+            if not isinstance(p, MapBV):
+                raise TypeError(
+                    f"concat() parts must be MapBV (var/const/slice/bus), "
+                    f"got {type(p).__name__}"
                 )
-        
         total = sum(p.width for p in parts)
         if total != self._width:
             raise ValueError(
@@ -376,27 +427,7 @@ class MapBV(_BVBase):
         targets = [target for p in parts for target in p._write_targets() if target is not None]
         if len(targets) != len(set(targets)):
             raise ValueError("Linked parts contain overlapping writable bits")
-        if self._link_bv_list and _force is False:
-            warnings.warn(
-                f"MapBV '{self._name}' is already linked. "
-                f"Overwriting existing link structure.",
-                UserWarning,
-                stacklevel=2,
-            )
         self._link_bv_list = list(parts)
-
-
-    def detach(self) -> None:
-        """Detach the link structure, snapshotting the current value.
-
-        After detaching, the MapBV holds its last computed composite value
-        as a standalone raw value and is no longer connected to any parts.
-        Does nothing if the MapBV is not linked.
-        """
-        if not self._link_bv_list:
-            return
-        self._raw_value = self.value
-        self._link_bv_list = []
 
     # -- slicing ------------------------------------------------------------
 
@@ -405,13 +436,23 @@ class MapBV(_BVBase):
         if isinstance(key, int):
             high = low = key
         elif isinstance(key, slice):
+            if key.step is not None:
+                raise ValueError("MapBV slices do not support a step: use bv[high:low]")
             high, low = key.start, key.stop
         else:
             raise TypeError("MapBV indexing requires int or slice, e.g. bv[7:0] or bv[3]")
         
         if high is None or low is None:
             raise ValueError("Both high and low must be specified in slice: bv[high:low]")
+        if high < low:
+            raise IndexError(
+                f"Slice [{high}:{low}] is reversed: write bv[high:low] with high >= low"
+            )
         return MapBV(self, high, low)
+
+    def __setitem__(self, key: int | slice, val: int) -> None:
+        """``bv[high:low] = n`` / ``bv[bit] = n`` writes through to this MapBV."""
+        self[key].value = val
 
     # -- symbolic eval ------------------------------------------------------
 
@@ -426,8 +467,7 @@ class MapBV(_BVBase):
 
         if self._parent is not None:
             parent_val = self._parent.eval(ctx)
-            mask = (1 << self._width) - 1
-            return (parent_val >> self._low) & mask
+            return (parent_val >> (self._low - self._parent.low)) & self._mask
     
         if self._link_bv_list:
             result = 0
@@ -437,7 +477,12 @@ class MapBV(_BVBase):
 
         # Try name key; fall back to current value
         if self._name in ctx:
-            return ctx[self._name] & self._mask
+            v = operator.index(ctx[self._name])
+            if not 0 <= v <= self._mask:
+                raise ValueError(
+                    f"ctx value {v} for '{self._name}' does not fit in {self._width} bits"
+                )
+            return v
 
         return self._raw_value
 
@@ -456,7 +501,8 @@ class MapBV(_BVBase):
               [3:2] 0x00  <- Constant
               [1:0] 0x02  <- REG1[1:0]
         """
-        header = f"{self.name}[{self.high}:{self.low}] ({self.to_hex()})"
+        base = self.name if self._kind == "SLICE" else f"{self.name}[{self.high}:{self.low}]"
+        header = f"{base} ({self.to_hex()})"
         if not self._link_bv_list:
             return header + "\n  (no link)"
 
@@ -482,24 +528,28 @@ class MapBV(_BVBase):
 def const(value: int, width: int) -> MapBV:
     """Create a constant (immutable) MapBV.
 
-    Mirrors the old ``MapBV(0xFF, 8)`` interface. Value is automatically
-    masked to *width* bits.
+    Mirrors the old ``MapBV(0xFF, 8)`` interface. A value that does not fit
+    in *width* bits raises ``ValueError``.
 
     Usage::
 
         import rpkbin.mapbv as mbv
         padding = mbv.const(0, 2)       # 2-bit zero constant
-        mask    = mbv.const(0xFF, 4)    # value auto-masked → 0xF
+        mask    = mbv.const(0xF, 4)     # 0xFF would raise ValueError
 
     Args:
-        value: Integer value (masked to *width* bits automatically).
+        value: Non-negative integer that fits in *width* bits.
         width: Bit width (must be > 0).
 
     Returns:
         A ``MapBV`` with ``kind == "CONST"``.
     """
-    masked = value & ((1 << width) - 1)
-    return MapBV(None, width - 1, 0, value=masked)
+    if width <= 0:
+        raise ValueError(f"width must be > 0, got {width}")
+    value = operator.index(value)
+    if value < 0:
+        raise ValueError(f"MapBV does not support negative values, got {value}")
+    return MapBV(None, width - 1, 0, value=value)
 
 
 def var(name: str, width: int, value: int = 0) -> MapBV:
@@ -519,13 +569,16 @@ def var(name: str, width: int, value: int = 0) -> MapBV:
     Returns:
         A ``MapBV`` with ``kind == "VAR"``.
     """
+    if width <= 0:
+        raise ValueError(f"width must be > 0, got {width}")
     return MapBV(name, width - 1, 0, value)
 
 
 def concat(name: str, *parts: MapBV) -> MapBV:
     """Create a new linked MapBV by concatenating *parts* (MSB → LSB).
 
-    Automatically computes the total width from parts.
+    Automatically computes the total width from parts.  Parts are fixed at
+    creation; to get a different mapping, create another ``concat``.
     The resulting MapBV value is always derived live from its parts;
     writing to it distributes bits back to each part.
 
@@ -541,7 +594,14 @@ def concat(name: str, *parts: MapBV) -> MapBV:
     Returns:
         A ``MapBV`` with ``kind == "VAR"`` and ``is_linked == True``.
     """
+    if not parts:
+        raise ValueError("concat() requires at least one part")
+    for p in parts:
+        if not isinstance(p, MapBV):
+            raise TypeError(
+                f"concat() parts must be MapBV (var/const/slice/bus), got {type(p).__name__}"
+            )
     total = sum(p.width for p in parts)
     new_bv = MapBV(name, total - 1, 0)
-    new_bv.link(*parts)
+    new_bv._link(*parts)
     return new_bv

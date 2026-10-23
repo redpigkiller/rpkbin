@@ -1,26 +1,27 @@
-# rpkbin documentation
+# rpkbin Documentation / 文件中心
 
-Use this page to choose a short module entry point. The linked reference pages keep the detailed API, recipes, and limitations out of the main README.
+Welcome to the documentation for **rpkbin**. Please select your preferred language:
 
-## Start here
+歡迎來到 **rpkbin** 文件中心，請選擇您的語言：
 
-| Area | Entry point | What it covers |
-| --- | --- | --- |
-| Bit/register views | [MapBV](mapbv/README.md) | Register maps, slices, packing, and bit-level access |
-| Fixed-point simulation | [NumBV](numbv/README.md) | Bit-true scalar, vector, and pipeline arithmetic |
-| Control-flow analysis | [CFG](cfg/README.md) | Graph construction, dominance, and DOT export |
-| Spreadsheet extraction | [Excel Extractor](excel_extractor/README.md) | Template-driven workbook extraction |
-| Concurrent jobs | [Job Manager](job_manager/README.md) | Function, shell, and lifecycle-managed jobs |
-| Progress reporting | [StageTracker](utils/README.md) | Lightweight stage and progress reporting |
-| Observable workflows | [Wave](wave/README.md) | CLI, parser, hooks, PTY jobs, and TUI/headless runs |
-| Compiler backend | [Codegen](codegen/README.md) | HIR/LIR validation, lowering, rewrites, and pseudo-ASM |
-| Debugger integration | [Debug & DAP](debug/README.md) | Target-neutral debugger adapters and a stdio DAP server |
+- **[繁體中文 (Traditional Chinese)](zh/README.md)**
+  - [Wave 工作排程與監控](zh/wave/README.md)
+  - [MapBV 硬體位元欄位工具](zh/mapbv/README.md)
+  - [TablePack 表格壓縮編碼工具](zh/tablepack/README.md)
+  - [rpk-calc 工程與定點數計算](zh/calc/README.md)
+- **[English](en/README.md)**
+  - [Wave Command Scheduler & Monitor](en/wave/README.md)
+  - [MapBV Bitfield Library](en/mapbv/README.md)
+  - [TablePack Table Codec](en/tablepack/README.md)
+  - [rpk-calc Engineering and FXP Calculator](en/calc/README.md)
 
-Cross-cutting references:
+---
 
-- [Architecture](architecture.md)
-- [CLI reference](cli-reference.md)
-- [Syntax reference](syntax-reference.md)
-- [Traditional Chinese documentation](README_zh.md)
+## Tools Overview / 工具概覽
 
-Every module entry point has a matching `_zh.md` page. The longer `*.md` pages in each directory are the implementation and API references.
+| Tool / 工具 | Purpose / 用途 | Interfaces / 介面 |
+| :--- | :--- | :--- |
+| **Wave** | Python-defined local command scheduler, live stdout/stderr parsing, multi-check verdicts, and bounded history. / 以 Python 定義本機命令排程，即時解析輸出、多重 check 驗收與有界歷史管理。 | Python API, Web GUI, Headless CLI (`rpk-wave`) |
+| **MapBV** | Lightweight bitvector library for register slicing, live bidirectional views, bus concatenation, and symbolic evaluation. / 輕量級硬體暫存器位元欄位工具，支援切片雙向連動、bus 串接與符號求值。 | Python API (`rpkbin.mapbv`) |
+| **TablePack** | Schema-driven codec that packs a table of rows into compact bytes and restores it exactly; pure library, never reads files. / 以 schema 驅動的表格編解碼工具，把資料列打包成緊湊位元組並完整還原；純函式庫，不讀取檔案。 | Python API (`rpkbin.tablepack`) |
+| **rpk-calc** | Interactive Python workspace for NumPy and fixed-point calculations, with GUI inspection and editing. / 互動式 Python 數值與定點數工作區，提供 GUI 檢視與編輯。 | GUI and headless CLI (`rpk-calc`) |

@@ -1,0 +1,342 @@
+"""Theme palette and QSS stylesheet generator for rpk-calc (Dark & Light themes)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+
+from PySide6.QtGui import QColor, QPalette
+
+from ..core.config import CalcConfig
+
+
+@dataclass(frozen=True)
+class ThemePalette:
+    name: str
+    bg_main: str
+    bg_panel: str
+    bg_header: str
+    bg_input: str
+    bg_hover: str
+    bg_selected: str
+    border: str
+    border_focus: str
+    text_primary: str
+    text_secondary: str
+    text_muted: str
+    accent: str
+    accent_bg: str
+    danger: str
+    danger_bg: str
+    warning: str
+    warning_bg: str
+    success: str
+    success_bg: str
+
+
+DARK_PALETTE = ThemePalette(
+    name="dark",
+    bg_main="#0f141c",
+    bg_panel="#151c28",
+    bg_header="#1b2434",
+    bg_input="#0b1017",
+    bg_hover="#232f44",
+    bg_selected="#1e3a5f",
+    border="#28344a",
+    border_focus="#38bdf8",
+    text_primary="#e2e8f0",
+    text_secondary="#94a3b8",
+    text_muted="#64748b",
+    accent="#38bdf8",
+    accent_bg="#0c2d48",
+    danger="#f87171",
+    danger_bg="#3b181e",
+    warning="#fbbf24",
+    warning_bg="#362812",
+    success="#34d399",
+    success_bg="#102e25",
+)
+
+LIGHT_PALETTE = ThemePalette(
+    name="light",
+    bg_main="#f1f5f9",
+    bg_panel="#ffffff",
+    bg_header="#f8fafc",
+    bg_input="#ffffff",
+    bg_hover="#e2e8f0",
+    bg_selected="#dbeafe",
+    border="#cbd5e1",
+    border_focus="#0284c7",
+    text_primary="#0f172a",
+    text_secondary="#475569",
+    text_muted="#64748b",
+    accent="#0284c7",
+    accent_bg="#e0f2fe",
+    danger="#dc2626",
+    danger_bg="#fee2e2",
+    warning="#9a6700",
+    warning_bg="#fef3c7",
+    success="#047857",
+    success_bg="#d1fae5",
+)
+
+
+def get_palette(theme_name: str = "dark") -> ThemePalette:
+    return LIGHT_PALETTE if theme_name.lower() == "light" else DARK_PALETTE
+
+
+def qss_family(family: str) -> str:
+    return '"' + family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ") + '"'
+
+
+def scaled_px(value: int, cfg: CalcConfig) -> int:
+    """Scale fixed control sizes with both layout zoom and chosen font metrics."""
+    return max(1, round(value * cfg.ui_scale / 100 * max(cfg.ui_font_size, cfg.code_font_size) / 10))
+
+
+def qt_palette(p: ThemePalette) -> QPalette:
+    result = QPalette()
+    for role, color in (
+        (QPalette.ColorRole.Window, p.bg_panel), (QPalette.ColorRole.WindowText, p.text_primary),
+        (QPalette.ColorRole.Base, p.bg_input), (QPalette.ColorRole.AlternateBase, p.bg_main),
+        (QPalette.ColorRole.Text, p.text_primary), (QPalette.ColorRole.Button, p.bg_header),
+        (QPalette.ColorRole.ButtonText, p.text_primary), (QPalette.ColorRole.Highlight, p.bg_selected),
+        (QPalette.ColorRole.HighlightedText, p.text_primary), (QPalette.ColorRole.ToolTipBase, p.bg_header),
+        (QPalette.ColorRole.ToolTipText, p.text_primary), (QPalette.ColorRole.PlaceholderText, p.text_muted),
+    ):
+        result.setColor(role, QColor(color))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
+        result.setColor(QPalette.ColorGroup.Disabled, role, QColor(p.text_muted))
+    return result
+
+
+def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
+    """Build the application-wide Qt Stylesheet from a ThemePalette."""
+    cfg = cfg or CalcConfig()
+    style = f"""
+    QMainWindow, QDialog {{
+        background-color: {p.bg_main};
+        color: {p.text_primary};
+        font-family: "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+        font-size: 13px;
+    }}
+    QWidget {{
+        background-color: {p.bg_panel};
+        color: {p.text_primary};
+        font-family: "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+        font-size: 13px;
+    }}
+    QScrollArea, QScrollArea > QWidget > QWidget {{
+        background-color: {p.bg_panel};
+    }}
+    QHeaderView, QTableCornerButton::section {{
+        background-color: {p.bg_header};
+        border: none;
+    }}
+    QLabel {{ background-color: transparent; }}
+    QFrame#PanelFrame {{
+        background-color: {p.bg_panel};
+        border: 1px solid {p.border};
+        border-radius: 6px;
+    }}
+    QFrame#PanelHeader {{
+        background-color: {p.bg_header};
+        border-bottom: 1px solid {p.border};
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+    }}
+    QLabel#PanelTitle {{
+        font-weight: 600;
+        font-size: 12px;
+        color: {p.text_secondary};
+        letter-spacing: 0.4px;
+    }}
+    QLineEdit, QPlainTextEdit, QComboBox {{
+        background-color: {p.bg_input};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-family: "Cascadia Mono", "Consolas", monospace;
+        selection-background-color: {p.accent};
+        selection-color: {p.bg_input};
+    }}
+    QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{
+        border: 1px solid {p.border_focus};
+    }}
+    QLineEdit[readOnly="true"] {{
+        background-color: {p.bg_header};
+        color: {p.text_secondary};
+    }}
+    QToolButton, QPushButton {{
+        background-color: transparent;
+        color: {p.text_secondary};
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 4px 6px;
+    }}
+    QToolButton:hover, QPushButton:hover {{
+        background-color: {p.bg_hover};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
+    }}
+    QToolButton[calcRole="iconButton"] {{ padding: 0px; }}
+    QToolButton:focus, QPushButton:focus {{ border: 1px solid {p.border_focus}; }}
+    QToolButton:disabled, QPushButton:disabled {{ color: {p.text_muted}; }}
+    QToolButton:checked, QPushButton:checked {{
+        background-color: {p.accent_bg};
+        color: {p.accent};
+        border: 1px solid {p.accent};
+    }}
+    QTableWidget, QTableView {{
+        background-color: {p.bg_panel};
+        alternate-background-color: {p.bg_main};
+        gridline-color: {p.border};
+        border: none;
+        selection-background-color: {p.bg_selected};
+        selection-color: {p.text_primary};
+        font-family: "Cascadia Mono", "Consolas", monospace;
+        font-size: 12px;
+    }}
+    QHeaderView::section {{
+        background-color: {p.bg_header};
+        color: {p.text_secondary};
+        border: none;
+        border-right: 1px solid {p.border};
+        border-bottom: 1px solid {p.border};
+        padding: 5px 8px;
+        font-weight: 600;
+        font-size: 12px;
+    }}
+    QTabWidget::pane {{
+        border: 1px solid {p.border};
+        background-color: {p.bg_panel};
+        border-radius: 4px;
+    }}
+    QTabBar::tab {{
+        background-color: {p.bg_header};
+        color: {p.text_secondary};
+        border: 1px solid {p.border};
+        border-bottom: none;
+        padding: 6px 14px;
+        margin-right: 2px;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+        font-weight: 600;
+    }}
+    QTabBar::tab:selected {{
+        background-color: {p.bg_panel};
+        color: {p.text_primary};
+        border-top: 1px solid {p.accent};
+    }}
+    QMenu {{
+        background-color: {p.bg_panel};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
+        padding: 4px;
+    }}
+    QMenuBar {{
+        background-color: {p.bg_header}; color: {p.text_primary};
+        border-bottom: 1px solid {p.border}; padding: 2px;
+    }}
+    QMenuBar::item {{ padding: 4px 10px; background: transparent; }}
+    QMenuBar::item:selected {{ background: {p.bg_selected}; color: {p.accent}; }}
+    QMenu::item {{
+        padding: 5px 22px 5px 12px;
+        border-radius: 3px;
+    }}
+    QMenu::item:selected {{
+        background-color: {p.bg_selected};
+        color: {p.accent};
+    }}
+    QSplitter::handle {{
+        background-color: {p.border};
+    }}
+    QScrollBar:vertical {{
+        background: {p.bg_main};
+        width: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {p.border};
+        min-height: 20px;
+        border-radius: 4px;
+    }}
+    QScrollBar:horizontal {{
+        background: {p.bg_main};
+        height: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {p.border};
+        min-width: 20px;
+        border-radius: 4px;
+    }}
+    QScrollBar::add-line, QScrollBar::sub-line {{
+        width: 0px;
+        height: 0px;
+        border: none;
+        background: transparent;
+    }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+    QAbstractScrollArea::corner {{ background: {p.bg_panel}; }}
+    """
+    style += f"""
+    QLabel[calcRole="brand"] {{ font-weight: 600; font-size: 14px; color: {p.accent}; }}
+    QLabel[calcRole="secondary"] {{ color: {p.text_secondary}; font-size: 12px; }}
+    QLabel[calcRole="muted"] {{ color: {p.text_muted}; font-size: 11px; }}
+    QLabel[calcRole="target"] {{ font-weight: 700; color: {p.accent}; }}
+    QLabel[calcRole="badge"] {{ color: {p.text_secondary}; background: {p.bg_input};
+        border: 1px solid {p.border}; border-radius: 4px; padding: 2px 8px; font-size: 11px; }}
+    QFrame[calcRole="valueCard"] {{ background: {p.bg_header}; border: 1px solid {p.border}; border-radius: 5px; }}
+    QFrame[calcRole="valueCard"][pinned="true"] {{ border-color: {p.border_focus}; }}
+    QLabel[calcRole="cardTitle"] {{ font-size: 11px; font-weight: 600; color: {p.text_secondary}; border: none; }}
+    QLabel[calcRole="error"] {{ color: {p.danger}; background: {p.danger_bg};
+        padding: 4px 8px; border-radius: 4px; font-size: 11px; }}
+    QLabel[calcRole="status"] {{ color: {p.text_secondary}; font-size: 11px; padding: 2px 6px; border-radius: 3px; }}
+    QLabel[calcRole="status"][statusKind="saturated"] {{ color: {p.danger}; background: {p.danger_bg}; border: 1px solid {p.danger}; font-weight: 700; }}
+    QLabel[calcRole="status"][statusKind="quant_err"] {{ color: {p.warning}; background: {p.warning_bg}; border: 1px solid {p.warning}; }}
+    QLabel[calcRole="status"][statusKind="exact"] {{ color: {p.success}; background: {p.success_bg}; }}
+    QScrollArea[calcRole="bits"] {{ background: {p.bg_input}; border: 1px solid {p.border}; border-radius: 5px; }}
+    QLabel[calcRole="bitIndex"] {{ font-size: 10px; color: {p.text_secondary}; }}
+    QLabel[calcRole="bitIndex"][bitRole="sign"] {{ color: {p.danger}; font-weight: 700; }}
+    QLabel[calcRole="bitIndex"][bitRole="frac"] {{ color: {p.accent}; }}
+    QLabel[calcRole="bitIndex"][bitRole="exponent"] {{ color: {p.warning}; }}
+    QLabel[calcRole="radix"] {{ font-size: 18px; font-weight: 900; color: {p.warning}; padding: 10px 2px 0px 2px; }}
+    QPushButton[calcRole="bit"] {{ background: {p.bg_header}; color: {p.text_secondary};
+        border: 1px solid {p.border}; border-radius: 4px; padding: 0px; font-weight: 700; }}
+    QPushButton[calcRole="bit"][bitRole="sign"] {{ border-color: {p.danger}; }}
+    QPushButton[calcRole="bit"][bitValue="1"][bitRole="sign"] {{ background: {p.danger_bg}; color: {p.danger}; }}
+    QPushButton[calcRole="bit"][bitValue="1"][bitRole="frac"] {{ background: {p.accent_bg}; color: {p.accent}; border-color: {p.accent}; }}
+    QPushButton[calcRole="bit"][bitValue="1"][bitRole="int"] {{ background: {p.warning_bg}; color: {p.text_primary}; border-color: {p.warning}; }}
+    QPushButton[calcRole="bit"][bitValue="1"][bitRole="exponent"] {{ background: {p.warning_bg}; color: {p.text_primary}; border-color: {p.warning}; }}
+    QPushButton[calcRole="bit"]:hover {{ border-color: {p.text_primary}; }}
+    QFrame[calcRole="custom"] {{ background: {p.bg_header}; border: 1px solid {p.border}; border-radius: 5px; }}
+    QLabel[calcRole="preview"] {{ background: {p.bg_input}; color: {p.accent}; border: 1px solid {p.border}; border-radius: 4px; padding: 8px; }}
+    QPushButton[calcRole="primary"] {{ background: {p.accent_bg}; color: {p.accent}; border: 1px solid {p.accent}; font-weight: 700; padding: 6px 14px; }}
+    QToolTip {{ color: {p.text_primary}; background: {p.bg_header}; border: 1px solid {p.border}; }}
+    """
+    # Base stylesheet dimensions are authored at 100%, with a 10pt UI font.
+    style = re.sub(r"font-size: (\d+)px", lambda m: f"font-size: {round(int(m[1]) * cfg.ui_font_size / 10)}px", style)
+    style = re.sub(r"(\d+(?:\.\d+)?)px", lambda m: f"{max(1, round(float(m[1]) * cfg.ui_scale / 100)) if float(m[1]) else 0}px", style)
+    style = style.replace('"Segoe UI", "Microsoft JhengHei UI", sans-serif', qss_family(cfg.ui_font_family))
+    style = style.replace('"Cascadia Mono", "Consolas", monospace', qss_family(cfg.code_font_family))
+    code_size = cfg.code_font_size * cfg.ui_scale / 100
+    style += f"""
+    QLineEdit, QPlainTextEdit, QTableWidget, QTableView, QWidget[calcCode="true"] {{
+        font-family: {qss_family(cfg.code_font_family)}; font-size: {code_size:g}pt;
+    }}
+    """
+    return style
+
+
+def set_role(widget, role: str, *, code=False):
+    widget.setProperty("calcRole", role)
+    if code:
+        widget.setProperty("calcCode", True)
+
+
+def repolish(widget):
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()

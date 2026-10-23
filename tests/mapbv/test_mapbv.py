@@ -4,10 +4,8 @@ This test suite rigorously validates the behavior of MapBV variables, constants,
 slices, and concatenated variables, as well as logic operations and symbolic evaluation.
 """
 
-import warnings
-
 import pytest
-from rpkbin.mapbv import MapBV, const, var, concat
+from rpkbin.mapbv import const, var, concat
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -37,10 +35,11 @@ class TestFactory:
         assert c.value == 0
         assert c.is_const
 
-    def test_const_value_masked(self):
-        # const() auto-masks the value to the specified width
-        c = const(0xFF, 4)
-        assert c.value == 0xF
+    def test_const_value_out_of_range(self):
+        # const() rejects values that do not fit the width
+        with pytest.raises(ValueError, match="out of bounds"):
+            const(0xFF, 4)
+        assert const(0xF, 4).value == 0xF
 
     def test_concat_creation(self):
         reg = var("REG", 8, 0xAB)
@@ -92,10 +91,9 @@ class TestLinkingAndDetach:
         reg0 = var("REG0", 16, 0x5)
         reg1 = var("REG1", 16, 0x2)
         pad = const(0, 4)
-        sram = var("SRAM", 12)
 
-        # LINK: reg0[3:0] (4) + pad (4) + reg1[3:0] (4) = 12 bits
-        sram.link(reg0[3:0], pad, reg1[3:0])
+        # CONCAT: reg0[3:0] (4) + pad (4) + reg1[3:0] (4) = 12 bits
+        sram = concat("SRAM", reg0[3:0], pad, reg1[3:0])
         assert sram.is_linked
         # 0x5 << 8 | 0x0 << 4 | 0x2 = 0x502
         assert sram.value == 0x502
@@ -103,8 +101,7 @@ class TestLinkingAndDetach:
     def test_link_write_distributes(self):
         reg0 = var("REG0", 16)
         reg1 = var("REG1", 16)
-        sram = var("SRAM", 8)
-        sram.link(reg0[3:0], reg1[3:0])
+        sram = concat("SRAM", reg0[3:0], reg1[3:0])
 
         sram.value = 0xAB
         assert reg0.value == 0xA
@@ -114,25 +111,6 @@ class TestLinkingAndDetach:
         reg = var("REG", 4)
         with pytest.raises(ValueError, match="overlapping"):
             concat("DUP", reg[3:0], reg[3:0])
-
-    def test_detach_snapshots_value(self):
-        reg = var("REG", 8, 0x42)
-        sram = var("SRAM", 8)
-        sram.link(reg)
-
-        assert sram.value == 0x42
-        sram.detach()
-        assert not sram.is_linked
-        assert sram.value == 0x42
-
-        # Changing source no longer affects sram
-        reg.value = 0xFF
-        assert sram.value == 0x42
-
-    def test_detach_noop_if_not_linked(self):
-        a = var("A", 8, 0x42)
-        a.detach()
-        assert a.value == 0x42
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -182,11 +160,11 @@ class TestLogicAndShiftOps:
         assert (0x0F | a).value_eq(0xAF)
         assert (0x0F ^ a).value_eq(0xA4)
 
-    def test_oversized_int_operands_are_masked_consistently(self):
+    def test_oversized_int_operands_rejected(self):
         a = var("A", 4, 0xA)
-        assert (a & 0x100).value_eq(0)
-        assert (a | 0x100).value_eq(0xA)
-        assert (a ^ 0x100).value_eq(0xA)
+        for expr in (lambda: a & 0x100, lambda: a | 0x100, lambda: a ^ 0x100):
+            with pytest.raises(ValueError, match="does not fit"):
+                expr()
 
     def test_slice_ops(self):
         a = var("A", 16, 0xABCD)
@@ -290,7 +268,7 @@ class TestFormattingAndConversion:
     def test_format_specifiers(self):
         a = var("A", 8, 0xAB)
         assert f"{a:hex}" == "0xAB"
-        assert f"{a:x}" == "0xAB"
+        assert f"{a:x}" == "ab"
         assert f"{a:bin}" == "0b10101011"
         assert f"{a:d}" == "171"
 
@@ -311,52 +289,19 @@ class TestExceptionsAndWarnings:
 
     def test_invalid_slice_range(self):
         reg = var("R", 8)
-        with pytest.raises(IndexError, match="out of bounds"):
-            reg[2:5]  # high < low is technically valid in syntax but we check parent bounds in MapBV logic
+        with pytest.raises(IndexError, match="reversed"):
+            reg[2:5]
 
         with pytest.raises(IndexError, match="out of bounds"):
             reg[8:0]  # out of 8-bit width range (high=7 max)
 
-    def test_link_width_mismatch(self):
-        sram = var("SRAM", 8)
-        a = var("A", 4)
-        with pytest.raises(ValueError, match="width mismatch"):
-            sram.link(a)
-
-    def test_link_circular_reference(self):
-        a = var("A", 8)
-        b = var("B", 8)
-        with pytest.raises(ValueError, match="Circular link"):
-            a.link(b)
-            # Cannot link b back to a
-            b.link(a)
-
-    def test_slice_link_not_supported(self):
-        reg = var("REG", 16)
-        with pytest.raises(TypeError, match="Cannot call link.*on a SLICE"):
-            reg[7:0].link(var("A", 8))
-
-    def test_const_link_not_supported(self):
-        with pytest.raises(TypeError, match="only VAR"):
-            const(0, 8).link(var("A", 8))
-
-    def test_write_to_const_warns(self):
+    def test_write_to_const_raises(self):
         c = const(0x0, 4)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with pytest.raises(TypeError, match="constant"):
             c.value = 0xF
-            assert len(w) == 1
-            assert "constant" in str(w[0].message).lower()
         # Value remains unchanged
         assert c.value == 0x0
 
-    def test_relink_warns(self):
-        sram = var("SRAM", 8)
-        a = var("A", 8)
-        b = var("B", 8)
-        sram.link(a)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            sram.link(b)
-            assert len(w) == 1
-            assert "already linked" in str(w[0].message).lower()
+    def test_no_link_or_detach(self):
+        assert not hasattr(var("A", 4), "link")
+        assert not hasattr(var("A", 4), "detach")

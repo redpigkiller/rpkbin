@@ -1,19 +1,19 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.1.16"
-description = "Personal collection of small scripts and helpers for work."
+version = "0.2.0"
+description = "General-purpose utilities for IC design and verification workflows (MapBV, TablePack, JobManager, Wave Web GUI)."
 readme = "README.md"
 authors = [
     { name = "redpigkiller", email = "hongrunlu511@gmail.com" }
 ]
-license = { text = "MIT" }
+license = "MIT AND ISC"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.11"
 dependencies = [
-    "click>=8.3.1",
     "numpy>=1.21",
 ]
 classifiers = [
@@ -21,27 +21,15 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
 ]
 
 [project.optional-dependencies]
-jax   = ["jax>=0.4"]
-cfg   = ["networkx>=3.6.1"]
-dot   = ["pydot>=3.0"]
-excel = ["openpyxl>=3.1.5", "xlrd>=2.0.2", "rapidfuzz>=3.14.3"]
-wave  = ["textual>=8.0.2", "prompt_toolkit>=3.0.52", "rich>=14.2.0"]
-all   = [
-    "networkx>=3.6.1",
-    "pydot>=3.0",
-    "openpyxl>=3.1.5",
-    "xlrd>=2.0.2",
-    "rapidfuzz>=3.14.3",
-    "textual>=8.0.2",
-    "prompt_toolkit>=3.0.52",
-    "rich>=14.2.0"
-]
+fixed = ["apytypes>=0.5.0"]
+table = ["brotli>=1.2"]
+calc  = ["apytypes>=0.5.0", "PySide6>=6.5.0", "qtconsole>=5.7.2,<6", "ipykernel>=6.29,<8", "jupyter-client>=8.6,<9", "matplotlib>=3.8,<4"]
+all   = ["brotli>=1.2", "apytypes>=0.5.0", "PySide6>=6.5.0", "qtconsole>=5.7.2,<6", "ipykernel>=6.29,<8", "jupyter-client>=8.6,<9", "matplotlib>=3.8,<4"]
 
 [project.urls]
 Homepage   = "https://github.com/redpigkiller/rpkbin"
@@ -49,18 +37,7 @@ Repository = "https://github.com/redpigkiller/rpkbin"
 
 [project.scripts]
 rpk-wave = "rpkbin.wave.cli:main"
+rpk-calc = "rpkbin.calc.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rpkbin*"]
-
-[tool.pytest.ini_options]
-markers = [
-    "experimental: mark a test case as experimental (M2/M3 feature, may raise NotImplementedError).",
-]
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.package-data]
-"rpkbin.wave" = ["docs/*.md"]
-

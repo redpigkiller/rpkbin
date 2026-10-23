@@ -1,0 +1,118 @@
+name: MyPkg cross-platform regression
+
+on:
+  push:
+    paths: ['rpkbin/**', 'tests/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
+  pull_request:
+    paths: ['rpkbin/**', 'tests/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: '1'
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+        include:
+          # Test both the standard-library fallback and optional brotli support.
+          - python: '3.11'
+            package: .
+          - python: '3.13'
+            package: .[table]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install core and test dependencies
+        run: python -m pip install -e "${{ matrix.package }}" pytest
+      - name: Test Wave, JobManager, MapBV and TablePack
+        run: python -m pytest tests/job_manager tests/wave tests/mapbv tests/tablepack -q -ra --basetemp="${{ runner.temp }}/core-tests" --junitxml="${{ runner.temp }}/core-results.xml"
+      - name: Test internal public-sync safeguards when available
+        if: hashFiles('scripts/test_sync_to_public.py') != ''
+        run: python -m unittest discover -s scripts -p test_sync_to_public.py
+      - name: Save core test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/core-results.xml
+          retention-days: 7
+
+  calc:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Qt runtime libraries on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libopengl0
+      - name: Install Calc and test dependencies
+        run: python -m pip install -e ".[calc]" pytest
+      - name: Test Calc with offscreen Qt and real IPython kernels
+        run: python -m pytest tests/calc -q -ra --basetemp="${{ runner.temp }}/calc-tests" --junitxml="${{ runner.temp }}/calc-results.xml"
+      - name: Save Calc test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: calc-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/calc-results.xml
+          retention-days: 7
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Qt runtime libraries on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1 libopengl0
+      - run: python -m pip install build
+      # The default build flow builds the wheel from the freshly built sdist.
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check base and all-extras wheel installs outside the source tree
+        run: python tools/ci/check_wheel.py dist

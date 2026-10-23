@@ -1,15 +1,29 @@
-﻿"""job_manager sub-package — minimal, robust job scheduling."""
+"""Wave's shared external-command scheduler and monitoring vocabulary."""
 
-from rpkbin.job_manager.job import (
-    Job,
+from .model import (
+    Check,
+    CheckState,
+    Event,
+    Expect,
     JobStatus,
-    PENDING, RUNNING, DONE, FAILED, CANCELLED,
+    Report,
+    Result,
+    StopPolicy,
+    Track,
 )
-from rpkbin.job_manager.cmd_job import CmdJob
-from rpkbin.job_manager.func_job import FuncJob
-from rpkbin.job_manager.manager import JobManager
+from .job import Job
+from .manager import JobManager
 
 __all__ = [
-    "JobManager", "Job", "CmdJob", "FuncJob",
-    "JobStatus", "PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED",
+    "Job",
+    "JobManager",
+    "JobStatus",
+    "Result",
+    "Report",
+    "Expect",
+    "StopPolicy",
+    "Event",
+    "CheckState",
+    "Check",
+    "Track",
 ]

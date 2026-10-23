@@ -1,28 +1,46 @@
-"""
-wave - Job batch runner with real-time monitoring.
+"""Wave: Python work definitions, batch runner and local browser controls."""
 
-Public API:
-    session    - module-level Session singleton
-    CmdJob     - alias for WaveCmdJob (PIPE/batch/log-parser friendly)
-    FuncJob    - alias for WaveFuncJob
-    PtyJob     - alias for PtyCmdJob (PTY/interactive/fake-terminal friendly)
-    PtyCmdJob  - full class name for PtyJob
-    Hook       - Hook definition
-"""
-
-from rpkbin.wave.session import session
-from rpkbin.wave.job import WaveCmdJob as CmdJob, WaveFuncJob as FuncJob
-from rpkbin.wave.pty_job import PtyCmdJob, PtyCmdJob as PtyJob
-from rpkbin.wave.parser import RegexParser, StatefulParser
-from rpkbin.wave.hook import Hook
+from rpkbin.job_manager import (
+    Check,
+    CheckState,
+    Event,
+    Expect,
+    Job,
+    JobManager,
+    JobStatus,
+    Report,
+    Result,
+    StopPolicy,
+    Track,
+)
+from .cli import build_demo_manager, load_work_file, main, run_headless
 
 __all__ = [
-    "session",
-    "CmdJob",
-    "FuncJob",
-    "PtyJob",
-    "PtyCmdJob",
-    "Hook",
-    "RegexParser",
-    "StatefulParser",
+    "Check",
+    "CheckState",
+    "Report",
+    "Track",
+    "Event",
+    "Expect",
+    "HTML_PAGE",
+    "Job",
+    "JobManager",
+    "JobStatus",
+    "Result",
+    "StopPolicy",
+    "WaveServer",
+    "build_demo_manager",
+    "load_work_file",
+    "launch",
+    "main",
+    "run_headless",
 ]
+
+
+def __getattr__(name):
+    # Headless use and work-file imports do not initialize the browser server.
+    if name in ("HTML_PAGE", "WaveServer", "launch"):
+        from . import web
+
+        return getattr(web, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

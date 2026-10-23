@@ -1,0 +1,35 @@
+# rpkbin
+
+> Process scheduling, hardware register bitfields, table compression, and a Python engineering calculator.
+
+Use this file as an LLM routing index. Requires Python 3.11+. Standard library plus NumPy; optional extras: `fixed` (apytypes for fixed-point modeling), `table` (brotli compression for TablePack), `calc` (desktop calculator), `all`.
+
+## Documentation Index
+
+### Wave (Process Scheduler & Monitor)
+- [Wave Quickstart](docs/en/wave/README.md) ([繁中](docs/zh/wave/README.md)): First steps, work file definitions, and dual execution modes.
+- [Python Usage Scenarios](docs/en/wave/scenarios.md) ([繁中](docs/zh/wave/scenarios.md)): 8 progressive scenarios from single checks to concurrency, prompts, quotas, and retries.
+- [Web GUI Manual](docs/en/wave/gui.md) ([繁中](docs/zh/wave/gui.md)): Dashboard controls, log viewer, batch actions, and Settings modal.
+- [Python API Reference](docs/en/wave/reference/python.md) ([繁中](docs/zh/wave/reference/python.md)): `Job`, `JobManager`, enums, events, and return structures.
+- [CLI Reference](docs/en/wave/reference/cli.md) ([繁中](docs/zh/wave/reference/cli.md)): `rpk-wave` flags and exit codes (0, 1, 2, 130).
+- [Architecture & Contracts](docs/en/wave/architecture.md) ([繁中](docs/zh/wave/architecture.md)): Wave vs. JobManager responsibilities, verdict matrices, bounded memory, and process models.
+- [Troubleshooting](docs/en/wave/troubleshooting.md) ([繁中](docs/zh/wave/troubleshooting.md)): Unbuffered stdout, exit code vs. Result discrepancies, and send confirmation.
+
+### MapBV (Hardware Register Bitfields)
+- [MapBV Quickstart](docs/en/mapbv/README.md) ([繁中](docs/zh/mapbv/README.md)): Creating variables, constants, and basic slicing.
+- [Practical Scenarios](docs/en/mapbv/scenarios.md) ([繁中](docs/zh/mapbv/scenarios.md)): Live bidirectional slices, bus concatenation (`concat`), logic expression trees, and symbolic `eval()`.
+- [API Reference](docs/en/mapbv/reference.md) ([繁中](docs/zh/mapbv/reference.md)): Classes, methods, operators, and exceptions.
+
+### TablePack (Schema-driven Table Codec)
+- [TablePack Quickstart](docs/en/tablepack/README.md) ([繁中](docs/zh/tablepack/README.md)): Packing rows without a schema, describing columns, `infer` and `explain`.
+- [Usage Scenarios](docs/en/tablepack/scenarios.md) ([繁中](docs/zh/tablepack/scenarios.md)): Column types, schema sharing, column-oriented data, tuning, compressors, verification, and errors.
+- [API Reference](docs/en/tablepack/reference.md) ([繁中](docs/zh/tablepack/reference.md)): `pack`, `unpack`, `iter_unpack`, bounded decoding with `DecodeLimits`, compressor-aware `infer`, `explain`, `Schema`, column types, exceptions, and the binary format.
+
+### Calc (Python Engineering Calculator)
+- [Calc Quickstart](docs/en/calc/README.md) ([繁中](docs/zh/calc/README.md)): Variables and functions in an IPython REPL, workspace inspection, native integer/float representations, and APyFixed/APyFloat bit editing.
+- [Architecture](docs/en/calc/architecture.md) ([繁中](docs/zh/calc/architecture.md)): Kernel ownership, numeric snapshots, edit history, and build compatibility.
+
+## Project Entry Points
+- [README (English)](README.md), [README (繁體中文)](README_zh.md)
+- [Bilingual Portal](docs/README.md)
+- [pyproject.toml](pyproject.toml)
