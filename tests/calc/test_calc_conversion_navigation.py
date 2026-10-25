@@ -480,9 +480,13 @@ def test_preview_array_undo_warning_matches_actual_scope(ui, monkeypatch, array,
 
 
 @pytest.mark.parametrize("lang", ["en_US", "zh_TW"])
-def test_list_fields_align_both_edges_preserve_draft_and_reset_for_grid(ui, app, lang):
+@pytest.mark.parametrize("point_size", [7, 12])
+def test_list_fields_align_both_edges_preserve_draft_and_reset_for_grid(ui, app, lang, point_size):
     from PySide6.QtCore import QPoint
     inspector, controller, session, requests = ui
+    font = inspector.font()
+    font.setPointSize(point_size)
+    inspector.setFont(font)
     controller.config.language = lang
     controller.config.inspector_view_mode = "list"
     select(inspector, controller, session, make_fxp(1.25, "Q6.10"))
@@ -500,7 +504,9 @@ def test_list_fields_align_both_edges_preserve_draft_and_reset_for_grid(ui, app,
     editor.setText("2**-3")
     editor.setModified(True)
     editor.setCursorPosition(2)
-    inspector.resize(300, 650)
+    # A 300px panel can still fit one-line fields with compact CJK fallback fonts.
+    # Exercise a genuinely narrow panel; retain all layout and draft assertions.
+    inspector.resize(200, 650)
     for _ in range(6):
         app.processEvents()
     assert not any(c._inline for c in cards)
