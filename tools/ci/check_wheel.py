@@ -91,6 +91,14 @@ else:
     assert session.user_ns["f"].bias == 7
     journal.replay()
     assert session.user_ns["f"].to_bits() == 0x1E
+    # Artwork must also load from the installed wheel, outside the source tree.
+    from PySide6.QtWidgets import QApplication
+    from rpkbin.calc.ui.icons import application_icon
+    app = QApplication.instance() or QApplication([])
+    icon = application_icon()
+    assert not icon.isNull()
+    assert {16, 32, 256, 512} <= {size.width() for size in icon.availableSizes()}
+    assert not icon.pixmap(32, 32).isNull()
     # Verify calculation inside the REPL rather than its answer-label formatting.
     output = cli("rpk-calc", "--eval", "assert ((0x12 << 4) | 3) == 291; print('CALC_SMOKE_OK')")
     assert "CALC_SMOKE_OK" in output, output

@@ -1,10 +1,12 @@
-"""Consistent monochrome line icons rendered from SVG."""
+"""Toolbar SVG icons and packaged application artwork."""
 
 # Includes adapted Feather (MIT) and Lucide (ISC) icon geometry.
 # Copyright and license texts are in THIRD_PARTY_NOTICES.md at the repo root
 # and in the installed distribution's .dist-info/licenses directory.
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
@@ -92,6 +94,14 @@ _SVG_PATHS: dict[str, str] = {
         '<line x1="21" y1="18" x2="3" y2="18"/>'
     ),
 }
+
+
+def application_icon() -> QIcon:
+    """Load the approved calculator artwork, including native small-icon sizes."""
+    assets = Path(__file__).with_name("assets")
+    icon = QIcon(str(assets / "rpk-calc.ico"))
+    icon.addFile(str(assets / "rpk-calc.png"), QSize(512, 512))
+    return icon
 
 
 def make_icon(name: str, color: str = "#94a3b8", size: int = 16) -> QIcon:

@@ -33,7 +33,7 @@ from ..core.config import DEFAULT_CONFIG_PATH
 from ..core.session import MatrixSnapshot
 from .console_widget import CommandWindowWidget
 from .i18n import UiText, ask, tr
-from .icons import make_icon, style_icon_button
+from .icons import application_icon, make_icon, style_icon_button
 from .inspector_widget import VariableInspectorWidget
 from .matrix_editor import MatrixEditorPage
 from .numeric_display import format_numeric_text
@@ -62,6 +62,7 @@ class CalcMainWindow(QMainWindow):
         self._last_status_source = "Ready"
 
         self.setWindowTitle(tr("app_title", self.controller.config.language, keep_english_terms=self.controller.config.keep_english_terms))
+        self.setWindowIcon(application_icon())
         self.resize(1320, 820)
         self.setStyleSheet(build_stylesheet(self.palette))
         self._build_view_menu()
@@ -493,7 +494,15 @@ class CalcMainWindow(QMainWindow):
 
 def launch(argv: Sequence[str] | None = None) -> int:
     """Launch the rpk-calc desktop application."""
+    if sys.platform == "win32":
+        # Identify Calc separately from other Python processes in the taskbar.
+        import ctypes
+        set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        set_app_id.argtypes = [ctypes.c_wchar_p]
+        set_app_id.restype = ctypes.c_long
+        set_app_id("rpkbin.calc")
     app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
+    app.setWindowIcon(application_icon())
     win = CalcMainWindow()
     win.show()
     return app.exec()

@@ -42,3 +42,6 @@ rpk-calc = "rpkbin.calc.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rpkbin*"]
+
+[tool.setuptools.package-data]
+"rpkbin.calc.ui" = ["assets/*.png", "assets/*.ico"]
