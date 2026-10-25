@@ -34,42 +34,8 @@ OVERFLOW_MAP: dict[str, apy.OverflowMode] = {
 }
 
 
-def _coerce_py_number_for_apy(val: Any, ref_frac_bits: int) -> apy.APyFixed | None:
-    """Convert a plain Python int or float into an APyFixed with enough integer bits so it never wraps."""
-    if isinstance(val, (apy.APyFixed, apy.APyFixedArray)):
-        return None
-    if isinstance(val, (bool, np.bool_)):
-        return apy.APyFixed.from_number(int(val), int_bits=2, frac_bits=0)
-    if isinstance(val, (int, np.integer)):
-        iv = int(val)
-        iwl = max(2, iv.bit_length() + 1) if iv >= 0 else max(2, (iv + 1).bit_length() + 1)
-        return apy.APyFixed.from_number(iv, int_bits=iwl, frac_bits=0)
-    if isinstance(val, (float, np.floating)):
-        fv = float(val)
-        if fv == 0.0 or not math.isfinite(fv):
-            iwl = 2
-        else:
-            iwl = max(2, int(math.floor(math.log2(abs(fv)))) + 2)
-        fwl = max(0, ref_frac_bits)
-        return apy.APyFixed.from_float(fv, int_bits=iwl, frac_bits=fwl)
-    return None
-
-
-def _wrap_apy_result(res: Any) -> Any:
-    """Ensure APyFixed / APyFixedArray results remain RpkFixed / RpkFixedArray instances."""
-    if type(res) is apy.APyFixed:
-        out = RpkFixed(res.to_bits(), bits=res.bits, int_bits=res.int_bits)
-        out.hw_wl = res.bits
-        return out
-    if type(res) is apy.APyFixedArray:
-        out = RpkFixedArray(res.to_bits(), bits=res.bits, int_bits=res.int_bits)
-        out.hw_wl = res.bits
-        return out
-    return res
-
-
 class RpkFixed(apy.APyFixed):
-    """Subclass of APyFixed that preserves unsigned hardware metadata and handles Python int/float operands."""
+    """GUI metadata on APyFixed; all arithmetic is inherited unchanged from APyTypes."""
 
     is_unsigned: bool = False
     hw_wl: int = 0
@@ -81,44 +47,9 @@ class RpkFixed(apy.APyFixed):
         out.__dict__.update(copy.deepcopy(self.__dict__))
         return out
 
-    def __add__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__add__(c if c is not None else other))
-
-    def __radd__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result((c + self) if c is not None else super().__radd__(other))
-
-    def __sub__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__sub__(c if c is not None else other))
-
-    def __rsub__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result((c - self) if c is not None else super().__rsub__(other))
-
-    def __mul__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__mul__(c if c is not None else other))
-
-    def __rmul__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result((c * self) if c is not None else super().__rmul__(other))
-
-    def __truediv__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__truediv__(c if c is not None else other))
-
-    def __rtruediv__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result((c / self) if c is not None else super().__rtruediv__(other))
-
-    def __neg__(self) -> Any:
-        return _wrap_apy_result(super().__neg__())
-
 
 class RpkFixedArray(apy.APyFixedArray):
-    """Subclass of APyFixedArray that preserves unsigned hardware metadata and handles Python int/float operands."""
+    """GUI metadata on APyFixedArray; arithmetic and result types are native APyTypes."""
 
     is_unsigned: bool = False
     hw_wl: int = 0
@@ -132,37 +63,6 @@ class RpkFixedArray(apy.APyFixedArray):
         out = RpkFixedArray(self.to_bits(), bits=self.bits, int_bits=self.int_bits)
         out.__dict__.update(copy.deepcopy(self.__dict__))
         return out
-
-    def __add__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__add__(c if c is not None else other))
-
-    def __radd__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__add__(c) if c is not None else super().__radd__(other))
-
-    def __sub__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__sub__(c if c is not None else other))
-
-    def __rsub__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(((-self) + c) if c is not None else super().__rsub__(other))
-
-    def __mul__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__mul__(c if c is not None else other))
-
-    def __rmul__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__mul__(c) if c is not None else super().__rmul__(other))
-
-    def __truediv__(self, other: Any) -> Any:
-        c = _coerce_py_number_for_apy(other, self.frac_bits)
-        return _wrap_apy_result(super().__truediv__(c if c is not None else other))
-
-    def __neg__(self) -> Any:
-        return _wrap_apy_result(super().__neg__())
 
 
 @dataclass(frozen=True)
@@ -205,6 +105,7 @@ class InspectorSnapshot:
     status_text: str
     lsb_str: str
     range_str: str
+    whole_variable_fxp: bool = True  # A container may hold an FXP cell without being an FXP array.
 
 
 @dataclass(frozen=True)
@@ -218,6 +119,7 @@ class PlainValueSnapshot:
     type_name: str
     editable: bool
     native_bits: dict | None = None  # Numeric representation DTO; never an FXP format.
+    can_convert_to_fxp: bool = False  # Whole-variable capability, not the selected cell's type.
 
 
 def extract_spec(obj: Any) -> FxpSpec:
@@ -629,7 +531,11 @@ def _evaluate_numeric_expression(text: str) -> int | float:
         reject("Numeric input is limited to 4096 characters.")
     try:
         tree = ast.parse(text.strip(), mode="eval")
-    except (SyntaxError, ValueError, RecursionError):
+    except SyntaxError as exc:
+        if "leading zeros" in exc.msg:
+            reject("Leading zeros are not allowed in decimal integers; use 3 instead of 03.")
+        reject("Invalid numeric expression.")
+    except (ValueError, RecursionError):
         reject("Invalid numeric expression.")
     if sum(1 for _ in ast.walk(tree)) > 512:
         reject("Numeric input is limited to 512 AST nodes.")

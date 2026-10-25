@@ -7,12 +7,7 @@ ZH_TW = {'Session command history': '本次命令歷史',
  'Export selected': '匯出所選命令',
  'Export all': '全部匯出',
  'Close': '關閉',
- '{visible} / {total} commands; {omitted} omitted by session limits. Export is explicit; no automatic file writes.': '{visible} '
-                                                                                                                     '/ '
-                                                                                                                     '{total} '
-                                                                                                                     '筆命令；受本次紀錄上限影響，已省略 '
-                                                                                                                     '{omitted} '
-                                                                                                                     '筆。僅於手動匯出時寫入檔案。',
+ '{visible} / {total} commands; {omitted} not retained due to history limits. Use Export to save history to a file.': '顯示 {visible} / {total} 筆命令；{omitted} 筆因歷史上限未保留。按「匯出」可儲存歷史。',
  'Export command source': '匯出命令原始碼',
  'Python source (*.py)': 'Python 原始碼 (*.py)',
  'Export failed': '匯出失敗',
@@ -65,4 +60,15 @@ ZH_TW = {'Session command history': '本次命令歷史',
  'Plots appear below the command.': '圖形會顯示在命令下方。',
  'Sine wave': '正弦波',
  'Purpose': '用途',
- 'Example / action': '範例 / 操作'}
+ 'Example / action': '範例 / 操作',
+    'APyTypes and its four numeric classes are preloaded.': '已預載 apy、APyFixed、APyFixedArray、APyFloat 與 APyFloatArray。',
+    'Arithmetic': '數學運算',
+    'Change format': '變更格式',
+    'Python assignment replaces the type': 'Python 賦值會取代型別',
+    'bits = total width; frac_bits = fractional width. Q4.12 means 16 bits, including sign. Python code follows APyTypes rules; Inspector edits use Settings.': 'bits 為總長，frac_bits 為小數位數；Q4.12 共 16 bits（含符號）。Python 程式依 APyTypes 規則運算，Inspector 編輯則使用設定中的選項。',
+    'Use Inspector for existing numeric values and FXP conversions; use the console for other types and calculations.': '既有數值與 FXP 轉換可使用變數檢視器；其他型別與計算請使用主控台。',
+    'Double-click Value to edit a scalar or open an array. Double-click Format to use Inspector conversion controls. Indices start at 0.': '連按兩下數值可編輯純量或開啟陣列；連按兩下格式可前往變數檢視器的轉換區。索引從 0 開始。',
+    'Run input / insert a line': '執行輸入／換行',
+    'Complete names / history': '名稱補全／命令歷史',
+    'Restart clears all variables. History puts a command back in the input without running it.': '重新啟動會清除所有變數；歷史可將命令放回輸入區，不會直接執行。',
+}

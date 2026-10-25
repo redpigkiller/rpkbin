@@ -54,7 +54,6 @@ ZH_TW = {
     "Only Workspace and array display changes. Calculations, Inspector, edit fields, copied values and raw bits keep their original precision.": "只改工作區與陣列顯示；運算、變數檢視器、編輯欄、複製數值與原始位元維持原有精度。",
     "Reset layout restores window and panel sizes without clearing variables or changing fonts and theme.": "重設版面只還原視窗與面板尺寸，不清除變數或變更字型與主題。",
     "Numeric display": "數值顯示", "Decimal places (1..17):": "小數位數（1..17）：",
-    "Target: {name} → {format}\nScope: {scope}\nRange: {range}\nLSB: {lsb}\nChecked: {checked_cells} / {total_cells}\nChanged values: {changed_values}; saturated: {saturated_cells}\nDiscarded high bits: {discarded_high_bits_cells}\nExample: {before} → {after}\n\nArray format changes apply to the whole variable and clear GUI Undo history.": "目標：{name} → {format}\n範圍：{scope}\n數值範圍：{range}\nLSB：{lsb}\n已檢查：{checked_cells} / {total_cells}\n數值改變：{changed_values}；飽和：{saturated_cells}\n丟棄高位：{discarded_high_bits_cells}\n範例：{before} → {after}\n\n陣列格式變更作用於整個變數，並清除 GUI 數值復原歷史。",
     "FXP conversion preview": "FXP 轉換預覽", "GUI FXP edits: {quant}/{overflow}  ·  Pin: {pin}": "GUI FXP 編輯：{quant}/{overflow}  ·  釘選：{pin}",
     "Defaults apply to GUI Convert to FXP, value edits and format conversions. Native APyTypes constructors and arithmetic keep their own behavior.": "預設套用於 GUI 轉換為 FXP、數值編輯及格式轉換；原生 APyTypes 建構與算術維持自身行為。",
     "Undo numeric edit\nGUI numeric/bit edits only; REPL, slice or structural changes clear this history. Console Ctrl+Z edits text.": "復原數值編輯\n只涵蓋 GUI 數值與位元；REPL、切片或結構變更會清除歷史。命令視窗 Ctrl+Z 仍為文字編輯。",
@@ -67,4 +66,9 @@ ZH_TW = {
     "Kernel is busy; wait before requesting data": "Kernel 忙碌中，請稍後再讀取資料",
     "Yes": "是", "No": "否", "Apply": "套用", "Cancel": "取消", "OK": "確定",
     "whole variable": "整個變數", "selected cell only (sample)": "只抽查選取格",
+    'Preserve: {mode}\n': '保留：{mode}\n',
+    'Workspace or conversion settings changed; preview again before applying.': '工作區或轉換設定已變更，請重新預覽後再套用。',
+    'Target: {name} → {format}\nScope: {scope}\nRange: {range}\nLSB: {lsb}\nChecked: {checked_cells} / {total_cells}\nChanged values: {changed_values}; saturated: {saturated_cells}\nDiscarded high bits: {discarded_high_bits_cells}\nExample: {before} → {after}': '目標：{name} → {format}\n範圍：{scope}\n數值範圍：{range}\nLSB：{lsb}\n已檢查：{checked_cells} / {total_cells}\n數值改變：{changed_values}；飽和：{saturated_cells}\n丟棄高位：{discarded_high_bits_cells}\n範例：{before} → {after}',
+    'Array format changes apply to the whole variable and clear GUI Undo history.': '陣列格式變更作用於整個變數，並清除 GUI 數值復原歷史。',
+    "Drag to resize or reopen panels. View → Reset layout restores all panels.": "拖曳可調整或重新拉開面板；「檢視 → 重設版面」可還原所有面板。",
 }

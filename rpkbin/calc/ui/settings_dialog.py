@@ -24,7 +24,7 @@ from ..core.format_engine import FormatEngine, FxpSpec
 from ..core.settings_transfer import export_preferences, merge_preferences, parse_preferences
 from ..core.startup import StartupFile
 from .i18n import UiText
-from .theme import get_palette, qss_family, set_role
+from .theme import font_stack, get_palette, set_role
 
 
 class _IgnoreWheel:
@@ -86,16 +86,16 @@ class SettingsDialog(QDialog):
         self.save_btn = self._button("Apply", self._on_save)
         self.save_btn.setToolTip(self._text("Save preferences and apply changes"))
         set_role(self.save_btn, "primary")
-        buttons.addWidget(self.cancel_btn)
         buttons.addWidget(self.save_btn)
+        buttons.addWidget(self.cancel_btn)
+        self.setTabOrder(self.save_btn, self.cancel_btn)
         layout.addLayout(buttons)
         self._update_preview()
 
     def _label(self, source, *, bold=False):
         label = QLabel(self._text(source), self)
         label.setWordWrap(True)
-        if bold:
-            label.setStyleSheet("font-weight: 700;")
+        set_role(label, "sectionLabel" if bold else "settingsHint")
         return label
 
     def _button(self, source, slot):
@@ -168,6 +168,7 @@ class SettingsDialog(QDialog):
             form.addRow(self._text(source), control)
         layout.addLayout(form)
         self.font_preview = self._label("Preview: Workspace / Variable Inspector")
+        set_role(self.font_preview, "secondary")
         self.code_preview = QLabel('A = np.array([1.25, -0.03]); 0x385  0123456789', page)
         layout.addWidget(self.font_preview)
         layout.addWidget(self.code_preview)
@@ -176,8 +177,7 @@ class SettingsDialog(QDialog):
         for control in (self.ui_font_size, self.code_font_size, self.scale_spin):
             control.valueChanged.connect(self._update_font_preview)
         self._update_font_preview()
-        layout.addWidget(self._label("Appearance and language apply without restarting the kernel.\n"
-                                    "Window and panel sizes are remembered when you close the app."))
+        layout.addWidget(self._label('Appearance changes keep your variables and command history.\nWindow and panel sizes are saved when you close the app.'))
         layout.addStretch()
         return self._scroll(page)
 
@@ -186,7 +186,7 @@ class SettingsDialog(QDialog):
                                    (self.code_preview, self.code_font_combo, self.code_font_size)):
             font = combo.currentFont()
             points = size.value() * self.scale_spin.value() / 100
-            label.setStyleSheet(f"font-family: {qss_family(font.family())}; font-size: {points:g}pt;")
+            label.setStyleSheet(f"font-family: {font_stack(font.family(), code=label is self.code_preview)}; font-size: {points:g}pt;")
 
     def _build_format_tab(self):
         page = QWidget(self)
@@ -207,8 +207,7 @@ class SettingsDialog(QDialog):
         )))
         layout.addWidget(self._label("Qm.n: m includes sign; total bits = m + n. Q15 means Q1.15.\n"
                                     "Q conventions vary across tools. sfix/Q are signed; ufix/UQ are unsigned."))
-        layout.addWidget(self._label("Display only. Data and APyTypes constructors are unchanged.\n"
-                                    "Format editing accepts Q or MATLAB notation, not custom templates."))
+        layout.addWidget(self._label('Changing the notation does not change stored values.\nYou can also enter custom formats when the sign and bit widths are unambiguous.'))
         self.custom_frame = QFrame(page)
         set_role(self.custom_frame, "custom")
         form = QFormLayout(self.custom_frame)
@@ -219,10 +218,15 @@ class SettingsDialog(QDialog):
                                 ("Unsigned fractional template", self.unsigned_tpl_edit),
                                 ("Integer template (FWL = 0)", self.int_tpl_edit)):
             form.addRow(self._text(source), control)
-        form.addRow(self._label("Fields: {wl} total bits, {iwl} integer bits (includes sign), "
-                               "{fwl} fractional bits, {q_prefix}, {s_or_u}, {S_or_U}"))
+        self.template_fields_hint = self._label(
+            "{wl}: total bits · {iwl}: integer bits (includes sign) · {fwl}: fractional bits\n"
+            "{q_prefix}: Q / UQ · {s_or_u}: s / u · {S_or_U}: S / U (signed / unsigned)")
+        form.addRow(self.template_fields_hint)
         self.custom_frame.setVisible(self._working_cfg.format_preset == "custom")
         layout.addWidget(self.custom_frame)
+        self.integer_template_hint = self._label("Integer template is display-only; try {s_or_u}{wl}.0i.")
+        self.integer_template_hint.hide()
+        layout.addWidget(self.integer_template_hint)
         self.preview_lbl = QLabel(page)
         self.preview_lbl.setWordWrap(True)
         set_role(self.preview_lbl, "preview", code=True)
@@ -231,9 +235,8 @@ class SettingsDialog(QDialog):
             radio.toggled.connect(self._on_preset_toggled)
         for control in (self.signed_tpl_edit, self.unsigned_tpl_edit, self.int_tpl_edit):
             control.textChanged.connect(self._update_preview)
-        layout.addWidget(self._label("GUI FXP conversion defaults", bold=True))
-        layout.addWidget(self._label("Used by GUI Convert to FXP, numeric edits and format conversions.\n"
-                                    "Native APyTypes constructors and arithmetic keep their own behavior."))
+        layout.addWidget(self._label('FXP conversion defaults', bold=True))
+        layout.addWidget(self._label("Used for value edits and format conversions in the Inspector and conversion dialogs.\nPython code follows APyTypes' own rules."))
         defaults_form = QFormLayout()
         self.quant_combo = PreferenceCombo(page)
         self.ovf_combo = PreferenceCombo(page)
@@ -281,17 +284,16 @@ class SettingsDialog(QDialog):
             set_role(details, "muted")
             layout.addWidget(details)
         layout.addWidget(self._label("Custom imports", bold=True))
-        layout.addWidget(self._label("One import statement per line; installed packages only. Runs after Apply and at startup.\n"
-                                    "Order: function packs → custom imports → startup.py. Helpers and other code belong in startup.py."))
+        layout.addWidget(self._label('One import statement per line; installed packages only. Runs after Apply and at startup.\nOrder: function packs → custom imports → startup.py. Functions and other startup code belong in startup.py.'))
         self.custom_imports_edit = QPlainTextEdit(self._working_cfg.custom_imports, page)
         self.custom_imports_edit.setAccessibleName(self._text("Custom imports"))
         self.custom_imports_edit.setPlaceholderText("import scipy as sp\nfrom scipy.signal import butter, sosfilt")
         self.custom_imports_edit.setMinimumHeight(100)
         set_role(self.custom_imports_edit, "code", code=True)
         layout.addWidget(self.custom_imports_edit)
-        layout.addWidget(self._label("Explicit names and aliases are supported; wildcard and relative imports are not.\n"
-                                    "Existing user variables and cached startup helpers keep their bindings; restart for a clean load."))
+        layout.addWidget(self._label('Name the modules or functions to import; aliases are supported, wildcard and relative imports are not.\nApply keeps your existing variables. Restart to load imports into a fresh workspace.'))
         self.import_status = self._label("Not run in this session.")
+        set_role(self.import_status, "secondary")
         self.import_status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.import_status)
         if self.controller:
@@ -299,9 +301,7 @@ class SettingsDialog(QDialog):
             if self.controller.transport.ready:
                 self._show_import_state(self.controller.import_error)
         layout.addWidget(self._label("Startup script", bold=True))
-        layout.addWidget(self._label("np, apy, APyFixed, APyFixedArray, APyFloat and APyFloatArray are preloaded.\n"
-                                    "Run at startup/restart, or choose Reload and run. Saving does not run code.\n"
-                                    "Imports and helpers stay out of Workspace. Installed packages can be imported here."))
+        layout.addWidget(self._label('np, apy, APyFixed, APyFixedArray, APyFloat and APyFloatArray are ready to use.\nStartup code runs at launch/restart or when you choose Reload and run.\nSaving alone does not run it. Imports and functions stay out of Workspace.'))
         self.startup_path_edit = QLineEdit(str(self.startup_store.path), page)
         self.startup_path_edit.setReadOnly(True)
         layout.addWidget(self.startup_path_edit)
@@ -313,8 +313,10 @@ class SettingsDialog(QDialog):
             actions.addWidget(button)
         layout.addLayout(actions)
         self.startup_status = self._label("Not run in this session.")
+        set_role(self.startup_status, "secondary")
         layout.addWidget(self.startup_status)
         self.startup_notice = self._label("Startup file notice: {notice}")
+        set_role(self.startup_notice, "secondary")
         notice = getattr(self.controller, "_startup_notice", "")
         self.startup_notice.setText(self._text("Startup file notice: {notice}", notice=notice))
         self.startup_notice.setVisible(bool(notice))
@@ -323,7 +325,7 @@ class SettingsDialog(QDialog):
         self.startup_edit.setReadOnly(True)
         self.startup_edit.setMinimumHeight(150)
         layout.addWidget(self.startup_edit, 1)
-        layout.addWidget(self._label("Preview only. External editor saves are not undone by Cancel. Apply does not run startup.py."))
+        layout.addWidget(self._label('Edit and save startup.py in your text editor.\nCancel does not undo saved file changes; use Reload and run to execute them.'))
         self._refresh_startup_preview()
         self.reload_startup_btn.setEnabled(bool(self.controller and self.controller.is_available))
         if self.controller:
@@ -398,8 +400,7 @@ class SettingsDialog(QDialog):
         for button in (self.export_btn, self.import_btn, self.defaults_btn):
             actions.addWidget(button)
         layout.addLayout(actions)
-        layout.addWidget(self._label("Import and Restore defaults only update this draft. Cancel discards them.\n"
-                                    "Apply saves imported startup code without running it. Review it before reloading."))
+        layout.addWidget(self._label('Review imported or restored settings before applying. Cancel keeps your current settings.\nImported startup code is saved by Apply; use Reload and run when ready.'))
         layout.addWidget(self._label("Restore defaults preserves your startup.py."))
         layout.addStretch()
         return self._scroll(page)
@@ -432,6 +433,14 @@ class SettingsDialog(QDialog):
         cfg.custom_signed_tpl = self.signed_tpl_edit.text().strip()
         cfg.custom_unsigned_tpl = self.unsigned_tpl_edit.text().strip()
         cfg.custom_int_tpl = self.int_tpl_edit.text().strip()
+        integer_reversible = True
+        for signed in (True, False):
+            spec = FxpSpec(signed, 16, 0)
+            try:
+                integer_reversible &= FormatEngine.parse_input(FormatEngine.format(spec, cfg), cfg) == spec
+            except ValueError:
+                integer_reversible = False
+        self.integer_template_hint.setVisible(cfg.format_preset == "custom" and not integer_reversible)
         values = [FormatEngine.format(FxpSpec(signed, 16, fractional), cfg)
                   for signed, fractional in ((True, 12), (False, 12), (True, 0))]
         self.preview_lbl.setText(self._text("Preview: signed → {signed} | unsigned → {unsigned} | integer → {integer}",
@@ -559,12 +568,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(script, 1)
         buttons = QHBoxLayout()
         cancel = QPushButton(self._text("Cancel"), preview)
-        accept = QPushButton(self._text("Import into draft"), preview)
+        accept = QPushButton(self._text('Use these settings'), preview)
         cancel.clicked.connect(preview.reject)
         accept.clicked.connect(preview.accept)
         buttons.addStretch()
-        buttons.addWidget(cancel)
         buttons.addWidget(accept)
+        buttons.addWidget(cancel)
+        set_role(accept, "primary")
+        preview.setTabOrder(accept, cancel)
         layout.addLayout(buttons)
         # Exposed for focused interaction tests and accessibility inspection.
         preview.include_startup = include

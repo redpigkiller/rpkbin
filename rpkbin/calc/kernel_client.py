@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -201,10 +202,25 @@ class KernelTransport(QObject):
                 if self._log is not None:
                     self._log.close()
                     self._log = None
-                if self._temporary is not None:
-                    self._temporary.cleanup()
-                    self._temporary = None
+                self._cleanup_temporary()
         self.busy = False
+
+    def _cleanup_temporary(self):
+        temporary, self._temporary = self._temporary, None
+        if temporary is None:
+            return
+        # Windows may briefly retain SQLite/antivirus handles after process exit.
+        # Keep shutdown bounded, and never turn temporary-file cleanup into a crash.
+        for attempt in range(4):
+            try:
+                temporary.cleanup()
+                return
+            except PermissionError as exc:
+                if attempt == 3:
+                    warnings.warn(f"Calculator temporary files could not be removed: {exc}",
+                                  RuntimeWarning, stacklevel=2)
+                else:
+                    time.sleep(0.05 * (attempt + 1))
 
     def restart(self):
         self.shutdown()

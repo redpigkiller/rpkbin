@@ -20,7 +20,8 @@ _SVG_PATHS: dict[str, str] = {
     "help": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4.3 1.7L12 12v1"/><path d="M12 17h.01"/>',
     "stop": '<rect x="5" y="5" width="14" height="14" rx="2"/>',
     "paste": '<rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1"/>',
-    "preview": '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+    "preview": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h6M14 2v6h6M14 2l6 6v3"/><circle cx="16" cy="16" r="4"/><path d="m19 19 3 3"/>',
+    "check": '<path d="m5 12 4 4L19 6"/>',
     "statistics": '<path d="M19 4H5l7 8-7 8h14"/>',
     "copy_table": '<rect x="3" y="3" width="14" height="14" rx="2"/><path d="M3 8h14M8 3v14M12 21h7a2 2 0 0 0 2-2v-7"/>',
     "open_array": '<rect x="3" y="8" width="13" height="13" rx="2"/><path d="M3 13h13M8 8v13M14 3h7v7M21 3l-9 9"/>',
@@ -42,11 +43,10 @@ _SVG_PATHS: dict[str, str] = {
         '<polyline points="1 4 1 10 7 10"/>'
         '<path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>'
     ),
-    # Column chooser (3 vertical table columns)
+    # Table header and a checked visible column.
     "columns": (
         '<rect x="3" y="3" width="18" height="18" rx="2"/>'
-        '<line x1="9" y1="3" x2="9" y2="21"/>'
-        '<line x1="15" y1="3" x2="15" y2="21"/>'
+        '<path d="M3 8h18M10 3v18m3-6 2 2 4-5"/>'
     ),
     # Trash / Clear Workspace
     "trash": (

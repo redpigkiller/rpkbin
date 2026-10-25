@@ -699,7 +699,7 @@ def test_clc_clears_screen_but_preserves_workspace(app, gui):
     run(app, controller, 'value=7\nprint("old-output-marker")')
     assert "old-output-marker" in window.console_widget.term._control.toPlainText()
     run(app, controller, "clc")
-    assert "old-output-marker" not in window.console_widget.term._control.toPlainText()
+    wait_for(app, lambda: "old-output-marker" not in window.console_widget.term._control.toPlainText())
     assert next(row.value_str for row in controller.rows if row.name == "value") == "7"
     run(app, controller, "value+1")
     assert next(row.value_str for row in controller.rows if row.name == "ans") == "8"
@@ -975,3 +975,206 @@ def test_matplotlib_inline_image_reaches_rich_console(app, gui):
         assert not errors
     finally:
         channel.message_received.disconnect(collect)
+
+
+def test_inspector_conversion_navigation_uses_native_numbers_and_whole_arrays(app, gui, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from rpkbin.calc.core.config import ALL_WORKSPACE_COLUMNS
+
+    window, controller, errors = gui
+    run(app, controller, "a = 0.25\nA = np.full((2, 3, 4), 0.25)")
+    controller.set_pin_mode("hex")
+    inspector = window.inspector_widget
+    workspace = window.workspace_widget
+    def apply_conversion():
+        wait_for(app, inspector.apply_conversion_btn.isEnabled)
+        inspector.apply_conversion_btn.click()
+    row = next(i for i, row in enumerate(workspace._visible_rows) if row.name == "a")
+    window.console_widget.term.input_buffer = "np.array([ # draft"
+    workspace._on_cell_double_clicked(row, ALL_WORKSPACE_COLUMNS.index("format"))
+    settled(app, controller)
+    wait_for(app, inspector.convert_btn.hasFocus)
+    assert not inspector.fmt_edit.isEnabled()
+    wait_for(app, inspector.convert_btn.isEnabled)
+    inspector.convert_btn.click()
+    dialog = inspector._conversion_dialog
+    dialog.fmt_edit.setText("Q4.4")
+    previews = []
+    controller.preview_ready.connect(previews.append)
+    monkeypatch.setattr("rpkbin.calc.ui.app.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
+    dialog.preview_btn.click()
+    wait_for(app, lambda: bool(previews))
+    settled(app, controller)
+    assert previews[-1]["pin"] == "real"
+    assert inspector._last_snapshot.spec.wl == 8
+    assert inspector.card_real.edit.text() == "0.25"
+    assert window.console_widget.term.input_buffer == "np.array([ # draft"
+    controller.select_variable("A")
+    settled(app, controller)
+    wait_for(app, inspector.convert_btn.isEnabled)
+    inspector.convert_btn.click()
+    dialog = inspector._conversion_dialog
+    dialog.fmt_edit.setText("Q4.4")
+    mutate(app, controller, dialog.apply_btn.click)
+    assert inspector._last_snapshot.spec.wl == 8
+    mutate(app, controller, lambda: controller.edit_target_field("A", (0, 0), "real", "0.5"))
+    assert controller.undo_state["can_undo"]
+    revision, undo = controller.revision, dict(controller.undo_state)
+    inspector.fmt_edit.setText("sfix8_En4")
+    apply_conversion()
+    settled(app, controller)
+    assert controller.revision == revision and controller.undo_state == undo
+    monkeypatch.setattr("rpkbin.calc.ui.inspector_widget.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
+    wait_for(app, inspector.convert_btn.isEnabled)
+    mutate(app, controller, inspector.convert_btn.click)
+    assert inspector._last_snapshot.can_convert_to_fxp
+    window.console_widget.term.input_buffer = ""
+    run(app, controller, "assert isinstance(A, np.ndarray)\nassert A.dtype == np.float64\n"
+        "assert A.shape == (2, 3, 4)\nassert A[0, 0, 0] == 0.5\nassert A[1, 2, 3] == 0.25\n"
+        "assert isinstance(a, APyFixed)\na = 2")
+    assert inspector.format_host.isHidden()
+    assert not inspector.fmt_edit.isEnabled()
+    assert not errors
+
+
+def test_reversible_custom_template_conversion_uses_existing_kernel_contract(app,gui,monkeypatch):
+    from dataclasses import replace
+    from PySide6.QtWidgets import QMessageBox
+    window,controller,errors=gui
+    cfg=replace(controller.config,format_preset="custom",custom_signed_tpl="S{iwl}|{fwl}",
+                custom_unsigned_tpl="U{iwl}|{fwl}",custom_int_tpl="{q_prefix}{wl}.0i")
+    mutate(app,controller,lambda:controller.update_config(cfg))
+    run(app,controller,"a = 2")
+    view=window.inspector_widget
+    wait_for(app,view.convert_btn.isEnabled)
+    view.convert_btn.click()
+    dialog=view._conversion_dialog
+    dialog.fmt_edit.setText("S6|10")
+    previews=[]
+    controller.preview_ready.connect(previews.append)
+    monkeypatch.setattr("rpkbin.calc.ui.app.ask",lambda *args,**kw:QMessageBox.StandardButton.Cancel)
+    revision=controller.revision
+    dialog.preview_btn.click()
+    wait_for(app,lambda:bool(previews))
+    settled(app,controller)
+    assert previews[-1]["format"]=="Q6.10" and controller.revision==revision
+    mutate(app,controller,dialog.apply_btn.click)
+    assert view.fmt_edit.text()=="S6|10"
+    run(app,controller,"assert isinstance(a, APyFixed)\nassert a.bits == 16 and a.frac_bits == 10\nassert float(a) == 2")
+    wait_for(app,view.apply_conversion_btn.isEnabled)
+    view.fmt_edit.setText("S8|8")
+    mutate(app,controller,view.apply_conversion_btn.click)
+    assert view.fmt_edit.text()=="S8|8"
+    run(app,controller,"assert a.bits == 16 and a.frac_bits == 8\nassert float(a) == 2")
+    assert not errors
+
+
+def test_integer_custom_template_conversion_and_sign_change_use_existing_kernel(app, gui):
+    from dataclasses import replace
+    window, controller, errors = gui
+    cfg = replace(controller.config, format_preset="custom", custom_int_tpl="{s_or_u}{wl}.0i")
+    mutate(app, controller, lambda: controller.update_config(cfg))
+    run(app, controller, "a = 2")
+    view = window.inspector_widget
+    wait_for(app, view.convert_btn.isEnabled)
+    view.convert_btn.click()
+    dialog = view._conversion_dialog
+    dialog.fmt_edit.setText("s4.0i")
+    mutate(app, controller, dialog.apply_btn.click)
+    assert view.fmt_edit.text() == "s4.0i"
+    assert view._last_snapshot.spec.signed
+    assert view._last_snapshot.spec.wl == 4 and view._last_snapshot.spec.fwl == 0
+    wait_for(app, view.apply_conversion_btn.isEnabled)
+    view.fmt_edit.setText("u4.0i")
+    mutate(app, controller, view.apply_conversion_btn.click)
+    assert view.fmt_edit.text() == "u4.0i"
+    assert not view._last_snapshot.spec.signed
+    assert view._last_snapshot.spec.wl == 4 and view._last_snapshot.spec.fwl == 0
+    run(app, controller, "assert float(a) == 2")
+    assert not errors
+
+
+@pytest.mark.parametrize("array", [False, True])
+def test_gui_edit_then_arithmetic_keeps_native_rules_aliases_and_undo(app, gui, array):
+    window, controller, errors = gui
+    run(app, controller, "a = [[0.5, 0.0]]" if array else "a = 0.5")
+    mutate(app, controller, lambda: controller.convert_to_fxp("a", "Q1.2"))
+    run(app, controller, "alias = a")
+    if array:
+        controller.open_matrix_editor("a")
+    else:
+        controller.select_variable("a")
+    settled(app, controller)
+    inspector = window.inspector_widget
+    wait_for(app, inspector.card_real.edit.isEnabled)
+    window.console_widget.term.input_buffer = "np.array([ # unfinished draft"
+    edit = inspector.card_real.edit
+    edit.setText("0.25")
+    edit.setModified(True)
+    mutate(app, controller, lambda: QTest.keyClick(edit, Qt.Key.Key_Return))
+    assert inspector.card_real.edit.text() == "0.25"
+    assert controller.undo_state["can_undo"]
+    mutate(app, controller, controller.undo_edit)
+    assert inspector.card_real.edit.text() == "0.5"
+    mutate(app, controller, controller.redo_edit)
+    assert inspector.card_real.edit.text() == "0.25"
+    assert window.console_widget.term.input_buffer == "np.array([ # unfinished draft"
+    window.console_widget.term.input_buffer = ""
+    cls_name = "APyFixedArray" if array else "APyFixed"
+    code = f"native = {cls_name}(a.to_bits(), bits=a.bits, int_bits=a.int_bits)\n"
+    code += "for fn in (lambda x: x+1, lambda x: 1-x, lambda x: x*3, lambda x: x/3, lambda x: x+1.0):\n"
+    code += "    expected, result = fn(native), fn(a)\n"
+    code += f"    assert type(result) is {cls_name}\n"
+    code += "    assert result.to_bits() == expected.to_bits()\n"
+    code += "    assert (result.bits, result.int_bits) == (expected.bits, expected.int_bits)\n"
+    if array:
+        code += "assert a is alias\nassert a.shape == (1, 2)\nassert float(a[0, 0]) == 0.25\n"
+    else:
+        code += "assert float(alias) == 0.5\nassert float(a) == 0.25\n"
+    reply = run(app, controller, code)
+    assert reply["content"]["status"] == "ok"
+    assert not controller.undo_state["can_undo"]
+    controller.select_variable("result", (0, 0) if array else None)
+    settled(app, controller)
+    assert inspector._last_snapshot.status_kind == "untracked"
+    assert not errors
+
+
+def test_workspace_selection_coalesces_paint_without_accepting_stale_edits(app, gui):
+    from PySide6.QtCore import QObject, QEvent
+    window, controller, errors = gui
+    run(app, controller, "a = APyFixed.from_float(1.25, bits=16, frac_bits=10)\n"
+        "b = APyFixed.from_float(2.5, bits=16, frac_bits=10)\nplain = 2")
+    controller.select_variable("a")
+    settled(app, controller)
+    view = window.inspector_widget
+    class Recorder(QObject):
+        def __init__(self):
+            super().__init__(window)
+            self.started = time.monotonic()
+            self.paints = []
+
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Type.Paint:
+                self.paints.append((time.monotonic() - self.started, watched.isEnabled()))
+            return False
+    recorder = Recorder()
+    view.apply_conversion_btn.installEventFilter(recorder)
+    view.card_real.edit.installEventFilter(recorder)
+    for target in ("b", "a", "plain", "b"):
+        recorder.paints.clear()
+        recorder.started = time.monotonic()
+        revision = controller.revision
+        controller.select_variable(target)
+        assert not view.body_widget.isEnabled()
+        QTest.mouseClick(view.apply_conversion_btn, Qt.MouseButton.LeftButton)
+        settled(app, controller)
+        wait_for(app, view.body_widget.updatesEnabled)
+        assert view._last_snapshot.var_name == target
+        assert controller.revision == revision
+        # Long reads may legitimately paint disabled after the 120ms fallback.
+        # Before that threshold, transient disabled colors must not be painted.
+        assert all(enabled or elapsed >= .1 for elapsed, enabled in recorder.paints)
+    result = run(app, controller, "assert float(a) == 1.25\nassert float(b) == 2.5\nassert plain == 2")
+    assert result["content"]["status"] == "ok"
+    assert not errors

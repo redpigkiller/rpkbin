@@ -529,6 +529,8 @@ class WorkspaceSession:
                 editable=(not isinstance(obj, tuple) and
                           (not isinstance(obj, np.ndarray) or
                            (obj.flags.writeable and obj.dtype.kind in "biufcUS"))))
+            if isinstance(snapshot, InspectorSnapshot) and not isinstance(obj, apy.APyFixedArray):
+                snapshot = replace(snapshot, whole_variable_fxp=False)
             index = self.cell_index(name, actual_coord)
             if len(index) != 2:
                 position = ', '.join(map(str, index)) if index else '()'
@@ -549,6 +551,18 @@ class WorkspaceSession:
             return repr(value)
         return str(value) if isinstance(value, (int, complex)) else repr(value)
 
+    def _can_convert_to_fxp(self, name):
+        """Report structural GUI support without scanning an array's values."""
+        value = self.user_ns.get(name)
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return True
+        if isinstance(value, (np.ndarray, list, tuple)):
+            try:
+                return np.asarray(value).dtype.kind in "biuf"
+            except (TypeError, ValueError):
+                return False
+        return False
+
     def _plain_snapshot(self, name, value, coord, *, editable=True):
         return PlainValueSnapshot(
             var_name=name, coord=coord,
@@ -556,6 +570,7 @@ class WorkspaceSession:
             value_str=self.format_python_scalar(value), type_name=type(value).__name__,
             editable=editable and isinstance(value, (str, bool, int, float, complex, np.number)),
             native_bits=numeric_representation(value, editable_float=coord is None),
+            can_convert_to_fxp=self._can_convert_to_fxp(name),
         )
 
     def _inspect_scalar(self, name, value, coord, parent_spec=None, *, editable=True):

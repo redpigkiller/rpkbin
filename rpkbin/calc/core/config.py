@@ -80,7 +80,7 @@ class CalcConfig:
     column_order: list[str] = field(
         default_factory=lambda: list(ALL_WORKSPACE_COLUMNS)
     )
-    inspector_view_mode: str = "list"  # "list" | "grid"
+    inspector_view_mode: str = "grid"  # "list" | "grid"
     inspector_pin_mode: str = "real"  # "real" | "hex"
     bit_order: str = "msb_first"  # "msb_first" | "lsb_first"
     # Read-only numeric views only; editable/copy source text remains exact.

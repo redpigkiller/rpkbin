@@ -37,7 +37,7 @@ ZH_TW = {
     "Full array": "完整陣列",
     "Full shape: {shape}; current view: {view}; dtype/format: {format}": "完整維度：{shape}；目前檢視：{view}；資料型別／格式：{format}",
     "View: {view} | {hint}": "檢視：{view} | {hint}",
-    "FXP format applies to the entire array. Qm.n includes sign in m; total bits = m + n. Use Q or MATLAB short notation, regardless of custom display templates. Native arrays: use Convert to FXP explicitly.": "FXP 格式套用於整個陣列。Qm.n 的 m 包含符號位元；總位元數 = m + n。請使用 Q 或 MATLAB 簡寫，不受自訂顯示模板影響。原生陣列請明確使用「轉換為 FXP」。",
+    "FXP format applies to the entire array. Qm.n includes sign in m; total bits = m + n. Use Q, MATLAB or a uniquely reversible current custom template. Native arrays: use Inspector conversion controls.": "FXP 格式套用於整個陣列。Qm.n 的 m 包含符號位元；總位元數 = m + n。請使用 Q、MATLAB 或目前可唯一還原的自訂模板。原生陣列請使用變數檢視器的轉換控制項。",
     "count": "數量",
     "min": "最小值",
     "max": "最大值",

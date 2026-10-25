@@ -158,7 +158,7 @@ def test_native_fxp_transitions_and_errors_translate_without_touching_values(vie
     switch(cfg, controller, "zh_TW")
     session.user_ns["Copy"] = np.int8(-7)
     inspector.render_snapshot(session.get_inspector_snapshot("Copy"))
-    assert inspector.fmt_lbl.text() == "型別："
+    assert inspector.format_host.isHidden()
     assert inspector.card_real.title_lbl.text() == "數值"
     assert "唯讀" in inspector.native_bits_label.text()
     assert inspector.card_real.edit.text() == "-7"

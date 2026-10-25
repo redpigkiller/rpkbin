@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from string import Formatter
 from dataclasses import dataclass
 
 from .config import CalcConfig
@@ -90,14 +91,38 @@ class FormatEngine:
 
     @staticmethod
     def editable(spec: FxpSpec, config: CalcConfig) -> str:
-        """Keep arbitrary display templates out of editable format fields."""
-        text = FormatEngine.format(spec, config)
+        """Use configured text only when it uniquely round-trips to this spec."""
+        choices = (FormatEngine.format(spec, config), FormatEngine.canonical(spec),
+                   FormatEngine.format(spec, CalcConfig(format_preset="matlab")))
+        for text in choices:
+            try:
+                if FormatEngine.parse_input(text, config) == spec:
+                    return text
+            except ValueError:
+                pass
+        return FormatEngine.canonical(spec)
+
+    @staticmethod
+    def parse_input(text: str | FxpSpec, config: CalcConfig) -> FxpSpec:
+        """Resolve GUI input; conflicting templates never silently change meaning."""
+        if isinstance(text, FxpSpec):
+            return text
+        candidates = set()
         try:
-            if FormatEngine.parse(text) == spec:
-                return text
+            candidates.add(FormatEngine.parse(text))
         except ValueError:
             pass
-        return FormatEngine.canonical(spec)
+        if config.format_preset == "custom" and isinstance(text, str) and len(text) <= 512:
+            for template, signed, integer in (
+                    (config.custom_signed_tpl, True, False), (config.custom_unsigned_tpl, False, False),
+                    (config.custom_int_tpl, True, True), (config.custom_int_tpl, False, True)):
+                candidates.update(_template_specs(text.strip(), template, signed, integer))
+        if len(candidates) == 1:
+            return candidates.pop()
+        if len(candidates) > 1:
+            raise ValueError("Ambiguous format: the custom templates and standard formats disagree. "
+                             "Use an unambiguous Q/MATLAB format or adjust the templates.")
+        raise ValueError("Enter a Q/MATLAB format or a uniquely reversible current custom template.")
 
     @staticmethod
     def parse(text: str | FxpSpec) -> FxpSpec:
@@ -105,7 +130,7 @@ class FormatEngine:
 
         Qm.n includes sign in m (bits=m+n); Q15 means signed 16/15.
         MATLAB short notation such as sfix16_En12 is also accepted.
-        Custom display templates are never parsed as format declarations.
+        This standard parser ignores templates; parse_input resolves GUI templates.
         """
         if isinstance(text, FxpSpec):
             return text
@@ -193,3 +218,55 @@ class FormatEngine:
 
         # Fallback default
         return FormatEngine.canonical(spec)
+
+
+def _template_specs(text, template, signed, integer):
+    """Reverse simple named placeholders only; no eval, regex input, or guessed widths."""
+    if not isinstance(template, str) or len(template) > 512:
+        return set()
+    fixed = {"q_prefix": "Q" if signed else "UQ", "s_or_u": "s" if signed else "u",
+             "S_or_U": "S" if signed else "U"}
+    pattern, fields = [], []
+    previous_numeric = False
+    try:
+        for literal, name, specifier, conversion in Formatter().parse(template.strip()):
+            pattern.append(re.escape(literal))
+            if name is None:
+                continue
+            if specifier or conversion or len(fields) >= 16:
+                return set()
+            if name in fixed:
+                pattern.append(re.escape(fixed[name]))
+                previous_numeric = False
+            elif name in ("wl", "iwl", "fwl"):
+                if previous_numeric and re.fullmatch(r"[0-9]*", literal):
+                    return set()  # Empty/digit-only boundaries cannot uniquely divide numbers.
+                pattern.append(r"([+-]?[0-9]{1,6})")
+                fields.append(name)
+                previous_numeric = True
+            else:
+                return set()
+        match = re.fullmatch("".join(pattern), text)
+        if match is None:
+            return set()
+        values = {}
+        for name, value in zip(fields, match.groups()):
+            number = int(value)
+            if name in values and values[name] != number:
+                return set()
+            values[name] = number
+        if integer:
+            if values.get("fwl", 0) != 0:
+                return set()
+            values["fwl"] = 0
+        if len(values) < 2:
+            return set()
+        if "wl" not in values:
+            values["wl"] = values["iwl"] + values["fwl"]
+        elif "fwl" not in values:
+            values["fwl"] = values["wl"] - values["iwl"]
+        if "iwl" in values and values["iwl"] != values["wl"] - values["fwl"]:
+            return set()
+        return {FxpSpec(signed=signed, wl=values["wl"], fwl=values["fwl"])}
+    except (ValueError, KeyError):
+        return set()

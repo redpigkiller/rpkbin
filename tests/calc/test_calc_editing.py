@@ -1,6 +1,7 @@
 """Headless user contracts for bounded edits and explicit array operations."""
 
 from fractions import Fraction
+from rpkbin.calc.core.config import CalcConfig
 
 import numpy as np
 import pytest
@@ -19,7 +20,7 @@ from rpkbin.calc.core.fxp_model import make_fxp
 
 @pytest.fixture
 def session():
-    return WorkspaceSession(seed_demo_vars=False)
+    return WorkspaceSession(CalcConfig(), seed_demo_vars=False)
 
 
 def edit(session, journal, name, value, coord=None, field="real"):

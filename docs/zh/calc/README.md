@@ -23,7 +23,7 @@ np.mean(x)
 
 命令視窗保留 IPython 編輯操作：完整輸入按 **Enter** 執行，不完整語句按 Enter 繼續輸入；**Shift+Enter** 執行整段 cell，**Ctrl+Enter** 強制插入換行。按 **Tab** 使用屬性補全。輸入 `whos` 列出工作區變數，`clc` 清除畫面，`clear` 或 `clear all` 清除使用者變數。若只要切換應用程式介面語言，開啟 **設定… → 外觀**，選擇 **語言**（`English` 或 `繁體中文`）並按 **套用**。Qt 介面文字會即時更新，不重啟 kernel，也保留 namespace、命令歷史、尚未送出的輸入與選取狀態。使用者程式碼、變數名稱與資料不會翻譯。
 
-命令視窗標題列的 **Stop** 按鈕以圖示搭配可見文字顯示；kernel 閒置時標示 **Idle／待命** 並停用，執行期間標示 **Stop／停止** 並啟用。若 Python 正在執行原生操作，中斷仍可能延遲。**Hints／提示** 會開啟非模態視窗，提供精簡的 Python、NumPy、APyTypes 建構範例與常用命令。輸入 `clc` 只清除畫面，不會刪除 Workspace 變數。
+命令視窗標題列的 **Stop** 按鈕以圖示搭配可見文字顯示；kernel 閒置時標示 **Idle／待命** 並停用，執行期間標示 **Stop／停止** 並啟用。若 Python 正在執行原生操作，中斷仍可能延遲。**Help／說明** 會開啟非模態查表視窗，分為三個精簡分頁：**FXP**（預設）、**Python–NumPy** 與 **Workspace**。輸入 `clc` 只清除畫面，不會刪除 Workspace 變數。
 
 選單列中，**檔案**有 **結束**；**編輯**提供 GUI 數值編輯的復原/重做與 **設定…**；**檢視**提供數值顯示、版面及本次命令歷史；**說明**可開啟命令提示。頂端工具列與命令視窗控制項也提供常用操作的捷徑。
 
@@ -42,11 +42,14 @@ plt.show()
 
 要找回本次工作階段輸入，按命令視窗的 **Session history** 圖示，可搜尋命令、預覽內容，再選 **Use as input**（只放回編輯區，不會執行），或按 **Export selected** / **Export all** 明確匯出為 UTF-8 `.py`。歷史最多保留 1,000 筆或 1 MiB，超限時移除最舊項目；超過 1 MiB 的單一命令不納入。它不會自動寫檔，重啟 kernel 後清空。
 
+
+Inspector 卡片寬度足夠時會將標籤與數值排在同一列，窄視窗則自動改為上下排列。Copy 成功時短暫顯示勾號，不改變數值；Columns 與 Inspector 的 Preview 使用圖示搭配短文字，確認對話框沿用程式主題並以 Apply 作為主要操作。
+
 ## 調整主題與字型
 
 按 **Settings** 圖示或選 **Edit → Settings…**，開啟 **Appearance**。可選語言、主題、介面與程式/數值字型、字級及縮放。使用 `zh_TW` 時，勾選 **Keep workspace terms in English** 可讓 **Command Window**、**Workspace**、**Name**、**Format** 等應用程式標籤保留英文；這只改 Qt 顯示，不影響 kernel，也不改使用者內容。按 **Apply** 立即套用偏好，保留 namespace、命令歷史與輸入、開啟的矩陣分頁及 `startup.py`；不重啟 kernel 或執行啟動程式。對話框底部的 **Cancel** 與 **Apply** 固定位於可伸展的分頁內容下方。下拉選單或數字微調框上的滑鼠滾輪會繼續捲動頁面；鍵盤選項及微調箭頭仍可用。主視窗使用 Qt Fusion style；checkbox indicator 可與既有 QSS 搭配，在 Windows 11 保持可見。
 
-若要選擇 FXP 格式的顯示方式，開啟 **設定 → FXP 格式**，選 **Q**、**MATLAB** 或 **Custom display template**。預設 **Q** 顯示採用本工具的慣例：`Qm.n` 中 `m` 是整數側位元數且包含 sign bit，`n` 是小數位元數，總長為 `m+n` bits。因此 signed `Q1.15` 是 16-bit word；`UQm.n` 則是 unsigned。Q 格式在不同工具中有其他慣例；需要精確硬體寬度時請以宣告中的位元數為準。GUI 格式欄接受 Q 與 MATLAB 格式。此設定只改格式文字，不改位元寬度或數值語意。Custom template 可顯示任意文字，但不改值或解析；可編輯格式欄固定使用標準 Q 表示。
+若要選擇 FXP 格式的顯示方式，開啟 **設定 → FXP 格式**，選 **Q**、**MATLAB** 或 **Custom display template**。預設 **Q** 顯示採用本工具的慣例：`Qm.n` 中 `m` 是整數側位元數且包含 sign bit，`n` 是小數位元數，總長為 `m+n` bits。因此 signed `Q1.15` 是 16-bit word；`UQm.n` 則是 unsigned。Q 格式在不同工具中有其他慣例；需要精確硬體寬度時請以宣告中的位元數為準。切換顯示方式不會修改既有資料。GUI 輸入也接受目前能唯一還原格式的簡單自訂模板；例如 `S{iwl}|{fwl}` 的 `S6|10` 代表總長 16 bits、小數 10 bits。資訊不足或有歧義的模板仍可用於顯示，輸入時請改用無歧義的 Q 或 MATLAB 格式；APyTypes 原生建構方式不變。
 
 若只想調整畫面上的有限實數文字，使用 **View → Number display (view only)** 選 **Full precision / automatic**、**Scientific notation** 或 **Fixed decimals**，再用 **Decimal places…** 設定 1–17 位小數（不是有效位數）。**What do these options mean?** 會開啟非模態說明，以 `1.23456789` 示範三種顯示方式，並使用目前的小數位設定。這只改變 Workspace 與矩陣的顯示，不改變 kernel 計算；Inspector、編輯欄、複製內容和 raw bits 保留原精度。超過 256 字元的 Fixed 輸出會改用 Scientific。**View → Reset layout** 會還原主視窗尺寸、分隔器與展開的 Inspector，不重啟 kernel，也不重設主題或字型。
 
@@ -58,6 +61,8 @@ rpk-calc --eval '1+2'
 
 此命令會建立 headless `WorkspaceSession`、輸出結果後結束；它不啟動 GUI，也不是 GUI 使用的 IPython kernel。
 
+
+首次將 native 值轉成 FXP 時，格式欄保持空白；輸入有效格式後，**Preview** 與 **Apply** 才可使用。Inspector 只會在本次開啟程式期間記住最後成功套用的格式，不會推斷位寬或精度。新設定預設使用 Inspector grid，grid 按鈕位於 List 左側；已儲存的版面偏好仍照常沿用。卡片改得更緊湊，並以顏色辨識類型；值與 Real/Hex Pin 的意義不變。**Apply** 使用藍色實心樣式，**Cancel** 使用中性樣式。
 ## 使用 APyTypes 建立 FXP 值
 
 命令視窗預載 `apy`、`APyFixed`、`APyFixedArray`、`APyFloat` 與 `APyFloatArray`，它們分別是原生 APyTypes module 與 class objects。Python 整數和 NumPy 值維持原生型別，直到你明確建立 APyTypes 值。要建立 8-bit signed、含 4 個 fractional bits 的 FXP：
@@ -69,13 +74,26 @@ float(a)  # 2.0；raw bits 為 0x20
 
 `APyFixed(...)` 的第一個 positional argument 是 raw bit pattern；`from_float(...)` 則將數值轉換成定點值。例如 `APyFixed(7, 4, 2)` 的 raw bits 是 7、`int_bits=4`、`frac_bits=2`，所以數值是 1.75。若要轉換數值 7，請用 `APyFixed.from_float(7, int_bits=4, frac_bits=2)`。
 
-陣列也可直接建立：`APyFixedArray.from_float([0.25, -0.125], bits=16, frac_bits=12)`。`apy`、`APyFixed`、`APyFixedArray`、`APyFloat` 與 `APyFloatArray` 都是預載物件；`type(a) is APyFixed` 為 true，因為它們就是原生 APyTypes identities，不是 wrapper。`APyFloat.from_float(0.25, exp_bits=8, man_bits=23)` 支援一般 Python 算術與數值預覽。GUI Inspector 支援 APyFixed 位元操作與單一 APyFloat 的 bit 切換；其他原生數值提供唯讀進位或儲存位元檢視。
+混用 Python 數值時，遵循 APyTypes 原生的操作數轉換與結果格式規則。Python 操作數轉入窄格式時可能先溢位；需要控制精度時，請明確建立另一個操作數：
 
-若要在 GUI 中建立有追蹤來源的 FXP 值，可在 Workspace 對原生變數按右鍵選 **Convert to FXP**，或在 Inspector 編輯 APyFixed 的 Real value。Settings 的 **RND/SAT** 套用於 GUI 數值編輯、轉換和重新格式化，不會改變 APyTypes constructor 預設。原生 constructor 使用 APyTypes 自身的量化與溢位行為（通常 nearest ties away 與 WRAP），也不會建立 conversion-reference 診斷來源。Inspector **Invert** 與 **Zero** 分別反轉整個 FXP 字的位元、將整個字清為 0；**Edit bit range** 以無號值寫入包含端點的 `[high:low]`，並保留範圍外的位元。硬體位元編號從最低有效端的 bit 0 開始；10-bit word 分組為 `[9 8][7 6 5 4][3 2 1 0]`。改變顯示方向或換列不會切開四位元分組，也不會改變數值。
+```python
+from apytypes import APyFixed
 
-Inspector 的全域 Real/Hex pin 只決定重新格式化既有 FXP 值時要保留實數值或 raw bits。選 Hex pin 後將 16-bit 值改成 8-bit signed 整數格式，會保留低 8 位 `0x85`，重新解讀為 `-123`；選 Real pin 則會盡量保留原實數並依新格式量化。FXP 陣列改格式會作用於整個陣列，不只目前選取的格子。
+narrow = APyFixed(2, bits=3, int_bits=1)  # 0.5，範圍 -1 .. 0.75
+print(float(narrow + 1))                # -0.5：Python 1 轉入該窄格式時 wrap
+one = APyFixed.from_float(1, bits=8, frac_bits=4)
+print(float(narrow + one))              # 1.5：另一個操作數有明確格式
+```
 
-FXP Inspector 的 Real 數值欄可輸入有限的數學算式，例如 `pi/4`、`2**-3` 或整數位元運算；此欄不接受函式呼叫、屬性、容器或一般 Python 語句。一般 Python 運算仍可在命令視窗執行；此限制只適用數值編輯欄，不是 kernel sandbox。
+GUI 建立或編輯後的 FXP 值可能是保存 metadata 的 `RpkFixed`／`RpkFixedArray` 子類別。其算術遵循相同的原生 APyTypes 規則；結果型別依原生分派決定，不由計算機額外包裝；新結果沒有可追蹤 GUI 轉換來源。GUI RND/SAT 與 Real/Hex pin 仍是明確 GUI 轉換的策略。
+
+陣列也可直接建立：`APyFixedArray.from_float([0.25, -0.125], bits=16, frac_bits=12)`。`apy`、`APyFixed`、`APyFixedArray`、`APyFloat` 與 `APyFloatArray` 都是預載的原生 APyTypes module/class objects；上方 constructor 範例建立的是確切的 `APyFixed` 型別。`APyFloat.from_float(0.25, exp_bits=8, man_bits=23)` 支援一般 Python 算術與數值預覽。Inspector 保留 APyFixed 及 scalar APyFloat 的可點擊 bit 編輯。一般 Python/NumPy 數值沒有可點擊的位元格；其收合的 **Bit representation (read-only)** 卡可展開檢視 Hex/Binary 與儲存資訊。
+
+要在 GUI 轉換數值，選取原生實數 scalar 或 real array 後按 **Convert to FXP…**，在小對話框選格式、按 **Preview** 檢視，再按 **Apply**。既有 FXP 值可使用 inline 格式欄並按 **Preview**、**Apply**，或按 **Convert to float…**，確認轉為 Python `float`（純量）或 NumPy `float64`（陣列）。這些操作作用於整個變數或陣列；轉成浮點的陣列會保留 shape，**Value** 卡仍編輯目前選取的元素。FXP-to-FXP 格式變更依 Real/Hex pin；native-to-FXP 與 FXP-to-float 是數值轉換。APyFloat 與不支援的轉換仍在 Python console 執行。GUI 量化／溢位設定適用於 GUI 實數值編輯、native-to-FXP 轉換及 Real pin 的 FXP 格式變更，不會改變 APyTypes constructors 或 console 運算。原生 APyTypes constructor 使用自身預設（通常 nearest ties away 與 WRAP），也不會建立 conversion-reference 診斷來源。Inspector **Invert** 與 **Zero** 分別反轉整個 FXP 字的位元、將整個字清為 0；**Edit bit range** 以無號值寫入包含端點的 `[high:low]`，並保留範圍外的位元。硬體位元編號從最低有效端的 bit 0 開始；10-bit word 分組為 `[9 8][7 6 5 4][3 2 1 0]`。改變顯示方向或換列不會切開四位元分組，也不會改變數值。
+
+全域 Real/Hex pin 只控制 FXP-to-FXP 格式變更：Real 盡量保留數值，Hex 則保留 raw bits。Native-to-FXP 與 FXP-to-float 是數值轉換，不受 pin 影響。格式變更仍作用於整個變數或陣列，不只目前選取的元素。
+
+Inspector 的 **Value** 卡編輯選取的 scalar 或陣列元素。FXP 值的數值欄接受有限的數學算式，例如 `pi/4`、`2**-3`，不接受函式呼叫、屬性、容器或一般 Python 語句。Native 值欄接受數值 Python literal：編輯 Python scalar 時，型別可能隨輸入 literal 重新綁定；NumPy scalar 則轉成既有 dtype。一般 Python 運算及 APyFloat／不支援型別的轉換請在 Python console 執行；在 console 輸入 `a = 2` 會依 Python 語意將 `a` 重新綁定為 int。欄位解析限制不是 kernel sandbox。
 
 以 Python 建立的原生 `APyFixed` 沒有 GUI conversion-reference source，起始會顯示 `No conversion reference (error unknown)`。原生 `APyFixedArray` 也從沒有 GUI provenance 開始，但 Inspector 編輯會把稀疏比較資料記在 session 擁有的 sidecar，保留原陣列物件與其 aliases。符合目前值的紀錄可顯示 GUI 編輯結果；raw-bit 編輯及 Hex pin 重解讀不會建立比較來源。
 
@@ -103,15 +121,16 @@ f = APyFloat.from_float(1.5, exp_bits=5, man_bits=2, bias=7)
 assert f.to_bits() == 0x1E
 ```
 
-在 Workspace 選取 `n`，Inspector 的唯讀 Hex／Binary 分別顯示 `-0xff` 與
+在 Workspace 選取 `n`，唯讀 Hex／Binary 欄分別顯示 `-0xff` 與
 `-0b11111111`，可按各欄的 Copy 複製。Python int 不假設固定字長或二補數；超過
 4,096 個 magnitude bits 時，數值與進位表示改為有明確標記的預覽，截短內容不提供
 Copy。原值與 Python 運算不受影響；完整進位文字可由 REPL 的 `hex(n)`／`bin(n)` 取得。
 
-選取 `s`，Hex 顯示 `0x3FC00000`，bits 依 sign／exponent／fraction 標記。Python float
-與 NumPy float16／32／64 顯示原型別的儲存 bits，欄位和 bit 按鈕唯讀；不會為了檢視
-先轉成另一種浮點格式。正負零、正負無窮大、NaN、正規數和次正規數會明確分類。
-這裡的 Hex 是儲存 bit pattern，不是 `float.hex()` 的十六進位數值表示。
+選取 `s` 並展開 **Bit representation (read-only)** 卡，Hex 顯示 `0x3FC00000`，
+storage 資訊依原精度標記 sign／exponent／fraction。Python float 與 NumPy float16／32／64
+唯讀且沒有可點擊的位元格；檢視時不會先轉成另一種浮點格式。正負零、正負無窮大、
+NaN、正規數和次正規數會明確分類。這裡的 Hex 是儲存 bit pattern，不是 `float.hex()` 的
+十六進位數值表示。
 
 選取 `f`，Hex 顯示 `0x1E`。點擊 sign bit（bit 7），數值會變為 `-1.5`，Hex 變為
 `0x9E`；依序按 Undo、Redo，可看到 `0x1E`、`0x9E`。之後在 REPL 驗證：
@@ -135,7 +154,7 @@ import numpy as np
 A = APyFixedArray.from_float(np.zeros((2, 2)), bits=8, frac_bits=4)
 ```
 
-在 Workspace 雙擊 `A` 開啟矩陣分頁，也可選取變數後按 **Open array editor** 圖示。選取儲存格可在 Inspector 查看該元素，雙擊可編輯；FXP 矩陣標示 **Array format:**，可切換 Real、Hex、2's 與 UInt 顯示，修改 FXP Format 會作用於整個陣列。一般 NumPy 陣列標示 **Dtype:**，格式欄顯示唯讀 dtype，不提供 inline FXP 格式轉換；可從 Workspace 右鍵選 **Convert to FXP**。可寫入的原生 NumPy 陣列會保留 dtype 編輯；整數欄位不接受越界值或小數，唯讀陣列及不支援的 dtype 不可編輯。Inspector 對原生值標示 **Type:**，不提供 FXP pin 或 FXP bit controls；FXP 格式列標明 **Whole variable**，表示操作套用整個變數。原生位元運算請在 Python/NumPy 命令視窗使用。
+Workspace 列用於導向 Inspector，不提供 inline 編輯。Scalar 的 **Value** 雙擊會聚焦 Inspector Value 欄；雙擊 **Format**，或在列上按右鍵選 **Convert / adjust format in Inspector…**，會導向轉換控制項；native 值會聚焦 **Convert to FXP…**。Array 的 **Value** 儲存格仍開啟矩陣編輯器，其既有 **Format** 與 **Preview** 控制仍可使用，並走相同轉換流程。FXP 矩陣儲存格仍可在矩陣編輯器中編輯；原生 NumPy 陣列編輯時保留 dtype，整數格不接受小數或超出範圍的值。APyFloat 與不支援型別的轉換，以及原生位元運算，請在 Python/NumPy console 執行。
 
 雙擊第一格，在 Inspector 的 Real value 欄輸入 `99` 並套用。該值會飽和為 7.9375（`127/16`），Inspector 標示 **SATURATED**。constructor 建立時沒有 GUI provenance；Inspector 編輯會將比較與飽和結果記入 session sidecar，原生陣列物件與 aliases 保持不變。一般複數陣列則以 Python 值檢視，不顯示 FXP bits：
 
@@ -150,7 +169,7 @@ v[1] = 5 - 6j
 
 要編輯一塊矩形資料，選取表格範圍後按 **Copy selected cells as TSV (Ctrl+C)** 圖示，或使用 Ctrl+C；在目標左上格按 **Paste TSV at the selected cell (Ctrl+V)** 圖示，或使用 Ctrl+V。整塊內容會先驗證 dtype、範圍與形狀，再一次寫入；失敗時不會留下部分修改。頂端 **Undo numeric edit** 可一次復原整次貼上，**Redo numeric edit** 可重做。GUI 編輯復原最多保留 100 筆、合計 8 MiB；REPL 執行、切片變更、整體格式轉換或其他結構操作會清除此歷史。這是 GUI 編輯復原，不會撤銷任意 Python 程式。若要複製整張矩陣，可按 **Copy entire matrix as TSV (up to 100,000 cells)** 圖示。
 
-多維陣列可在切片欄輸入後續維度索引，例如 `0, 1` 表示 `A[:, :, 0, 1]`；**Jump to row, column** 使用從 0 開始的列、欄索引。選取一塊範圍後按 **Show statistics for the selected cells** 圖示，可查看有限值摘要；FXP 與大型整數會先轉成 float64/complex128，因此結果是近似值。更改 FXP Format 後，可按 **Preview format conversion for the whole array** 圖示檢視範圍、LSB、改值/飽和數量與範例，再選 **Apply**；也可按 Enter 直接套用。只把格式欄移開焦點不會套用。大於 4,096 格時 Preview 只抽查所選格，但套用仍會改整個變數。
+多維陣列可在切片欄輸入後續維度索引，例如 `0, 1` 表示 `A[:, :, 0, 1]`；**Jump to row, column** 使用從 0 開始的列、欄索引。選取一塊範圍後按 **Show statistics for the selected cells** 圖示，可查看有限值摘要；FXP 與大型整數會先轉成 float64/complex128，因此結果是近似值。要轉換或重新格式化整個陣列，可使用 Inspector 的轉換控制項，或矩陣編輯器既有的 **Format** 與 **Preview** 控制；兩者使用相同流程。Workspace 捷徑會導向 Inspector，矩陣編輯器仍可檢視及編輯個別儲存格。
 
 ### 判讀大型陣列的飽和提示
 
@@ -167,8 +186,8 @@ A = APyFixedArray.from_float(np.zeros(4097), bits=8, frac_bits=4)
 - 按 **Restart kernel** 圖示會先確認，再清空工作區並重建 kernel。Kernel 崩潰後不會自動重啟；狀態列會顯示錯誤，使用者可明確選擇重啟。關閉應用程式會停止由它建立的 kernel。
 - `~/.rpkbin/calc_settings.json` 保存設定。Kernel connection、history 與 log 位於暫存 runtime 目錄，結束時清除；命令歷史只屬於目前 session。
 - FXP 顯示與數值預設會更新既有 session。更改自動載入函數群組或執行 `clear` 時，會重新注入內建 helper 與快取的啟動符號，不會重跑 `startup.py`。啟動程式只在 kernel 啟動/重啟，或於設定選 **Reload and run** 時執行。
-- **RND/SAT** 預設套用於 GUI 實數值編輯、**Convert to FXP** 及以數值保值的格式轉換。原生 APyTypes constructors 使用 APyTypes 自身預設，也不會產生 GUI conversion-reference 記錄。
-- Workspace 選取陣列後，可按 **Open array editor** 圖示，也可雙擊該列開啟矩陣分頁；hover tooltip 會說明雙擊操作。Inspector 標題列的箭頭與標題可收合/展開內容，收合時標題列仍可見。開啟陣列或在 Workspace 雙擊變數會重新展開 Inspector。
+- GUI 量化與溢位預設套用於 GUI 實數值編輯及 native-to-FXP 轉換，不影響 APyTypes constructors 或 console 運算；這些操作使用 APyTypes 自身預設，也不會產生 GUI conversion-reference 記錄。
+- Workspace 選取陣列後，可按 **Open array editor** 圖示，也可雙擊其 **Value** 儲存格開啟矩陣分頁。Inspector 標題列的箭頭與標題可收合/展開內容，收合時標題列仍可見。開啟陣列時會展開 Inspector。
 - 關閉視窗時會保存視窗位置與大小、分隔器尺寸，以及 Inspector 收合狀態，下次啟動時還原。`startup.py` 錯誤會在 traceback 顯示實際檔案路徑與行號。
 
 程序邊界、矩陣傳輸和版本檢查見[架構說明](architecture.md)。

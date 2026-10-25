@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QInputDialog,
-    QSplitter,
     QSizePolicy,
     QTabBar,
     QTabWidget,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..controller import CalcController
+from ..core.format_engine import FormatEngine
 from ..core.config import DEFAULT_CONFIG_PATH
 from ..core.session import MatrixSnapshot
 from .console_widget import CommandWindowWidget
@@ -38,7 +38,8 @@ from .inspector_widget import VariableInspectorWidget
 from .matrix_editor import MatrixEditorPage
 from .numeric_display import format_numeric_text
 from .settings_dialog import SettingsDialog
-from .theme import build_stylesheet, get_palette, qt_palette, set_role
+from .panel_splitter import PanelSplitter
+from .theme import build_stylesheet, get_palette, qt_palette, scaled_px, set_role
 from .workspace_widget import WorkspaceWidget
 
 
@@ -117,7 +118,7 @@ class CalcMainWindow(QMainWindow):
         root_layout.addWidget(top_bar)
 
         # ── Main Horizontal Splitter (Left: Command/Matrix Tabs | Right: Workspace + Inspector) ──
-        self.h_splitter = QSplitter(Qt.Orientation.Horizontal, central)
+        self.h_splitter = PanelSplitter(Qt.Orientation.Horizontal, central)
 
         # Left Pane: Tabbed Command Window + Matrix Variable Editors
         self.left_tabs = QTabWidget(self.h_splitter)
@@ -138,7 +139,7 @@ class CalcMainWindow(QMainWindow):
         )
 
         # Right Pane: Vertical Splitter (Top: Workspace | Bottom: Variable Inspector)
-        self.v_splitter = QSplitter(Qt.Orientation.Vertical, self.h_splitter)
+        self.v_splitter = PanelSplitter(Qt.Orientation.Vertical, self.h_splitter)
 
         self.workspace_widget = WorkspaceWidget(
             self.controller,
@@ -148,6 +149,8 @@ class CalcMainWindow(QMainWindow):
         self.inspector_widget = VariableInspectorWidget(
             self.controller, parent=self.v_splitter
         )
+
+        self.workspace_widget.inspect_requested.connect(self.inspector_widget.focus_target)
 
         self.v_splitter.addWidget(self.workspace_widget)
         self.v_splitter.addWidget(self.inspector_widget)
@@ -306,16 +309,32 @@ class CalcMainWindow(QMainWindow):
         self.redo_action.setEnabled(self.redo_btn.isEnabled())
 
     def _show_preview(self, preview):
-        text = self._copy(
+        text = self._copy("Preserve: {mode}\n", mode=self._copy(
+            "Real Value" if preview["pin"] == "real" else "Hex (Raw Bits)")) + self._copy(
             "Target: {name} → {format}\nScope: {scope}\nRange: {range}\nLSB: {lsb}\n"
             "Checked: {checked_cells} / {total_cells}\nChanged values: {changed_values}; saturated: {saturated_cells}\n"
-            "Discarded high bits: {discarded_high_bits_cells}\nExample: {before} → {after}\n\n"
-            "Array format changes apply to the whole variable and clear GUI Undo history.",
-            **dict(preview, scope=self._copy(preview["scope"]), **preview["example"]))
+            "Discarded high bits: {discarded_high_bits_cells}\nExample: {before} → {after}",
+            **dict(preview, format=FormatEngine.format(FormatEngine.parse(preview["format"]), self.controller.config), scope=self._copy(preview["scope"]), **preview["example"]))
+        target_row = next((row for row in self.controller.rows if row.name == preview["name"]), None)
+        if target_row is not None and target_row.is_array and not preview.get("same_format"):
+            text += "\n\n" + self._copy("Array format changes apply to the whole variable and clear GUI Undo history.")
         if ask(self, self._copy("FXP conversion preview"), text,
                 QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel, self.controller.config.language) == QMessageBox.StandardButton.Apply:
-            self.controller.change_variable_format(preview["name"], preview["format"])
+                QMessageBox.StandardButton.Cancel, self.controller.config.language,
+                icon=QMessageBox.Icon.Information) == QMessageBox.StandardButton.Apply:
+            config = self.controller.config
+            row = next((row for row in self.controller.rows if row.name == preview["name"]), None)
+            stale = (preview.get("revision") != self.controller.revision
+                     or preview.get("quant") != config.default_quant
+                     or preview.get("overflow") != config.default_overflow
+                     or (row is not None and row.is_fxp and preview["pin"] != config.inspector_pin_mode))
+            if stale:
+                self._show_error(self._copy("Workspace or conversion settings changed; preview again before applying."))
+                return
+            if preview.get("same_format"):
+                return
+            self.controller.change_variable_format(preview["name"], FormatEngine.parse(preview["format"]),
+                pin_mode=preview["pin"], expected_revision=preview["revision"])
 
     def _show_error(self, error):
         if error:
@@ -359,6 +378,10 @@ class CalcMainWindow(QMainWindow):
         self.palette = get_palette(cfg.theme)
         self.setPalette(qt_palette(self.palette))
         self.setStyleSheet(build_stylesheet(self.palette, cfg))
+        for splitter in (self.h_splitter, self.v_splitter):
+            splitter.setHandleWidth(scaled_px(7, cfg))
+            splitter.handle(1).setToolTip(self._copy(
+                "Drag to resize or reopen panels. View → Reset layout restores all panels."))
         for button, icon, tooltip in (
             (self.undo_btn, "undo", "Undo numeric edit\nGUI numeric/bit edits only; REPL, slice or structural changes clear this history. Console Ctrl+Z edits text."),
             (self.redo_btn, "redo", "Redo numeric edit\nRestore the last undone GUI numeric/bit edit."),

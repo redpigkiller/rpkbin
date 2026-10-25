@@ -176,8 +176,8 @@ class MatrixEditorPage(QFrame):
         self.fmt_edit.setMinimumWidth(0)
         self.fmt_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.fmt_edit.setToolTip("FXP format applies to the entire array. Qm.n includes sign in m; total bits = m + n. "
-                                 "Use Q or MATLAB short notation, regardless of custom display templates. "
-                                 "Native arrays: use Convert to FXP explicitly.")
+                                 "Use Q, MATLAB or a uniquely reversible current custom template. "
+                                 "Native arrays: use Inspector conversion controls.")
         self.fmt_edit.returnPressed.connect(self._on_format_edited)
         self.fmt_edit.setPlaceholderText("Enter to apply")
         row.addWidget(self.fmt_edit, 1)
@@ -432,8 +432,8 @@ class MatrixEditorPage(QFrame):
         self.fmt_edit.setPlaceholderText(self._text("Enter to apply"))
         self.fmt_edit.setAccessibleName(self._text("Array format"))
         self.fmt_edit.setToolTip(self._text("FXP format applies to the entire array. Qm.n includes sign in m; total bits = m + n. "
-            "Use Q or MATLAB short notation, regardless of custom display templates. "
-            "Native arrays: use Convert to FXP explicitly."))
+            "Use Q, MATLAB or a uniquely reversible current custom template. "
+            "Native arrays: use Inspector conversion controls."))
         for widget, placeholder, tooltip, accessible in (
             (self.slice_edit, "Trailing dimension indices: 0, 0", "Select trailing indices for A[:, :, i, j, ...]; changing slice clears GUI Undo", "Trailing dimension indices"),
             (self.jump_edit, "Jump to row, column (zero-based)", "Jump to a zero-based row, column in the current slice", "Jump to row and column"),

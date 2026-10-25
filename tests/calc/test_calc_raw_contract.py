@@ -1,6 +1,7 @@
 """Raw FXP boundaries, explicit reformat policy, and hardware bit fields."""
 
 from fractions import Fraction
+from rpkbin.calc.core.config import CalcConfig
 import math
 
 import numpy as np
@@ -217,7 +218,7 @@ def test_malicious_fxp_paste_is_rejected_before_any_cell_changes(tmp_path):
     from rpkbin.calc.core import WorkspaceSession
     from rpkbin.calc.core.editing import EditJournal, paste_rectangle
 
-    session = WorkspaceSession(seed_demo_vars=False)
+    session = WorkspaceSession(CalcConfig(), seed_demo_vars=False)
     source = make_fxp([[1, 2]], "Q8.0")
     session.user_ns["a"] = source
     journal = EditJournal(session)
@@ -259,3 +260,12 @@ def test_real_editor_accepts_numeric_budget_boundaries(expression, expected):
     result = update_scalar_from_field(make_fxp("Q8.0"), "real", expression)
     assert result.target_real == expected
     assert result.is_saturated == (expected > 127)
+
+
+def test_decimal_leading_zero_error_preserves_python_semantics_and_original_value():
+    source = make_fxp(1, "Q6.10")
+    with pytest.raises(ValueError, match="Leading zeros.*use 3 instead of 03"):
+        update_scalar_from_field(source, "real", "03")
+    assert float(source) == 1
+    assert float(update_scalar_from_field(source, "real", "3")) == 3
+    assert float(update_scalar_from_field(source, "real", "0o3")) == 3

@@ -80,12 +80,12 @@ def test_private_and_fake_constructor_format_strings_are_rejected(text):
         FormatEngine.parse(text)
 
 
-def test_custom_display_never_changes_format_input_or_data():
+def test_custom_display_input_roundtrips_and_conflicting_display_falls_back():
     cfg = CalcConfig(startup_script="", format_preset="custom", custom_signed_tpl="signed:{wl}/{fwl}")
     spec = FxpSpec(True, 16, 12)
     assert FormatEngine.format(spec, cfg) == "signed:16/12"
-    assert FormatEngine.editable(spec, cfg) == "Q4.12"
-    assert FormatEngine.parse(FormatEngine.editable(spec, cfg)) == spec
+    assert FormatEngine.editable(spec, cfg) == "signed:16/12"
+    assert FormatEngine.parse_input(FormatEngine.editable(spec, cfg), cfg) == spec
     # Even a template that looks valid must not silently declare a different format.
     cfg.custom_signed_tpl = "Q99.{fwl}"
     assert FormatEngine.editable(spec, cfg) == "Q4.12"

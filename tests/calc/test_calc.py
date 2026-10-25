@@ -71,11 +71,11 @@ def test_format_engine_parse_and_format() -> None:
     cfg.format_preset = "custom"
     cfg.custom_signed_tpl = "FXP_{S_or_U}({wl},{iwl},{fwl})"
     assert FormatEngine.format(s1, cfg) == "FXP_S(10,-2,12)"
-    assert FormatEngine.parse(FormatEngine.editable(s1, cfg)) == s1
+    assert FormatEngine.parse_input(FormatEngine.editable(s1, cfg), cfg) == s1
 
 
 def test_native_fixed_workflow_and_explicit_fixed_operand_arithmetic() -> None:
-    session = WorkspaceSession(seed_demo_vars=False)
+    session = WorkspaceSession(CalcConfig(), seed_demo_vars=False)
 
     # A narrow fixed-point value cannot represent the Python operand 2.
     # An explicit second format preserves APyTypes' native full-precision sum.
@@ -102,7 +102,7 @@ def test_native_fixed_workflow_and_explicit_fixed_operand_arithmetic() -> None:
 
 
 def test_pin_mode_real_vs_hex_when_changing_format() -> None:
-    session = WorkspaceSession(seed_demo_vars=False)
+    session = WorkspaceSession(CalcConfig(), seed_demo_vars=False)
     session.execute('x = APyFixed.from_float(-0.03, bits=10, frac_bits=12)')  # Hex = 0x385, s2 = -123
 
     # 1. Pin Hex (Raw Bits): changing format to Q10.0 keeps 0x385 and re-interprets Real Value as -123
@@ -136,7 +136,7 @@ def test_pin_mode_real_vs_hex_when_changing_format() -> None:
 
 
 def test_matrix_inspection_and_cell_editing() -> None:
-    session = WorkspaceSession(seed_demo_vars=False)
+    session = WorkspaceSession(CalcConfig(), seed_demo_vars=False)
     # GUI conversion fixtures retain the source needed for SAT diagnostics.
     session.user_ns["A"] = make_fxp([[0.25, -0.125, 0.05], [-0.03, 0.1, -0.2]], "Q-2.12")
 
@@ -157,7 +157,7 @@ def test_matrix_inspection_and_cell_editing() -> None:
 
 
 def test_engineering_math_and_auto_imports() -> None:
-    session = WorkspaceSession(seed_demo_vars=True)
+    session = WorkspaceSession(CalcConfig(), seed_demo_vars=True)
     res1 = session.execute("c_val = cos(a)")
     assert not res1.error_text
     assert pytest.approx(session.user_ns["c_val"], rel=1e-6) == float(

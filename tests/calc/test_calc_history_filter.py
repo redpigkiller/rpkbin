@@ -90,7 +90,7 @@ def test_workspace_name_and_type_filters_combine_case_insensitively(workspace):
     assert set(visible_names(widget)) == {"beta", "Delta"}
     widget.type_filter.setCurrentIndex(widget.type_filter.findData("fxp"))
     assert visible_names(widget) == ["Delta"]
-    assert widget.filter_count.text() == "1 / 4"
+    assert widget.filter_count.text() == "1 / 4 shown"
 
 
 def test_filter_hidden_selection_restored_without_changing_inspector(workspace):

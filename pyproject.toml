@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.2.0"
+version = "0.2.1"
 description = "General-purpose utilities for IC design and verification workflows (MapBV, TablePack, JobManager, Wave Web GUI)."
 readme = "README.md"
 authors = [

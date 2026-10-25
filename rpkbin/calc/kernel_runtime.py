@@ -180,6 +180,9 @@ class CalcKernelRuntime:
             validate_envelope(request, self.build)
             op = request.get("op", "snapshot")
             if op == "mutate":
+                expected = request.get("expected_revision")
+                if expected is not None and (type(expected) is not int or expected != self.revision):
+                    raise ValueError("Workspace changed; review the conversion and try again")
                 self._mutate(request)
             elif op == "config":
                 config = CalcConfig(**request["config"])

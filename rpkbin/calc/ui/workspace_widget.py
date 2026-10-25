@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -30,11 +31,13 @@ from ..core.session import MAX_SATURATION_CHECK_CELLS, WorkspaceRowSnapshot
 from .i18n import UiText, notify, tr
 from .icons import make_icon, style_icon_button
 from .numeric_display import format_numeric_text
-from .theme import get_palette, scaled_px
+from .theme import get_palette, scaled_px, set_role
 
 
 class WorkspaceWidget(QFrame):
     """Top-right Workspace table displaying user variables."""
+
+    inspect_requested = Signal(str, str)  # variable name, "value" or "format"
 
     def __init__(
         self,
@@ -98,16 +101,23 @@ class WorkspaceWidget(QFrame):
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(8, 5, 8, 5)
         self.name_filter = QLineEdit(self)
+        set_role(self.name_filter, "search")
+        self.name_filter.setMinimumWidth(0)
+        self.name_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.copy.bind(self.name_filter, "Filter variable names", "setPlaceholderText")
         self.name_filter.setClearButtonEnabled(True)
         self.type_filter = QComboBox(self)
+        self.type_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.type_filter.setMinimumContentsLength(1)
         for title, kind in (("All types", "all"), ("Arrays", "array"),
                             ("Scalars", "scalar"), ("FXP", "fxp"),
                             ("Python / NumPy", "native")):
             self.type_filter.addItem(title, kind)
         self.filter_count = QLabel(self)
+        set_role(self.filter_count, "secondary")
         filter_row.addWidget(self.name_filter, 1)
         filter_row.addWidget(self.type_filter)
+        filter_row.setSpacing(8)
         filter_row.addWidget(self.filter_count)
         layout.addLayout(filter_row)
         self.name_filter.textChanged.connect(self._apply_filter)
@@ -168,13 +178,34 @@ class WorkspaceWidget(QFrame):
             (self.cols_btn, "columns", tr("select_columns_tooltip", cfg.language, keep_english_terms=self.controller.config.keep_english_terms)),
             (self.clear_btn, "trash", tr("clear_workspace_tooltip", cfg.language, keep_english_terms=self.controller.config.keep_english_terms)),
         ):
-            style_icon_button(button, icon, self.copy(tooltip), self.palette.text_secondary, cfg)
+            style_icon_button(button, icon, self.copy(tooltip), self.palette.text_secondary, cfg,
+                              label=self.copy("Columns") if button is self.cols_btn else None)
+        self._update_filter_count()
+        self.type_filter.setAccessibleName(self.copy("All types"))
+        self.name_filter.setAccessibleName(self.copy("Filter variable names"))
+        QTimer.singleShot(0, self._size_filter_controls)
         # A terminology-only refresh changes labels, not workspace data or
         # selection. Rebuild cells only when their displayed copy can change.
         key = (cfg.language, cfg.numeric_display, cfg.numeric_precision)
         if key != getattr(self, "_render_config_key", None):
             self._render_config_key = key
             self.render_rows(self._rows)
+
+    def _size_filter_controls(self):
+        width = self.type_filter.fontMetrics().horizontalAdvance(self.type_filter.currentText())
+        self.type_filter.setFixedWidth(width + scaled_px(30, self.controller.config))
+        height = max(self.name_filter.sizeHint().height(), self.type_filter.sizeHint().height())
+        for control in (self.name_filter, self.type_filter):
+            control.setFixedHeight(height)
+
+    def _update_filter_count(self):
+        self.filter_count.setText(self.copy("{visible} / {total} shown",
+            visible=len(self._visible_rows), total=len(self._rows)))
+        selected = self.controller.selected_var
+        hidden = selected and any(row.name == selected for row in self._rows) and not any(
+            row.name == selected for row in self._visible_rows)
+        self.filter_count.setToolTip(self.copy("The selected variable is hidden by the filter; Inspector keeps its selection."
+                                    if hidden else "Visible / total variables"))
 
     def _open_selected_array(self):
         snap = self._selected_row_snapshot()
@@ -201,6 +232,7 @@ class WorkspaceWidget(QFrame):
         self._apply_filter()
 
     def _apply_filter(self, *_args) -> None:
+        QTimer.singleShot(0, self._size_filter_controls)
         query = self.name_filter.text().casefold()
         kind = self.type_filter.currentData()
         self._visible_rows = [row for row in self._rows
@@ -210,12 +242,7 @@ class WorkspaceWidget(QFrame):
                                    or (kind == "scalar" and not row.is_array)
                                    or (kind == "fxp" and row.is_fxp)
                                    or (kind == "native" and not row.is_fxp))]
-        self.filter_count.setText(f"{len(self._visible_rows)} / {len(self._rows)}")
-        selected_name = self.controller.selected_var
-        hidden = selected_name and any(row.name == selected_name for row in self._rows) and not any(
-            row.name == selected_name for row in self._visible_rows)
-        self.filter_count.setToolTip(self.copy("The selected variable is hidden by the filter; Inspector keeps its selection."
-                                    if hidden else "Visible / total variables"))
+        self._update_filter_count()
         vertical = self.table.verticalScrollBar().value()
         horizontal = self.table.horizontalScrollBar().value()
         current_column = max(0, self.table.currentColumn())
@@ -237,7 +264,14 @@ class WorkspaceWidget(QFrame):
                         elif row.is_saturated is None:
                             text = f"[SAT?] {text}"
                     item = QTableWidgetItem(text)
-                    hint = "\n" + self.copy("Double-click to open the array; click to inspect an element. Indices start at 0.") if row.is_array else ""
+                    if col_id == "format":
+                        hint = "\n" + self.copy("Double-click to convert / adjust format in Inspector.")
+                    elif row.is_array:
+                        hint = "\n" + self.copy("Double-click to open the array; click to inspect an element. Indices start at 0.")
+                    elif col_id == "value":
+                        hint = "\n" + self.copy("Double-click to edit the value in Inspector.")
+                    else:
+                        hint = ""
                     if row.is_fxp and row.is_array:
                         if row.is_saturated is True:
                             hint += "\n" + self.copy("SAT: At least one current cell is verified to match a saturated conversion.")
@@ -286,10 +320,12 @@ class WorkspaceWidget(QFrame):
         snap = self._visible_rows[row]
         if self._on_ensure_inspector_visible is not None:
             self._on_ensure_inspector_visible()
-        if snap.is_array:
+        column = ALL_WORKSPACE_COLUMNS[_col]
+        if snap.is_array and column != "format":
             self.controller.open_matrix_editor(snap.name)
         else:
             self.controller.select_variable(snap.name)
+            self.inspect_requested.emit(snap.name, "format" if column == "format" else "value")
 
     # ── Header Column Chooser Menu ────────────────────────────────────────
 
@@ -370,15 +406,8 @@ class WorkspaceWidget(QFrame):
 
         menu.addSeparator()
 
-        act_to_fxp = menu.addAction(tr("ctx_to_fxp", lang, keep_english_terms=self.controller.config.keep_english_terms))
-        act_to_fxp.triggered.connect(lambda: self._prompt_convert_to_fxp(snap))
-
-        if snap.is_fxp:
-            act_to_flt = menu.addAction(tr("ctx_to_float", lang, keep_english_terms=self.controller.config.keep_english_terms))
-            act_to_flt.triggered.connect(
-                lambda: self.controller.convert_to_float(snap.name)
-            )
-
+        act_convert = menu.addAction(self.copy("Convert / adjust format in Inspector…"))
+        act_convert.triggered.connect(lambda: self._navigate_conversion(snap.name))
         menu.addSeparator()
 
         act_ren = menu.addAction(tr("ctx_rename", lang, keep_english_terms=self.controller.config.keep_english_terms))
@@ -404,14 +433,9 @@ class WorkspaceWidget(QFrame):
         if cb is not None:
             cb.setText(text)
 
-    def _prompt_convert_to_fxp(self, snap: WorkspaceRowSnapshot) -> None:
-        default_fmt = "Q4.12"
-        new_fmt, ok = self._text_prompt("Convert to FXP", self.copy(
-            "Target FXP format for '{name}' (for example, Q4.12, UQ4.12 or sfix16_En12):\n"
-            "Qm.n includes sign in m; total bits = m + n.\n"
-            "Requantizes numeric values for the whole variable. Hex pin does not apply.", name=snap.name), default_fmt)
-        if ok and new_fmt.strip():
-            self.controller.convert_to_fxp(snap.name, new_fmt.strip())
+    def _navigate_conversion(self, name):
+        self._inspect_variable_action(name)
+        self.inspect_requested.emit(name, "format")
 
     def _rename_selected_row(self) -> None:
         snap = self._selected_row_snapshot()

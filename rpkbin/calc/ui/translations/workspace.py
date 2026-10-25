@@ -42,4 +42,10 @@ ZH_TW = {'Open array': '開啟陣列',
  'Yes': '是',
  'No': '否',
  'Clear Workspace': '清除工作區',
- 'Clear all Workspace variables?': '要清除工作區內的所有變數嗎？'}
+ 'Clear all Workspace variables?': '要清除工作區內的所有變數嗎？',
+    'Convert / adjust format in Inspector…': '在變數檢視器轉換／調整格式…',
+    "Double-click to convert / adjust format in Inspector.": "連按兩下可在變數檢視器轉換／調整格式。",
+    "Double-click to edit the value in Inspector.": "連按兩下可在變數檢視器編輯數值。",
+    'Columns': '欄位',
+    '{visible} / {total} shown': '顯示 {visible} / {total} 個',
+}

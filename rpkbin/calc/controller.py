@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from .core.format_engine import FormatEngine
 from .core.config import CalcConfig, DEFAULT_CONFIG_PATH, KERNEL_CONFIG_FIELDS
 from .core.startup import prepare_startup
 from .kernel_client import KernelTransport
@@ -157,7 +158,7 @@ class CalcController(QObject):
             self.undo_state = payload["undo"]
             self.undo_state_changed.emit(self.undo_state)
         if "preview" in payload and request.get("view_id") == self._view_id:
-            self.preview_ready.emit(payload["preview"])
+            self.preview_ready.emit(dict(payload["preview"], revision=payload.get("revision", self.revision)))
         if "statistics" in payload:
             self.statistics_ready.emit(request["name"], payload["statistics"])
         if "clipboard" in payload:
@@ -238,22 +239,40 @@ class CalcController(QObject):
                             "view_id": self._view_id}
         self._schedule()
 
-    def _mutate(self, action, *args, **kwargs):
+    def _mutate(self, action, *args, expected_revision=None, **kwargs):
         if not self.is_available or len(self._mutations) >= 32:
             self.format_error_occurred.emit("Kernel is busy; wait before editing")
             return False
         self.interaction_enabled.emit(False)
-        self._mutations.append({"op": "mutate", "action": action,
-                                 "args": args, "kwargs": kwargs})
+        request = {"op": "mutate", "action": action, "args": args, "kwargs": kwargs}
+        if expected_revision is not None:
+            request["expected_revision"] = expected_revision
+        self._mutations.append(request)
         self._schedule()
         return True
 
-    def change_variable_format(self, name, new_fmt_str):
-        return self._mutate("reformat", name, new_fmt_str, pin_mode=self.config.inspector_pin_mode)
+    def _format_argument(self, text):
+        try:
+            return FormatEngine.canonical(FormatEngine.parse_input(text, self.config))
+        except ValueError as exc:
+            self.format_error_occurred.emit(str(exc))
+            return None
 
-    def convert_to_fxp(self, name, new_fmt_str):
+    def change_variable_format(self, name, new_fmt_str, *, pin_mode=None, expected_revision=None):
+        canonical = self._format_argument(new_fmt_str)
+        if canonical is None:
+            return False
+        return self._mutate("reformat", name, canonical,
+                            pin_mode=pin_mode or self.config.inspector_pin_mode,
+                            expected_revision=expected_revision)
+
+    def convert_to_fxp(self, name, new_fmt_str, *, expected_revision=None):
         """Explicit numeric conversion, independent of the last FXP pin selection."""
-        return self._mutate("reformat", name, new_fmt_str, pin_mode="real")
+        canonical = self._format_argument(new_fmt_str)
+        if canonical is None:
+            return False
+        return self._mutate("reformat", name, canonical, pin_mode="real",
+                            expected_revision=expected_revision)
 
     def edit_target_field(self, name, coord, field, text_val):
         return self._mutate("edit", name, coord, field, text_val)
@@ -279,8 +298,8 @@ class CalcController(QObject):
     def delete_variable(self, name):
         return self._mutate("delete", name)
 
-    def convert_to_float(self, name):
-        return self._mutate("to_float", name)
+    def convert_to_float(self, name, *, expected_revision=None):
+        return self._mutate("to_float", name, expected_revision=expected_revision)
 
     def clear_workspace(self):
         return self._mutate("clear")
@@ -305,9 +324,12 @@ class CalcController(QObject):
             return self._mutate("bit_field", self.selected_var, self.selected_coord, high, low, value)
         return False
 
-    def request_preview(self, name, fmt):
-        return self._queue_read({"op": "preview", "name": name, "format": fmt,
-            "pin": self.config.inspector_pin_mode, "coord": self.selected_coord})
+    def request_preview(self, name, fmt, *, pin_mode=None):
+        canonical = self._format_argument(fmt)
+        if canonical is None:
+            return False
+        return self._queue_read({"op": "preview", "name": name, "format": canonical,
+            "pin": pin_mode or self.config.inspector_pin_mode, "coord": self.selected_coord})
 
     def request_statistics(self, name, rectangle):
         return self._queue_read({"op": "statistics", "name": name, "rectangle": list(rectangle)})

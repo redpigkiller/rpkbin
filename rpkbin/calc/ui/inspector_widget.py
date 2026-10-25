@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QMessageBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpacerItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
 from ..controller import CalcController
 from ..core.format_engine import FormatEngine
 from ..core.fxp_model import BitCellInfo, InspectorSnapshot, PlainValueSnapshot
-from .i18n import UiText, prompt_text, tr
+from .i18n import UiText, ask, prompt_text, tr
+from .conversion_dialog import FixedPointConversionDialog
 from .icons import make_icon, style_icon_button
 from .theme import get_palette, repolish, scaled_px, set_role
 
@@ -61,13 +64,17 @@ class _ValueFieldCard(QFrame):
         self._force_refresh = False
 
         set_role(self, "valueCard")
+        self.setProperty("representation", field_id)
 
-        v_layout = QVBoxLayout(self)
-        v_layout.setContentsMargins(8, 5, 8, 6)
-        v_layout.setSpacing(3)
+        self._inline = False
+        self._list_title_width = 0
+        self._list_pin_space = 0
+        v_layout = self._root_layout = QVBoxLayout(self)
+        v_layout.setContentsMargins(8, 4, 8, 4)
+        v_layout.setSpacing(2)
 
         # Top row: Label + optional Pin icon + Copy icon
-        top_row = QHBoxLayout()
+        top_row = self._top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(4)
 
@@ -89,6 +96,8 @@ class _ValueFieldCard(QFrame):
             )
             top_row.addWidget(self.pin_btn)
 
+        self._pin_space = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        top_row.addItem(self._pin_space)
         self.copy_btn = QToolButton(self)
         self.copy_btn.setFixedSize(22, 20)
         self.copy_btn.setIcon(make_icon("copy", self.palette.text_secondary, 13))
@@ -110,9 +119,63 @@ class _ValueFieldCard(QFrame):
         set_role(self.error_label, "error")
         self.error_label.hide()
         v_layout.addWidget(self.error_label)
+        self._copy_timer = QTimer(self)
+        self._copy_timer.setSingleShot(True)
+        self._copy_timer.setInterval(300)
+        self._copy_timer.timeout.connect(self._finish_copy_feedback)
         controller.edit_finished.connect(self._edit_result)
 
         self.update_pin_visual(controller.config.inspector_pin_mode)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "edit"):
+            self._reflow_fields()
+
+    def _reflow_fields(self):
+        margins = self._root_layout.contentsMargins()
+        title_width = max(self._list_title_width,
+                          self.title_lbl.fontMetrics().horizontalAdvance(self.title_lbl.text()) + 4)
+        controls = [button for button in (self.pin_btn, self.copy_btn)
+                    if button is not None and not button.isHidden()]
+        input_width = max(scaled_px(80, self.controller.config),
+                          self.edit.fontMetrics().horizontalAdvance("0x00000000") + 8)
+        required = (margins.left() + margins.right() + title_width + input_width
+                    + sum(button.width() for button in controls) + self._list_pin_space
+                    + self._top_row.spacing() * (len(controls) + 1) + 4)
+        inline = self.contentsRect().width() >= required
+        self.title_lbl.setMinimumWidth(self._list_title_width if inline else 0)
+        reserve = self._list_pin_space if inline else 0
+        if self._pin_space.sizeHint().width() != reserve:
+            self._pin_space.changeSize(reserve, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+            self._top_row.invalidate()
+        if inline == self._inline:
+            return
+        self._inline = inline
+        self.title_lbl.setWordWrap(not inline)
+        if inline:
+            self._root_layout.removeWidget(self.edit)
+            self._top_row.insertWidget(1, self.edit, 1)
+            self._top_row.setStretch(0, 0)
+        else:
+            self._top_row.removeWidget(self.edit)
+            self._root_layout.insertWidget(1, self.edit)
+            self._top_row.setStretch(0, 1)
+
+    def _refresh_copy_button(self):
+        active = self._copy_timer.isActive()
+        self.copy_btn.setIcon(make_icon("check" if active else "copy",
+            self.palette.success if active else self.palette.text_secondary,
+            scaled_px(13, self.controller.config)))
+        label = self._text("Copied") if active else self._text("Copy {title}", title=self.title_lbl.text())
+        self.copy_btn.setToolTip(label)
+        self.copy_btn.setAccessibleName(label)
+        self.copy_btn.setProperty("copyFeedback", active)
+        repolish(self.copy_btn)
+
+    def _finish_copy_feedback(self):
+        self._copy_timer.stop()
+        self._refresh_copy_button()
 
     def update_pin_visual(self, active_pin: str) -> None:
         if self.pin_btn is None or self.pin_key is None:
@@ -178,6 +241,8 @@ class _ValueFieldCard(QFrame):
         cb = QGuiApplication.clipboard()
         if cb is not None:
             cb.setText(self.edit.text())
+            self._copy_timer.start()
+            self._refresh_copy_button()
 
     def retranslate_ui(self, cfg, title):
         self._text.refresh(cfg.language, keep_english_terms=cfg.keep_english_terms)
@@ -194,6 +259,8 @@ class _ValueFieldCard(QFrame):
         if self._error_source:
             source, values = self._error_source
             self.error_label.setText(self._text(source, **values))
+        self._refresh_copy_button()
+        self._reflow_fields()
 
 
 class VariableInspectorWidget(QFrame):
@@ -212,7 +279,12 @@ class VariableInspectorWidget(QFrame):
         self._error_source = None
         self.palette = get_palette(controller.config.theme)
         self._last_snapshot: InspectorSnapshot | PlainValueSnapshot | None = None
+        self._rendered_view_id = None
         self._format_failure = None
+        self._format_context = None
+        self._pending_focus = None
+        self._conversion_dialog = None
+        self._recent_format = ""
         self._bit_cells = {}
         self._bit_data = []
         self._bit_layout_key = None
@@ -258,7 +330,7 @@ class VariableInspectorWidget(QFrame):
         self.list_mode_btn.clicked.connect(
             lambda: self.controller.set_inspector_view_mode("list")
         )
-        h_layout.addWidget(self.list_mode_btn, 0, 2)
+        h_layout.addWidget(self.list_mode_btn, 0, 3)
 
         self.grid_mode_btn = QToolButton(header)
         self.grid_mode_btn.setCheckable(True)
@@ -269,7 +341,7 @@ class VariableInspectorWidget(QFrame):
         self.grid_mode_btn.clicked.connect(
             lambda: self.controller.set_inspector_view_mode("grid")
         )
-        h_layout.addWidget(self.grid_mode_btn, 0, 3)
+        h_layout.addWidget(self.grid_mode_btn, 0, 2)
 
         main_layout.addWidget(header)
 
@@ -279,16 +351,26 @@ class VariableInspectorWidget(QFrame):
         body_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self.body_widget = QWidget(body_scroll)
+        self._selection_paint_timer = QTimer(self)
+        self._selection_paint_timer.setSingleShot(True)
+        self._selection_paint_timer.setInterval(120)
+        self._selection_paint_timer.timeout.connect(self._release_selection_paint)
         body_layout = QVBoxLayout(self.body_widget)
         body_layout.setContentsMargins(10, 8, 10, 8)
         body_layout.setSpacing(8)
-        body_layout.addWidget(self.status_badge)
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.status_badge, 1)
+        self.convert_btn = QToolButton(self.body_widget)
+        self.convert_btn.clicked.connect(self._convert_clicked)
+        action_row.addWidget(self.convert_btn)
+        body_layout.addLayout(action_row)
 
-        # Format Bar
-        fmt_row = QHBoxLayout()
+        self.format_host = QWidget(self.body_widget)
+        fmt_row = QHBoxLayout(self.format_host)
+        fmt_row.setContentsMargins(0, 0, 0, 0)
         fmt_row.setSpacing(6)
         fmt_lbl = self.fmt_lbl = QLabel("Format:")
-        set_role(fmt_lbl, "secondary")
+        set_role(fmt_lbl, "sectionLabel")
         fmt_row.addWidget(fmt_lbl)
 
         self.fmt_edit = QLineEdit(self.body_widget)
@@ -297,25 +379,29 @@ class VariableInspectorWidget(QFrame):
         self.fmt_edit.setToolTip(
             "FXP format changes apply to the entire variable or array.\n"
             "Qm.n includes sign in m; total bits = m + n (e.g. Q4.12). MATLAB short notation is also accepted.\n"
-            "Custom display templates do not change format input syntax.\n"
-            "Pin chooses whether to preserve numeric values or raw bits. For native values, use Convert to FXP or APyFixed.from_float()."
+            "Uniquely reversible current custom templates are also accepted.\n"
+            "Pin chooses whether to preserve numeric values or raw bits. Native values use Convert to FXP; conversion preserves numeric values."
         )
         self.fmt_edit.returnPressed.connect(self._on_format_committed)
         self.fmt_edit.setPlaceholderText("Format; Enter to apply")
         fmt_row.addWidget(self.fmt_edit)
         self.preview_btn = QToolButton(self.body_widget)
         self.preview_btn.setText("Preview")
-        self.preview_btn.clicked.connect(lambda: self.controller.request_preview(
-            self._last_snapshot.var_name, self.fmt_edit.text()) if self._last_snapshot else None)
+        self.preview_btn.clicked.connect(self._preview_conversion)
         fmt_row.addWidget(self.preview_btn)
+        self.apply_conversion_btn = QPushButton(self._text("Apply"), self.format_host)
+        set_role(self.apply_conversion_btn, "primary")
+        self.apply_conversion_btn.clicked.connect(self._on_format_committed)
+        fmt_row.addWidget(self.apply_conversion_btn)
 
         self.meta_info_lbl = QLabel("", self.body_widget)
         set_role(self.meta_info_lbl, "muted", code=True)
         self.meta_info_lbl.setWordWrap(True)
         self.meta_info_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         fmt_row.addStretch(1)
-        body_layout.addLayout(fmt_row)
+        body_layout.addWidget(self.format_host)
         body_layout.addWidget(self.meta_info_lbl)
+        self.fmt_edit.textEdited.connect(self._begin_conversion_edit)
 
         # Inline error label (hidden when no error)
         self.error_lbl = QLabel("", self.body_widget)
@@ -355,6 +441,11 @@ class VariableInspectorWidget(QFrame):
         self.cards_grid = QGridLayout(self.cards_container)
         self.cards_grid.setContentsMargins(0, 0, 0, 0)
         self.cards_grid.setSpacing(6)
+        self.native_details_toggle = QToolButton(self.cards_container)
+        self.native_details_toggle.setCheckable(True)
+        self.native_details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.native_details_toggle.toggled.connect(self._update_native_details)
+        self.native_details_toggle.hide()
         body_layout.addWidget(self.cards_container)
         self.native_bits_label = QLabel(self.body_widget)
         self.native_bits_label.setWordWrap(True)
@@ -368,7 +459,7 @@ class VariableInspectorWidget(QFrame):
         self.bit_title_lbl = QLabel("Bits (MSB → LSB)", self.body_widget)
         self.bit_title_lbl.setWordWrap(True)
         self.bit_title_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        set_role(self.bit_title_lbl, "secondary")
+        set_role(self.bit_title_lbl, "sectionLabel")
         bit_header.addWidget(self.bit_title_lbl, 1)
 
         legend_lbl = self.legend_lbl = QLabel(self.body_widget)
@@ -443,6 +534,7 @@ class VariableInspectorWidget(QFrame):
         self.controller.format_error_occurred.connect(self._on_format_error)
         self.controller.operation_finished.connect(self._operation_result)
         self.controller.console_executed.connect(lambda _: self._reset_errors())
+        self.controller.interaction_enabled.connect(self._interaction_changed)
         self._update_bit_legend()
         self.set_collapsed(controller.config.inspector_collapsed, save=False)
         self.render_snapshot(None)
@@ -506,6 +598,7 @@ class VariableInspectorWidget(QFrame):
         dot.setAccessibleName(self._text("Binary radix point"))
 
     def retranslate_ui(self, cfg):
+        QTimer.singleShot(0, self._align_list_fields)
         """Refresh only application copy, preserving every editable value/widget."""
         self._text.refresh(cfg.language, keep_english_terms=cfg.keep_english_terms)
         self.title_lbl.setText(tr("inspector", cfg.language, keep_english_terms=self.controller.config.keep_english_terms))
@@ -518,8 +611,8 @@ class VariableInspectorWidget(QFrame):
         self.fmt_edit.setToolTip(self._text(
             "FXP format changes apply to the entire variable or array.\n"
             "Qm.n includes sign in m; total bits = m + n (e.g. Q4.12). MATLAB short notation is also accepted.\n"
-            "Custom display templates do not change format input syntax.\n"
-            "Pin chooses whether to preserve numeric values or raw bits. For native values, use Convert to FXP or APyFixed.from_float()."))
+            "Uniquely reversible current custom templates are also accepted.\n"
+            "Pin chooses whether to preserve numeric values or raw bits. Native values use Convert to FXP; conversion preserves numeric values."))
         self.fmt_edit.setPlaceholderText(self._text("Format; Enter to apply"))
         self.fmt_edit.setAccessibleName(self._text("FXP format"))
         self.preview_btn.setText(self._text("Preview"))
@@ -542,15 +635,13 @@ class VariableInspectorWidget(QFrame):
         for card, key in zip(self._cards, keys):
             card.retranslate_ui(cfg, self._text("Value") if plain and card is self.card_real else tr(key, cfg.language, keep_english_terms=self.controller.config.keep_english_terms))
         if plain:
-            self.meta_info_lbl.setText(self._plain_metadata_text(snap))
+            self.meta_info_lbl.hide()
             self.native_bits_label.setText(self._native_bits_text(snap.native_bits))
             self._plain_bit_controls(snap)
         elif snap is None:
             self.meta_info_lbl.setText(tr("no_var_selected", cfg.language, keep_english_terms=self.controller.config.keep_english_terms))
         else:
-            self.meta_info_lbl.setText(self._text("Whole variable: {name}  |  WL={wl}, IWL={iwl}, FWL={fwl}  |  Range: {range}",
-                                                name=snap.var_name, wl=snap.spec.wl, iwl=snap.spec.iwl,
-                                                fwl=snap.spec.fwl, range=snap.range_str))
+            self._update_fxp_metadata(snap)
             self.status_badge.setText(self._diagnostic_text(snap))
             self.status_badge.setToolTip(self._text("Error compares this value with the input to its last tracked conversion. "
                 "It does not measure accumulated arithmetic error or the precision of the original input."))
@@ -564,6 +655,17 @@ class VariableInspectorWidget(QFrame):
         self.swap_order_btn.setAccessibleName(self.swap_order_btn.toolTip())
         self._layout_bit_actions()
         self._layout_inspector_header()
+        self.apply_conversion_btn.setText(self._text("Apply"))
+        self.native_details_toggle.setText(self._text("Bit representation (read-only)"))
+        self._sync_conversion_controls(self._last_snapshot)
+        if self._conversion_dialog is not None:
+            self._conversion_dialog.retranslate_ui(cfg)
+
+    def _update_fxp_metadata(self, snap):
+        self.meta_info_lbl.setToolTip(self._text(
+            "Whole variable: {name}  |  WL={wl}, IWL={iwl}, FWL={fwl}  |  Range: {range}",
+            name=snap.var_name, wl=snap.spec.wl, iwl=snap.spec.iwl, fwl=snap.spec.fwl, range=snap.range_str))
+        self.meta_info_lbl.setText(f"WL={snap.spec.wl} · FWL={snap.spec.fwl} · {snap.range_str}")
 
     def _update_bit_legend(self):
         metadata = self._last_snapshot.native_bits if isinstance(self._last_snapshot, PlainValueSnapshot) else None
@@ -581,8 +683,12 @@ class VariableInspectorWidget(QFrame):
             card.error_label.hide()
 
     def _operation_result(self, request, error):
-        if request.get("action") == "reformat" and self._last_snapshot:
+        if request.get("action") == "reformat":
             name, text = request["args"]
+            if not error:
+                self._recent_format = FormatEngine.editable(FormatEngine.parse(text), self.controller.config)
+            if self._last_snapshot is None:
+                return
             if name == self._last_snapshot.var_name:
                 self._format_failure = (name, text) if error else None
                 if error:
@@ -620,13 +726,20 @@ class VariableInspectorWidget(QFrame):
             if card.pin_btn:
                 style_icon_button(card.pin_btn, "pin", card.pin_btn.toolTip(), self.palette.text_secondary, cfg)
             card.update_pin_visual(cfg.inspector_pin_mode)
+            for button in (card.copy_btn, card.pin_btn):
+                if button is not None:
+                    button.setFixedSize(scaled_px(22, cfg), scaled_px(22, cfg))
+                    button.setIconSize(QSize(scaled_px(13, cfg), scaled_px(13, cfg)))
+            card._refresh_copy_button()
+            card._reflow_fields()
         for button, icon, tooltip in (
             (self.list_mode_btn, "list_view", tr("list_view_tooltip")),
             (self.grid_mode_btn, "grid_view", tr("grid_view_tooltip")),
             (self.swap_order_btn, "swap", tr("swap_bit_order_tooltip")),
             (self.preview_btn, "preview", "Preview FXP conversion\nReview changes before applying the format to the entire variable."),
         ):
-            style_icon_button(button, icon, tooltip, self.palette.text_secondary, cfg)
+            style_icon_button(button, icon, tooltip, self.palette.text_secondary, cfg,
+                              label=self._text("Preview") if button is self.preview_btn else None)
         self.bit_scroll.setMinimumHeight(scaled_px(88, cfg))
         self.bit_scroll.setMaximumHeight(scaled_px(185, cfg))
         self._update_bit_legend()
@@ -635,7 +748,20 @@ class VariableInspectorWidget(QFrame):
         self.retranslate_ui(cfg)
         QTimer.singleShot(0, self._layout_bit_cells)
 
+    def _align_list_fields(self):
+        cards = [card for card in self._cards if not card.isHidden()]
+        title_width = max((card.title_lbl.fontMetrics().horizontalAdvance(card.title_lbl.text()) + 4
+                           for card in cards), default=0) if self.controller.config.inspector_view_mode == "list" else 0
+        pin_width = max((card.pin_btn.width() for card in cards
+                         if card.pin_btn is not None and not card.pin_btn.isHidden()), default=0)
+        for card in self._cards:
+            card._list_title_width = title_width
+            has_pin = card.pin_btn is not None and not card.pin_btn.isHidden()
+            card._list_pin_space = pin_width + card._top_row.spacing() if title_width and pin_width and not has_pin else 0
+            card._reflow_fields()
+
     def _apply_cards_layout(self, view_mode: str) -> None:
+        QTimer.singleShot(0, self._align_list_fields)
         is_list = view_mode != "grid"
         self.list_mode_btn.setChecked(is_list)
         self.grid_mode_btn.setChecked(not is_list)
@@ -644,7 +770,12 @@ class VariableInspectorWidget(QFrame):
         while self.cards_grid.count():
             self.cards_grid.takeAt(0)
 
-        if is_list:
+        if self._is_readonly_float(self._last_snapshot):
+            self.cards_grid.addWidget(self.card_real, 0, 0, 1, 2)
+            self.cards_grid.addWidget(self.native_details_toggle, 1, 0, 1, 2)
+            self.cards_grid.addWidget(self.card_hex, 2, 0, 1, 2)
+            self.cards_grid.addWidget(self.card_bin, 3, 0, 1, 2)
+        elif is_list:
             for r_idx, card in enumerate(self._cards):
                 self.cards_grid.addWidget(card, r_idx, 0, 1, 2)
         else:
@@ -671,32 +802,208 @@ class VariableInspectorWidget(QFrame):
         elif self._format_failure is None:
             self.error_lbl.setVisible(False)
 
+    def _conversion_stamp(self):
+        snap = self._last_snapshot
+        cfg = self.controller.config
+        return (getattr(snap, "var_name", None), type(snap), getattr(snap, "type_name", None),
+                getattr(snap, "spec", None), getattr(self.controller, "revision", None),
+                cfg.default_quant, cfg.default_overflow,
+                cfg.inspector_pin_mode if isinstance(snap, InspectorSnapshot) else "real",
+                cfg.format_preset, cfg.custom_signed_tpl, cfg.custom_unsigned_tpl, cfg.custom_int_tpl)
+
+    def _begin_conversion_edit(self, *_args):
+        if self._format_context is None:
+            self._format_context = self._conversion_stamp()
+
+    def _sync_conversion_controls(self, snap, *, reset=False):
+        fxp = isinstance(snap, InspectorSnapshot) and snap.whole_variable_fxp
+        capable = fxp or bool(getattr(snap, "can_convert_to_fxp", False))
+        if reset:
+            self.fmt_edit.setModified(False)
+            self._format_context = None
+            self._format_failure = None
+            self._error_source = None
+            self.error_lbl.hide()
+            self.fmt_edit.setText(FormatEngine.editable(snap.spec, self.controller.config) if fxp else "")
+        self.format_host.setVisible(fxp)
+        self.fmt_edit.setEnabled(fxp)
+        self.preview_btn.setVisible(fxp)
+        self.preview_btn.setEnabled(fxp)
+        self.apply_conversion_btn.setEnabled(fxp)
+        self.fmt_lbl.setText(self._text("Format:"))
+        label = self._text("Convert to float…" if fxp else "Convert to FXP…")
+        tooltip = (self._text("Convert the whole variable") if capable else
+                   self._text("GUI conversion is unavailable for this type; use the console."))
+        style_icon_button(self.convert_btn, "swap", tooltip, self.palette.text_secondary,
+                          self.controller.config, label=label)
+        self.convert_btn.setVisible(snap is not None)
+        self.convert_btn.setEnabled(capable)
+
+    def _convert_clicked(self):
+        snap = self._last_snapshot
+        if snap is None or not self.convert_btn.isEnabled():
+            return
+        if isinstance(snap, InspectorSnapshot):
+            stamp = self._conversion_stamp()
+            answer = ask(self, self._text("Convert to float…"), self._text(
+                "Convert {name} to Python float / NumPy float64?\n"
+                "The whole variable is converted; FXP format is removed and precision may be lost.",
+                name=snap.var_name), QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel, self.controller.config.language)
+            if answer == QMessageBox.StandardButton.Apply:
+                if stamp != self._conversion_stamp():
+                    self._on_format_error("Workspace or conversion settings changed; review the target and apply again.", owned=True)
+                else:
+                    self.controller.convert_to_float(snap.var_name, expected_revision=self.controller.revision)
+            return
+        if self._conversion_dialog is None:
+            dialog = self._conversion_dialog = FixedPointConversionDialog(self)
+            dialog.finished.connect(self._conversion_dialog_finished)
+        self._conversion_dialog.show()
+        self._conversion_dialog.raise_()
+        self._conversion_dialog.fmt_edit.setFocus()
+
+    def _conversion_dialog_finished(self, _result):
+        dialog = self.sender()
+        if dialog is self._conversion_dialog:
+            self._conversion_dialog = None
+        dialog.deleteLater()
+
+    @staticmethod
+    def _is_readonly_float(snap):
+        return (isinstance(snap, PlainValueSnapshot) and bool(snap.native_bits)
+                and snap.native_bits.get("kind") == "float" and not snap.native_bits.get("editable"))
+
+    def _update_native_details(self, *_args):
+        QTimer.singleShot(0, self._align_list_fields)
+        readonly = self._is_readonly_float(self._last_snapshot)
+        self.native_details_toggle.setVisible(readonly)
+        if readonly:
+            expanded = self.native_details_toggle.isChecked()
+            self.native_details_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+            for widget in (self.card_hex, self.card_bin, self.native_bits_label):
+                widget.setVisible(expanded)
+
+    def _conversion_is_current(self):
+        current = self._conversion_stamp()
+        if self._format_context is not None and self._format_context != current:
+            self._format_context = current
+            self._on_format_error("Workspace or conversion settings changed; review the target and apply again.", owned=True)
+            return False
+        return True
+
+    def _preview_conversion(self):
+        snap = self._last_snapshot
+        if not isinstance(snap, InspectorSnapshot) or not snap.whole_variable_fxp or not self._conversion_is_current():
+            return
+        try:
+            spec = FormatEngine.parse_input(self.fmt_edit.text(), self.controller.config)
+        except ValueError as exc:
+            self._on_format_error(str(exc), owned=True)
+            return
+        pin = self.controller.config.inspector_pin_mode if isinstance(snap, InspectorSnapshot) else "real"
+        self.controller.request_preview(snap.var_name, spec, pin_mode=pin)
+
     def _on_format_committed(self) -> None:
-        if self._last_snapshot is None:
+        snap = self._last_snapshot
+        if snap is None or not self.apply_conversion_btn.isEnabled() or not self._conversion_is_current():
             return
-        new_fmt = self.fmt_edit.text().strip()
-        current = (FormatEngine.editable(self._last_snapshot.spec, self.controller.config)
-                   if isinstance(self._last_snapshot, InspectorSnapshot) else "")
-        if not new_fmt or new_fmt == current:
+        revision = getattr(self.controller, "revision", None)
+        if not isinstance(snap, InspectorSnapshot) or not snap.whole_variable_fxp:
             return
-        ok = self.controller.change_variable_format(
-            self._last_snapshot.var_name, new_fmt
-        )
-        if not ok and self._last_snapshot is not None:
-            self.fmt_edit.setText(current)
+        text = self.fmt_edit.text().strip()
+        try:
+            spec = FormatEngine.parse_input(text, self.controller.config)
+        except ValueError as exc:
+            self._on_format_error(str(exc), owned=True)
+            return
+        if isinstance(snap, InspectorSnapshot) and spec == snap.spec:
+            self.fmt_edit.setModified(False)
+            self._format_context = None
+            self.error_lbl.hide()
+            return
+        if self.controller.change_variable_format(snap.var_name, spec, expected_revision=revision):
+            self.fmt_edit.setModified(False)
+            self._format_context = None
+
+    def focus_target(self, name, field):
+        """Navigation only: wait for the matching snapshot before moving focus."""
+        self._pending_focus = (name, field)
+        self._focus_requested_target()
+
+    def _release_selection_paint(self):
+        self._selection_paint_timer.stop()
+        if not self.body_widget.updatesEnabled():
+            self.body_widget.setUpdatesEnabled(True)
+
+    def _finish_selection_paint(self):
+        # The main window enables the body later in the signal emission. A newer
+        # selection may disable it again before this deferred callback runs.
+        if self.body_widget.isEnabled():
+            self._release_selection_paint()
+
+    def _interaction_changed(self, enabled):
+        if enabled:
+            QTimer.singleShot(0, self._finish_selection_paint)
+            QTimer.singleShot(0, self._focus_requested_target)
+        elif (self._last_snapshot is not None and getattr(self.controller, "is_available", False)
+              and (getattr(self.controller, "_view_id", None) != self._rendered_view_id
+                   or (getattr(self.controller, "selected_var", None), getattr(self.controller, "selected_coord", None))
+                   != (self._last_snapshot.var_name, self._last_snapshot.coord))):
+            # Input is still disabled immediately by the main window. Keep the
+            # previous paint only for a short read refresh; slow/busy states show
+            # their normal disabled appearance instead of remaining frozen.
+            self.body_widget.setUpdatesEnabled(False)
+            self._selection_paint_timer.start()
+        else:
+            self._release_selection_paint()
+        if self._conversion_dialog is not None:
+            self._conversion_dialog.setEnabled(enabled)
+
+    def _focus_requested_target(self):
+        if not self._pending_focus or not self.body_widget.isEnabled():
+            return
+        name, field = self._pending_focus
+        if getattr(self.controller, "selected_var", name) != name:
+            self._pending_focus = None
+            return
+        snap = self._last_snapshot
+        if snap is None or snap.var_name != name:
+            return
+        widget = (self.fmt_edit if field == "format" and isinstance(snap, InspectorSnapshot)
+                  else self.convert_btn if field == "format" else self.card_real.edit)
+        if not widget.isEnabled():
+            return
+        self.body_scroll.ensureWidgetVisible(widget)
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        if isinstance(widget, QLineEdit) and not widget.isModified():
+            widget.selectAll()
+        if widget.hasFocus():
+            self._pending_focus = None
 
     def render_snapshot(self, snap: InspectorSnapshot | PlainValueSnapshot | None) -> None:
+        self._rendered_view_id = getattr(self.controller, "_view_id", None)
+        QTimer.singleShot(0, self._align_list_fields)
         if self._format_failure and (snap is None or snap.var_name != self._format_failure[0]):
             self._format_failure = None
             self.error_lbl.hide()
         previous = self._last_snapshot
+        selection_changed = getattr(previous, "var_name", None) != getattr(snap, "var_name", None)
         type_changed = ((type(previous), getattr(previous, "type_name", None)) !=
                         (type(snap), getattr(snap, "type_name", None)))
         self._last_snapshot = snap
+        if type_changed or selection_changed:
+            if self._conversion_dialog is not None:
+                self._conversion_dialog.close()
+            self.native_details_toggle.blockSignals(True)
+            self.native_details_toggle.setChecked(False)
+            self.native_details_toggle.blockSignals(False)
+            self._apply_cards_layout(self.controller.config.inspector_view_mode)
         self.cards_container.setVisible(snap is not None)
         for card in self._cards:
             target = (snap.var_name, snap.coord) if snap is not None else None
             if type_changed or target != card._target or (snap and getattr(card, "_display_target", None) != snap.display_title):
+                card._finish_copy_feedback()
                 card._force_refresh = True
                 card.edit.setModified(False)
                 card._failed_target = None
@@ -723,7 +1030,7 @@ class VariableInspectorWidget(QFrame):
         if self.card_real.pin_btn is not None:
             self.card_real.pin_btn.setVisible(not plain)
         self.fmt_edit.setEnabled(snap is not None and not plain)
-        self.card_real.title_lbl.setText(self._text("Value") if plain else
+        self.card_real.retranslate_ui(self.controller.config, self._text("Value") if plain else
                                          tr("lbl_real_value", self.controller.config.language, keep_english_terms=self.controller.config.keep_english_terms))
         if plain:
             self.target_badge.setText(snap.display_title)
@@ -732,10 +1039,8 @@ class VariableInspectorWidget(QFrame):
             self.status_badge.setProperty("statusKind", "plain")
             self.status_badge.setToolTip("")
             repolish(self.status_badge)
-            self.meta_info_lbl.setText(self._plain_metadata_text(snap))
+            self.meta_info_lbl.hide()
             self.meta_info_lbl.setWordWrap(True)
-            if not self.fmt_edit.hasFocus() and not self.fmt_edit.isModified():
-                self.fmt_edit.setText(snap.type_name)
             self.card_real.set_value_text(snap.value_str)
             metadata = snap.native_bits
             self.card_real.copy_btn.setEnabled(not (metadata and metadata.get("truncated", False)))
@@ -746,7 +1051,11 @@ class VariableInspectorWidget(QFrame):
                 card.copy_btn.setEnabled(bool(metadata) and not metadata.get("truncated", False))
             self.card_hex.pin_btn.setVisible(False)
             self._plain_bit_controls(snap)
+            self._sync_conversion_controls(snap, reset=type_changed or selection_changed)
+            self._focus_requested_target()
             return
+        self.meta_info_lbl.setVisible(snap is not None)
+        self.native_details_toggle.hide()
         self.card_hex.pin_btn.setVisible(True)
         self.card_real.copy_btn.setEnabled(True)
         self.card_hex.copy_btn.setEnabled(True)
@@ -767,6 +1076,7 @@ class VariableInspectorWidget(QFrame):
             for button in (self.inv_btn, self.zero_btn, self.swap_order_btn):
                 button.setEnabled(False)
             self._clear_bit_cells()
+            self._sync_conversion_controls(None, reset=True)
             return
 
         for card in self._cards:
@@ -779,10 +1089,7 @@ class VariableInspectorWidget(QFrame):
         if not self.fmt_edit.hasFocus() and not self.fmt_edit.isModified() and self._format_failure is None:
             self.fmt_edit.setText(FormatEngine.editable(snap.spec, self.controller.config))
 
-        self.meta_info_lbl.setText(
-            self._text("Whole variable: {name}  |  WL={wl}, IWL={iwl}, FWL={fwl}  |  Range: {range}",
-                       name=snap.var_name, wl=snap.spec.wl, iwl=snap.spec.iwl, fwl=snap.spec.fwl, range=snap.range_str)
-        )
+        self._update_fxp_metadata(snap)
 
         # Status badge semantic styling
         self.status_badge.setText(self._diagnostic_text(snap))
@@ -801,14 +1108,8 @@ class VariableInspectorWidget(QFrame):
         self.card_c1.set_value_text(snap.c1_str)
 
         self._render_bit_cells(snap.bits_msb_to_lsb)
-
-    def _plain_metadata_text(self, snapshot):
-        metadata = snapshot.native_bits or {}
-        if metadata.get("editable"):
-            return self._text("APyFloat: bit edits preserve format and bias. Numeric and format edits use the REPL.")
-        if metadata.get("kind") == "float":
-            return self._text("Stored floating-point bits (read-only); viewing does not convert the value.")
-        return self._text("Native value · use APyFixed.from_float() or Convert to FXP for fixed-point controls")
+        self._sync_conversion_controls(snap, reset=type_changed or selection_changed)
+        self._focus_requested_target()
 
     def _plain_bit_controls(self, snapshot):
         metadata = snapshot.native_bits
@@ -819,9 +1120,10 @@ class VariableInspectorWidget(QFrame):
         floating = bool(metadata and metadata.get("kind") == "float")
         for widget in (self.bit_scroll, self.bit_title_lbl, self.legend_lbl, self.bit_help_lbl,
                        self.swap_order_btn):
-            widget.setVisible(floating)
+            widget.setVisible(floating and metadata["editable"])
         self._update_bit_legend()
-        if floating:
+        self._update_native_details()
+        if floating and metadata["editable"]:
             self.bit_help_lbl.setText(self._text("Click to toggle; preserve format and bias" if metadata["editable"] else "Read-only"))
             bits = []
             for index in range(metadata["width"] - 1, -1, -1):
@@ -936,6 +1238,8 @@ class VariableInspectorWidget(QFrame):
                 row, column = divmod(position, columns)
                 self.bit_grid_layout.addWidget(self._bit_cells[cell.bit_index][0], row, column + column // 4)
             self.bit_grid_layout.activate()
+        height = self.bit_grid_layout.sizeHint().height() + scaled_px(12, cfg)
+        self.bit_scroll.setMinimumHeight(min(self.bit_scroll.maximumHeight(), max(scaled_px(88, cfg), height)))
         self._layout_bit_actions()
 
     def _layout_inspector_header(self):
@@ -949,9 +1253,9 @@ class VariableInspectorWidget(QFrame):
         self._header_stacked = stacked
         placements = (
             ((self.title_lbl, 0, 0, 4), (self.target_badge, 1, 0, 2),
-             (self.list_mode_btn, 1, 2, 1), (self.grid_mode_btn, 1, 3, 1)) if stacked else
+             (self.grid_mode_btn, 1, 2, 1), (self.list_mode_btn, 1, 3, 1)) if stacked else
             ((self.title_lbl, 0, 0, 1), (self.target_badge, 0, 1, 1),
-             (self.list_mode_btn, 0, 2, 1), (self.grid_mode_btn, 0, 3, 1)))
+             (self.grid_mode_btn, 0, 2, 1), (self.list_mode_btn, 0, 3, 1)))
         for widget, row, column, span in placements:
             self._header_layout.addWidget(widget, row, column, 1, span)
         self._header_layout.setColumnStretch(0, 0)

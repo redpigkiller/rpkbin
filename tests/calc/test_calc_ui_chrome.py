@@ -10,7 +10,7 @@ import pytest
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtGui import QFontMetricsF
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolButton, QTextBrowser, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolButton, QWidget
 
 from rpkbin.calc.controller import CalcController
 from rpkbin.calc.core import CalcConfig, WorkspaceSession
@@ -162,13 +162,13 @@ def test_notation_settings_and_hints_explain_native_api_and_gui_scope(window, ap
     assert "GUI FXP edits" in window.active_fmt_badge.text()
     assert "Native APyTypes" in window.active_fmt_badge.toolTip()
     window.console_widget.show_hints()
-    text = window.console_widget._hint_dialog.findChild(QTextBrowser).toPlainText()
+    text = window.console_widget._hint_pages["fxp"].toPlainText()
     assert "APyFixed.from_float" in text and "APyFixed(7, 4, 2)" in text
     assert "fxp(" not in text and "s10.12f" not in text
     dialog.close()
 
 
-def test_custom_display_stays_out_of_inspector_and_matrix_format_editors(window, app):
+def test_reversible_custom_display_is_used_by_inspector_and_matrix_format_editors(window, app):
     cfg = replace(window.controller.config, format_preset="custom", custom_signed_tpl="signed:{wl}/{fwl}")
     window.controller.update_config(cfg)
     session = WorkspaceSession(cfg, seed_demo_vars=False)
@@ -177,7 +177,347 @@ def test_custom_display_stays_out_of_inspector_and_matrix_format_editors(window,
     scalar = session.get_inspector_snapshot("a")
     assert scalar.format_str == "signed:16/12"
     window.inspector_widget.render_snapshot(scalar)
-    assert window.inspector_widget.fmt_edit.text() == "Q4.12"
+    assert window.inspector_widget.fmt_edit.text() == "signed:16/12"
     window._open_or_focus_matrix_tab("A")
     window._matrix_tabs["A"].render_snapshot(session.get_matrix_snapshot("A"))
-    assert window._matrix_tabs["A"].fmt_edit.text() == "Q4.12"
+    assert window._matrix_tabs["A"].fmt_edit.text() == "signed:16/12"
+
+
+def _contrast(foreground, background):
+    from PySide6.QtGui import QColor
+    def luminance(color):
+        c=QColor(color)
+        values=[v/12.92 if v<=0.04045 else ((v+0.055)/1.055)**2.4
+                for v in (c.redF(),c.greenF(),c.blueF())]
+        return sum(v*w for v,w in zip(values,(0.2126,0.7152,0.0722)))
+    high,low=sorted((luminance(foreground),luminance(background)),reverse=True)
+    return (high+0.05)/(low+0.05)
+
+
+@pytest.mark.parametrize("theme", ["light","dark"])
+def test_action_and_card_colors_retain_text_contrast_and_visible_primary_fill(app, theme):
+    from PySide6.QtWidgets import QPushButton, QVBoxLayout
+    from rpkbin.calc.ui.theme import build_stylesheet, get_palette, representation_colors, set_role
+    cfg=CalcConfig(theme=theme)
+    palette=get_palette(theme)
+    assert _contrast(palette.primary_fg,palette.primary_bg)>=4.5
+    assert _contrast(palette.primary_bg,palette.bg_panel)>=4.5
+    colors=representation_colors(palette)
+    assert len(set(colors.values()))==6
+    assert all(_contrast(fg,bg)>=4.5 for fg,bg in colors.values())
+    holder=QWidget()
+    holder.setStyleSheet(build_stylesheet(palette,cfg))
+    layout=QVBoxLayout(holder)
+    apply=QPushButton("Apply")
+    cancel=QPushButton("Cancel")
+    set_role(apply,"primary")
+    layout.addWidget(apply)
+    layout.addWidget(cancel)
+    holder.show()
+    app.processEvents()
+    assert apply.grab().toImage().pixelColor(7,apply.height()//2).name()==palette.primary_bg
+    assert cancel.grab().toImage().pixelColor(7,cancel.height()//2).name()!=palette.primary_bg
+    holder.close()
+
+
+def test_grid_is_new_default_and_left_button_and_saved_list_preference_still_works(window,app,tmp_path):
+    assert CalcConfig().inspector_view_mode=="grid"
+    view=window.inspector_widget
+    assert view.grid_mode_btn.isChecked()
+    window.resize(1200,850)
+    window.show()
+    app.processEvents()
+    assert view.grid_mode_btn.x()<view.list_mode_btn.x()
+    view.resize(240,500)
+    view._layout_inspector_header()
+    assert view.grid_mode_btn.x()<view.list_mode_btn.x()
+    saved=tmp_path/"layout.json"
+    CalcConfig(inspector_view_mode="list").save(saved)
+    assert CalcConfig.load(saved).inspector_view_mode=="list"
+    assert view.apply_conversion_btn.property("calcRole")=="primary"
+    assert view.fmt_lbl.property("calcRole")=="sectionLabel"
+    assert view.bit_title_lbl.property("calcRole")=="sectionLabel"
+    assert {card.property("representation") for card in view._cards}=={"real","hex","s2","uint","c1","bin"}
+
+
+@pytest.mark.parametrize("theme",["light","dark"])
+def test_real_confirmation_uses_widget_dialog_and_colored_apply(window,app,theme):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    from rpkbin.calc.ui.i18n import ask
+    from rpkbin.calc.ui.theme import get_palette
+    window.controller.update_config(replace(window.controller.config,theme=theme))
+    captured=[]
+    def inspect():
+        box=app.activeModalWidget()
+        try:
+            apply=box.button(QMessageBox.StandardButton.Apply)
+            native_option = getattr(getattr(QMessageBox, "Option", None), "DontUseNativeDialog", None)
+            captured.append((box.icon(),apply.property("calcRole"),
+                             apply.grab().toImage().pixelColor(7,apply.height()//2).name(),
+                             (box.testOption(native_option) if native_option is not None else True)))
+        finally:
+            box.button(QMessageBox.StandardButton.Cancel).click()
+    QTimer.singleShot(30,inspect)
+    answer=ask(window,"Conversion preview","Review before applying.",
+               QMessageBox.StandardButton.Apply|QMessageBox.StandardButton.Cancel,
+               QMessageBox.StandardButton.Cancel,icon=QMessageBox.Icon.Information)
+    assert answer==QMessageBox.StandardButton.Cancel
+    assert captured==[(QMessageBox.Icon.Information,"primary",get_palette(theme).primary_bg,True)]
+
+
+def test_columns_and_preview_have_visible_short_labels(window):
+    assert window.workspace_widget.cols_btn.toolButtonStyle()==Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    assert window.workspace_widget.cols_btn.text()=="Columns"
+    view=window.inspector_widget
+    assert view.preview_btn.toolButtonStyle()==Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    assert view.preview_btn.text()=="Preview"
+
+
+@pytest.mark.parametrize("scale", [100, 125, 160])
+def test_interface_and_value_fonts_use_requested_points_with_cjk_fallback(window, app, scale):
+    cfg = replace(window.controller.config, ui_font_size=12, code_font_size=10, ui_scale=scale)
+    window.controller.update_config(cfg)
+    dialog = SettingsDialog(cfg, window)
+    dialog.show()
+    app.processEvents()
+    for control in (dialog.language_combo, dialog.theme_combo, dialog.ui_font_size, dialog.ui_font_combo.lineEdit()):
+        assert control.font().pointSizeF() == pytest.approx(12 * scale / 100, abs=.01)
+        assert control.font().families()[0] == cfg.ui_font_family
+        assert "Microsoft JhengHei UI" in control.font().families()
+    assert dialog.signed_tpl_edit.font().pointSizeF() == pytest.approx(10 * scale / 100, abs=.01)
+    assert "Microsoft JhengHei UI" in dialog.signed_tpl_edit.font().families()
+    assert dialog.font_preview.font().pointSizeF() == pytest.approx(12 * scale / 100, abs=.01)
+    assert dialog.code_preview.font().pointSizeF() == pytest.approx(10 * scale / 100, abs=.01)
+    assert window.controller.config == cfg
+    dialog.close()
+
+
+@pytest.mark.parametrize("lang", ["en_US", "zh_TW"])
+def test_template_fields_explain_sign_tokens_without_changing_templates(window, app, lang):
+    cfg = replace(window.controller.config, language=lang)
+    dialog = SettingsDialog(cfg, window)
+    text = dialog.template_fields_hint.text()
+    for token in ("{q_prefix}", "Q / UQ", "{s_or_u}", "s / u", "{S_or_U}", "S / U"):
+        assert token in text
+    assert dialog.template_fields_hint.property("calcRole") == "settingsHint"
+    assert dialog.signed_tpl_edit.text() == cfg.custom_signed_tpl
+    assert dialog.unsigned_tpl_edit.text() == cfg.custom_unsigned_tpl
+    assert dialog.int_tpl_edit.text() == cfg.custom_int_tpl
+    dialog.close()
+
+
+@pytest.mark.parametrize("direction", ["h", "v"])
+@pytest.mark.parametrize("side", [0, 1])
+def test_splitter_grip_remains_visible_when_a_panel_is_dragged_closed(window, app, direction, side):
+    window.resize(1300, 850)
+    window.show()
+    app.processEvents()
+    splitter = window.h_splitter if direction == "h" else window.v_splitter
+    sizes = [500, 500]
+    sizes[side] = 0
+    splitter.setSizes(sizes)
+    app.processEvents()
+    handle = splitter.handle(1)
+    assert splitter.sizes()[side] == 0
+    assert handle.isVisible() and handle.width() > 0 and handle.height() > 0
+    assert "reopen" in handle.toolTip()
+    image = handle.grab().toImage()
+    # The grip differs from its background, including at a completely collapsed edge.
+    center = image.pixelColor(image.width() // 2, image.height() // 2)
+    edge = image.pixelColor(0, 0)
+    assert center != edge
+    splitter.setSizes([500, 500])
+    app.processEvents()
+    assert all(size > 0 for size in splitter.sizes())
+
+
+def test_workspace_filters_use_ui_font_equal_height_and_explicit_count(window, app):
+    cfg = replace(window.controller.config, language="zh_TW", keep_english_terms=True,
+                  ui_font_size=13, code_font_size=9)
+    window.controller.update_config(cfg)
+    session = WorkspaceSession(cfg, seed_demo_vars=False)
+    session.user_ns.update(a=2, b=3)
+    workspace = window.workspace_widget
+    workspace.render_rows(session.list_variables())
+    window.show()
+    for _ in range(4):
+        app.processEvents()
+    assert workspace.name_filter.font().pointSizeF() == 13
+    assert workspace.name_filter.font().families()[0] == cfg.ui_font_family
+    assert workspace.name_filter.height() == workspace.type_filter.height()
+    assert workspace.name_filter.placeholderText() == "Filter variable names"
+    assert [workspace.type_filter.itemText(i) for i in range(3)] == ["All types", "Arrays", "Scalars"]
+    assert workspace.filter_count.text() == "2 / 2 shown"
+    old_width = workspace.type_filter.width()
+    workspace.type_filter.setCurrentIndex(workspace.type_filter.findData("native"))
+    for _ in range(3):
+        app.processEvents()
+    assert workspace.type_filter.width() > old_width
+    workspace.name_filter.setText("a")
+    assert workspace.filter_count.text() == "1 / 2 shown"
+    window.controller.update_config(replace(cfg, keep_english_terms=False))
+    assert workspace.name_filter.text() == "a"
+    assert workspace.type_filter.currentData() == "native"
+    assert workspace.filter_count.text() == "顯示 1 / 2 個"
+
+
+def test_integer_template_guidance_is_conditional_and_does_not_rewrite_user_input(window):
+    cfg = replace(window.controller.config, format_preset="custom", custom_int_tpl="u{wl}.0i")
+    dialog = SettingsDialog(cfg, window)
+    assert not dialog.integer_template_hint.isHidden()
+    assert dialog.int_tpl_edit.text() == "u{wl}.0i"
+    dialog.int_tpl_edit.setText("{s_or_u}{wl}.0i")
+    assert dialog.integer_template_hint.isHidden()
+    dialog.close()
+
+
+def test_custom_import_and_startup_preview_have_independent_scrollbars(window, app):
+    dialog = SettingsDialog(window.controller.config, window)
+    dialog.tabs.setCurrentIndex(2)
+    dialog.resize(820, 680)
+    dialog.custom_imports_edit.setPlainText("\n".join(f"import math  # line {i}" for i in range(300)))
+    dialog.startup_store.path.write_text("\n".join(f"# helper note {i}" for i in range(300)), encoding="utf-8")
+    dialog._refresh_startup_preview()
+    dialog.show()
+    for _ in range(6):
+        app.processEvents()
+    for editor in (dialog.custom_imports_edit, dialog.startup_edit):
+        bar = editor.verticalScrollBar()
+        assert bar.maximum() > 0
+        bar.setValue(bar.maximum())
+        assert bar.value() > 0
+    assert dialog.tabs.widget(2).verticalScrollBar().maximum() > 0
+    assert not dialog.custom_imports_edit.isReadOnly()
+    assert dialog.startup_edit.isReadOnly()
+    dialog.close()
+
+
+@pytest.mark.parametrize("language", ["en_US", "zh_TW"])
+@pytest.mark.parametrize("font_size,scale", [(10, 100), (13, 100), (16, 160), (24, 160)])
+def test_conversion_initial_size_fits_final_width_before_platform_show(window, app, language, font_size, scale):
+    from rpkbin.calc.ui.conversion_dialog import FixedPointConversionDialog
+    cfg = replace(window.controller.config, language=language, ui_font_size=font_size, ui_scale=scale)
+    window.controller.update_config(cfg)
+    session = WorkspaceSession(cfg, seed_demo_vars=False)
+    session.user_ns["a"] = 2
+    window.inspector_widget.render_snapshot(session.get_inspector_snapshot("a"))
+    dialog = FixedPointConversionDialog(window.inspector_widget)
+    # Check before show(): Windows should not have to enlarge an undersized
+    # native window after it has already received the requested geometry.
+    dialog.ensurePolished()
+    dialog.layout().activate()
+    required = max(dialog.minimumSizeHint().height(), dialog.layout().totalHeightForWidth(dialog.width()))
+    assert dialog.height() >= required
+    assert dialog.width() >= dialog.minimumSizeHint().width()
+    initial = dialog.size()
+    dialog.show()
+    for _ in range(4):
+        app.processEvents()
+    assert dialog.size() == initial
+    assert dialog.rect().contains(dialog.apply_btn.geometry())
+    assert dialog.rect().contains(dialog.cancel_btn.geometry())
+    dialog.reject()
+
+
+@pytest.mark.parametrize("language", ["en_US", "zh_TW"])
+def test_primary_action_is_left_of_cancel_in_settings_conversion_and_import(window, app, language):
+    from dataclasses import asdict
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QPushButton
+    from rpkbin.calc.ui.conversion_dialog import FixedPointConversionDialog
+    cfg = replace(window.controller.config, language=language)
+    window.controller.update_config(cfg)
+    settings = SettingsDialog(cfg, window)
+    settings.show()
+    app.processEvents()
+    assert settings.save_btn.x() < settings.cancel_btn.x()
+    assert settings.save_btn.nextInFocusChain() is settings.cancel_btn
+    before = asdict(settings._draft_config())
+    captured = []
+    def inspect_import():
+        preview = app.activeModalWidget()
+        try:
+            buttons = preview.findChildren(QPushButton)
+            accept = next(b for b in buttons if b.property("calcRole") == "primary")
+            cancel = next(b for b in buttons if b is not accept)
+            captured.append((accept.x() < cancel.x(), accept.text()))
+        finally:
+            preview.reject()
+    QTimer.singleShot(30, inspect_import)
+    settings._show_import_preview({"theme": "light"})
+    assert captured == [(True, "Use these settings" if language == "en_US" else "使用這些設定")]
+    assert asdict(settings._draft_config()) == before
+    settings.reject()
+    session = WorkspaceSession(cfg, seed_demo_vars=False)
+    session.user_ns["a"] = 2
+    window.inspector_widget.render_snapshot(session.get_inspector_snapshot("a"))
+    dialog = FixedPointConversionDialog(window.inspector_widget)
+    dialog.show()
+    app.processEvents()
+    assert dialog.apply_btn.x() < dialog.cancel_btn.x()
+    assert dialog.apply_btn.nextInFocusChain() is dialog.cancel_btn
+    dialog.cancel_btn.click()
+
+
+@pytest.mark.parametrize("action", ["apply", "cancel", "escape", "enter"])
+def test_confirmation_action_order_keeps_standard_results_and_cancel_default(window, app, action):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    from rpkbin.calc.ui.i18n import ask
+    captured = []
+    def inspect():
+        box = app.activeModalWidget()
+        apply = box.button(QMessageBox.StandardButton.Apply)
+        cancel = box.button(QMessageBox.StandardButton.Cancel)
+        captured.append((apply.x() < cancel.x(), box.defaultButton() is cancel))
+        if action == "apply":
+            apply.click()
+        elif action == "cancel":
+            cancel.click()
+        else:
+            QTest.keyClick(box, Qt.Key.Key_Escape if action == "escape" else Qt.Key.Key_Return)
+    QTimer.singleShot(30, inspect)
+    result = ask(window, "Preview", "Review the conversion.",
+                 QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel,
+                 QMessageBox.StandardButton.Cancel)
+    assert captured == [(True, True)]
+    assert result == (QMessageBox.StandardButton.Apply if action == "apply" else QMessageBox.StandardButton.Cancel)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_help_background_and_console_scroll_thumb_are_distinct_from_splitter(window, app, theme):
+    from PySide6.QtWidgets import QStyle, QStyleOptionSlider
+    from rpkbin.calc.ui.theme import get_palette
+    cfg = replace(window.controller.config, theme=theme)
+    window.controller.update_config(cfg)
+    window.resize(1300, 850)
+    window.show()
+    window.console_widget.term._control.setPlainText("\n".join(f"line {i}" for i in range(400)))
+    settings = SettingsDialog(cfg, window)
+    settings.show()
+    for _ in range(5):
+        app.processEvents()
+    palette = get_palette(theme)
+    hint = next(label for label in settings.findChildren(QLabel)
+                if label.property("calcRole") == "settingsHint" and label.isVisible())
+    assert hint.grab().toImage().pixelColor(5, hint.height()-3).name() == palette.bg_header
+    assert palette.bg_header != palette.bg_panel
+    assert _contrast(palette.text_secondary, palette.bg_header) >= 4.5
+    bar = window.console_widget.term._control.verticalScrollBar()
+    assert bar.isVisible() and bar.maximum() > 0
+    option = QStyleOptionSlider()
+    option.initFrom(bar)
+    option.orientation = Qt.Orientation.Vertical
+    option.minimum, option.maximum = bar.minimum(), bar.maximum()
+    option.pageStep = bar.pageStep()
+    option.sliderPosition = option.sliderValue = bar.value()
+    thumb = bar.style().subControlRect(QStyle.ComplexControl.CC_ScrollBar, option,
+                                      QStyle.SubControl.SC_ScrollBarSlider, bar)
+    thumb_color = bar.grab().toImage().pixelColor(thumb.center()).name()
+    handle = window.h_splitter.handle(1)
+    separator_color = handle.grab().toImage().pixelColor(handle.width()//2, 5).name()
+    assert thumb_color == palette.text_muted
+    assert separator_color == palette.bg_main
+    assert thumb_color != separator_color
+    settings.reject()

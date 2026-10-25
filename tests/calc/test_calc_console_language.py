@@ -86,27 +86,36 @@ def test_language_preserves_command_input_history_search_and_preview(console):
 
 def test_hints_are_short_tables_with_native_executable_examples(console, app):
     view, controller = console
+    view.term.input_buffer = "np.array([ # draft"
     view.show_hints()
     app.processEvents()
-    text = view._hint_text
-    assert text.document().rootFrame().childFrames()  # QTextTable frames
-    plain = text.toPlainText()
-    for source in ("np.int8(2)", "np.float64(0.5)", "np.array([1.0, 2.0, 3.0])",
-                   "APyFixed.from_float", "APyFixed(7, 4, 2)", "APyFloat.from_float", "%matplotlib inline"):
-        assert source in plain
-    assert "Raw bits: 7 represents 1.75" in plain
-    assert "fxp(" not in plain and "s10.12f" not in plain and "np.float(" not in plain
-    scrollbar = text.verticalScrollBar()
+    assert view._hint_tabs.count() == 3
+    assert view._hint_tabs.currentIndex() == 0
+    pages = dict(view._hint_pages)
+    assert "APyFixed.from_float" in pages["fxp"].toPlainText()
+    assert "np.float64(0.5)" in pages["python"].toPlainText()
+    assert "whos" in pages["workspace"].toPlainText()
+    assert "Raw bits: 7 represents 1.75" in pages["fxp"].toPlainText()
+    for text in pages.values():
+        tables = text.document().rootFrame().childFrames()
+        assert len(tables) == 1
+        assert tables[0].rows() <= 7
+        plain = text.toPlainText()
+        assert "fxp(" not in plain and "s10.12f" not in plain and "np.float(" not in plain
+    view._hint_tabs.setCurrentIndex(1)
+    scrollbar = pages["python"].verticalScrollBar()
     scrollbar.setValue(scrollbar.maximum() // 2)
     position = scrollbar.value()
     switch(view, controller, "zh_TW")
-    assert text is view._hint_text
+    assert pages == view._hint_pages
+    assert view._hint_tabs.currentIndex() == 1
     assert scrollbar.value() == position
-    assert "原始位元：7 代表實際數值 1.75" in text.toPlainText()
-    assert "APyFixed(7, 4, 2)" in text.toPlainText()
+    assert view.term.input_buffer == "np.array([ # draft"
+    assert "原始位元：7 代表實際數值 1.75" in pages["fxp"].toPlainText()
+    assert "APyFixed(7, 4, 2)" in pages["fxp"].toPlainText()
     namespace = {}
     exec("import numpy as np\nfrom apytypes import APyFixed, APyFixedArray, APyFloat, APyFloatArray", namespace)
-    table = text.document().rootFrame().childFrames()[1]
+    table = pages["fxp"].document().rootFrame().childFrames()[0]
     for row in range(1, table.rows()):
         cell = table.cellAt(row, 1)
         cursor = cell.firstCursorPosition()
@@ -114,6 +123,10 @@ def test_hints_are_short_tables_with_native_executable_examples(console, app):
         source = cursor.selectedText().replace("\u2029", "\n").replace("\u2028", "\n")
         exec(source, namespace)
     assert float(namespace["raw"]) == 1.75
+    assert float(namespace["result"]) == 3.0
+    assert (namespace["q"].bits, namespace["q"].frac_bits) == (12, 8)
+    assert type(namespace["a"]) is int
+
 
 
 def test_workspace_translation_keeps_filters_selection_raw_values_and_markers(app, tmp_path):

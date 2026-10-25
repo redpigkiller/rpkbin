@@ -9,14 +9,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
-    QPushButton, QTextBrowser, QToolButton, QVBoxLayout,
+    QPushButton, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
 )
 from qtconsole.rich_jupyter_widget import RichJupyterWidget
 
 from ..controller import CalcController
 from .icons import style_icon_button
 from .i18n import UiText, notify
-from .theme import code_font_family, get_palette, qss_family
+from .theme import code_font_family, font_stack, get_palette
 
 
 class SessionCommandHistory:
@@ -123,7 +123,7 @@ class CommandHistoryDialog(QDialog):
     def _update_summary(self):
         history = self.owner.command_history
         self.summary.setText(self.copy(
-            "{visible} / {total} commands; {omitted} omitted by session limits. Export is explicit; no automatic file writes.",
+            '{visible} / {total} commands; {omitted} not retained due to history limits. Use Export to save history to a file.',
             visible=self.commands.count(), total=len(history.commands), omitted=history.omitted))
 
     def retranslate_ui(self, cfg):
@@ -238,7 +238,7 @@ class CommandWindowWidget(QFrame):
         self.term.style_sheet = f"""
             QTextEdit, QPlainTextEdit {{ background: {self.palette.bg_input};
                 color: {self.palette.text_primary}; border: none;
-                font-family: {qss_family(family)};
+                font-family: {font_stack(family, code=True)};
                 font-size: {cfg.code_font_size * cfg.ui_scale / 100:g}pt; }}
             .in-prompt, .out-prompt {{ color: {self.palette.accent}; }}
             .error {{ color: {self.palette.danger}; }}
@@ -282,63 +282,74 @@ class CommandWindowWidget(QFrame):
         if self._history_dialog is not None:
             self._history_dialog.retranslate_ui(cfg)
         if self._hint_dialog is not None:
-            scrollbar = self._hint_text.verticalScrollBar()
-            position = scrollbar.value()
             self._hint_dialog.setWindowTitle(self.copy("Command hints"))
-            self._hint_text.setHtml(self._hints_html())
-            scrollbar.setValue(position)
+            for index, (key, title) in enumerate(self._hint_sections):
+                browser = self._hint_pages[key]
+                scrollbar = browser.verticalScrollBar()
+                position = scrollbar.value()
+                browser.setHtml(self._hints_html(key))
+                scrollbar.setValue(position)
+                self._hint_tabs.setTabText(index, self.copy(title))
 
-    def _hints_html(self):
-        """Short app-owned descriptions; executable source stays language-neutral."""
-        sections = [
-            ("Python / NumPy", "NumPy is preloaded as np.", [
+    def _hints_html(self, page="fxp"):
+        """One short lookup table per tab; Python examples are never translated."""
+        if page == "fxp":
+            premise = "APyTypes and its four numeric classes are preloaded."
+            rows = [
+                ("Numeric value", "a = APyFixed.from_float(1.25, bits=16, frac_bits=12)"),
+                ("Raw bits: 7 represents 1.75", "raw = APyFixed(7, 4, 2)"),
+                ("Arithmetic", "result = a + raw"),
+                ("Change format", "q = a.cast(bits=12, frac_bits=8)"),
+                ("Fixed-point array", "A = APyFixedArray.from_float(\n    [0.25, -0.125], bits=16, frac_bits=12)"),
+                ("Python assignment replaces the type", "a = 2"),
+            ]
+            footer = 'bits = total width; frac_bits = fractional width. Q4.12 means 16 bits, including sign. Python code follows APyTypes rules; Inspector edits use Settings.'
+        elif page == "python":
+            premise = "NumPy is preloaded as np."
+            rows = [
                 ("Python numbers", "a = 2\nb = 0.5"),
                 ("Fixed-width NumPy numbers", "np.int8(2)\nnp.float64(0.5)"),
                 ("Array and mean", "x = np.array([1.0, 2.0, 3.0])\nnp.mean(x)"),
-            ]),
-            ("APyTypes / Bits", "APyFixed, APyFixedArray, APyFloat, APyFloatArray and apy are preloaded.", [
-                ("Numeric value", "a = APyFixed.from_float(-0.03, bits=16, frac_bits=12)"),
-                ("Raw bits: 7 represents 1.75", "raw = APyFixed(7, 4, 2)"),
-                ("Fixed-point array", "A = APyFixedArray.from_float(\n    [0.25, -0.125], bits=16, frac_bits=12)"),
                 ("Floating-point value", "b = APyFloat.from_float(0.25, exp_bits=8, man_bits=23)"),
                 ("Floating-point array", "B = APyFloatArray.from_float(\n    [0.25, -0.125], exp_bits=8, man_bits=23)"),
-            ]),
-            ("Workspace commands", "Select a variable to inspect it; double-click an array to open its editor. Indices start at 0.", [
+                ("Plot in the console", "%matplotlib inline\nimport matplotlib.pyplot as plt\nplt.plot([0, 1, 2], [0, 1, 0])\nplt.show()"),
+            ]
+            footer = "Use Inspector for existing numeric values and FXP conversions; use the console for other types and calculations."
+        else:
+            premise = "Double-click Value to edit a scalar or open an array. Double-click Format to use Inspector conversion controls. Indices start at 0."
+            rows = [
                 ("List variables", "whos"), ("Clear console", "clc"),
                 ("Clear variables", "clear"),
-            ]),
-            ("Keyboard and controls", "Native constructors keep APyTypes rounding and overflow behavior; Settings defaults apply to GUI edits.", [
-                ("Run input", "Enter"), ("Insert a line", "Ctrl+Enter"),
-                ("Complete names", "Tab"), ("Browse command history", "↑ / ↓"),
+                ("Run input / insert a line", "Enter / Ctrl+Enter"),
+                ("Complete names / history", "Tab / ↑ / ↓"),
                 ("Interrupt execution", "Stop / Ctrl+C"),
-                ("Fresh kernel; clears variables", "Restart"),
-                ("Theme, fonts and interface scale", "Settings → Appearance"),
-            ]),
-            ("Plot in the console", "Plots appear below the command.", [
-                ("Sine wave", "%matplotlib inline\nimport matplotlib.pyplot as plt\nt = np.linspace(0, 2 * np.pi, 200)\nplt.plot(t, np.sin(t))\nplt.show()"),
-            ]),
-        ]
-        result = ['<style>td { padding: 5px 8px; } th { text-align:left; }</style>']
-        for title, premise, rows in sections:
-            result += [f"<h3>{escape(self.copy(title))}</h3><p>{escape(self.copy(premise))}</p>",
-                       f"<table border='0' cellspacing='0'><tr><th>{escape(self.copy('Purpose'))}</th><th>{escape(self.copy('Example / action'))}</th></tr>"]
-            for label, source in rows:
-                # Only control names are translated; submitted Python never is.
-                if title == "Keyboard and controls":
-                    source = self.copy(source)
-                result.append(f"<tr><td>{escape(self.copy(label))}</td><td><pre>{escape(source)}</pre></td></tr>")
-            result.append("</table>")
+            ]
+            footer = 'Restart clears all variables. History puts a command back in the input without running it.'
+        result = ["<style>td { padding: 5px 8px; } th { text-align:left; }</style>",
+                  f"<p>{escape(self.copy(premise))}</p>",
+                  f"<table border='0' cellspacing='0'><tr><th>{escape(self.copy('Purpose'))}</th><th>{escape(self.copy('Example / action'))}</th></tr>"]
+        for label, source in rows:
+            if page == "workspace" and label == "Interrupt execution":
+                source = self.copy(source)
+            result.append(f"<tr><td>{escape(self.copy(label))}</td><td><pre>{escape(source)}</pre></td></tr>")
+        result += ["</table>", f"<p>{escape(self.copy(footer))}</p>"]
         return "".join(result)
 
     def show_hints(self):
         if self._hint_dialog is None:
             self._hint_dialog = QDialog(self.window())
             self._hint_dialog.setWindowTitle(self.copy("Command hints"))
-            self._hint_dialog.resize(760, 560)
+            self._hint_dialog.resize(800, 540)
             layout = QVBoxLayout(self._hint_dialog)
-            self._hint_text = QTextBrowser(self._hint_dialog)
-            self._hint_text.setHtml(self._hints_html())
-            layout.addWidget(self._hint_text)
+            self._hint_tabs = QTabWidget(self._hint_dialog)
+            self._hint_sections = (("fxp", "FXP"), ("python", "Python / NumPy"), ("workspace", "Workspace"))
+            self._hint_pages = {}
+            for key, title in self._hint_sections:
+                browser = QTextBrowser(self._hint_tabs)
+                browser.setHtml(self._hints_html(key))
+                self._hint_pages[key] = browser
+                self._hint_tabs.addTab(browser, self.copy(title))
+            layout.addWidget(self._hint_tabs)
         self._hint_dialog.show()
         self._hint_dialog.raise_()
 

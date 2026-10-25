@@ -32,6 +32,8 @@ class ThemePalette:
     warning_bg: str
     success: str
     success_bg: str
+    primary_bg: str
+    primary_fg: str
 
 
 DARK_PALETTE = ThemePalette(
@@ -55,6 +57,7 @@ DARK_PALETTE = ThemePalette(
     warning_bg="#362812",
     success="#34d399",
     success_bg="#102e25",
+    primary_bg="#38bdf8", primary_fg="#071825",
 )
 
 LIGHT_PALETTE = ThemePalette(
@@ -78,7 +81,19 @@ LIGHT_PALETTE = ThemePalette(
     warning_bg="#fef3c7",
     success="#047857",
     success_bg="#d1fae5",
+    primary_bg="#0369a1", primary_fg="#ffffff",
 )
+
+
+def representation_colors(p: ThemePalette):
+    """Stable representation accents; labels and values also identify each field."""
+    if p.name == "light":
+        return {"real": ("#1d4ed8", "#eff6ff"), "hex": ("#6d28d9", "#f5f3ff"),
+                "s2": ("#0f766e", "#f0fdfa"), "uint": ("#4338ca", "#eef2ff"),
+                "c1": ("#475569", "#f8fafc"), "bin": ("#155e75", "#ecfeff")}
+    return {"real": ("#7dd3fc", "#172a40"), "hex": ("#c4b5fd", "#29213a"),
+            "s2": ("#5eead4", "#17312e"), "uint": ("#a5b4fc", "#20263d"),
+            "c1": ("#cbd5e1", "#212a39"), "bin": ("#67e8f9", "#15303b")}
 
 
 def get_palette(theme_name: str = "dark") -> ThemePalette:
@@ -87,6 +102,17 @@ def get_palette(theme_name: str = "dark") -> ThemePalette:
 
 def qss_family(family: str) -> str:
     return '"' + family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ") + '"'
+
+
+def font_stack(requested: str, *, code=False) -> str:
+    """Keep the selected face first and provide outline CJK fallbacks explicitly."""
+    primary = code_font_family(requested) if code else requested
+    families = [primary]
+    if not code:
+        families.append("Segoe UI")
+    families += ["Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC",
+                 "Noto Sans TC", "PingFang TC"]
+    return ", ".join(qss_family(family) for family in dict.fromkeys(families))
 
 
 def code_font_family(requested: str) -> str:
@@ -188,6 +214,7 @@ def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
         border: 1px solid {p.border};
     }}
     QToolButton[calcRole="iconButton"] {{ padding: 0px; }}
+    QToolButton:pressed, QPushButton:pressed {{ background: {p.bg_selected}; border: 1px solid {p.border_focus}; }}
     QToolButton:focus, QPushButton:focus {{ border: 1px solid {p.border_focus}; }}
     QToolButton:disabled, QPushButton:disabled {{ color: {p.text_muted}; }}
     QToolButton:checked, QPushButton:checked {{
@@ -256,16 +283,16 @@ def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
         background-color: {p.bg_selected};
         color: {p.accent};
     }}
-    QSplitter::handle {{
-        background-color: {p.border};
-    }}
+    QSplitter::handle {{ background-color: {p.bg_main}; }}
+    QSplitter::handle:horizontal {{ border-left: 1px solid {p.border}; border-right: 1px solid {p.border}; }}
+    QSplitter::handle:vertical {{ border-top: 1px solid {p.border}; border-bottom: 1px solid {p.border}; }}
     QScrollBar:vertical {{
         background: {p.bg_main};
         width: 8px;
         margin: 0px;
     }}
     QScrollBar::handle:vertical {{
-        background: {p.border};
+        background: {p.text_muted};
         min-height: 20px;
         border-radius: 4px;
     }}
@@ -275,10 +302,11 @@ def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
         margin: 0px;
     }}
     QScrollBar::handle:horizontal {{
-        background: {p.border};
+        background: {p.text_muted};
         min-width: 20px;
         border-radius: 4px;
     }}
+    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: {p.text_secondary}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{
         width: 0px;
         height: 0px;
@@ -320,19 +348,54 @@ def build_stylesheet(p: ThemePalette, cfg: CalcConfig | None = None) -> str:
     QPushButton[calcRole="bit"]:hover {{ border-color: {p.text_primary}; }}
     QFrame[calcRole="custom"] {{ background: {p.bg_header}; border: 1px solid {p.border}; border-radius: 5px; }}
     QLabel[calcRole="preview"] {{ background: {p.bg_input}; color: {p.accent}; border: 1px solid {p.border}; border-radius: 4px; padding: 8px; }}
-    QPushButton[calcRole="primary"] {{ background: {p.accent_bg}; color: {p.accent}; border: 1px solid {p.accent}; font-weight: 700; padding: 6px 14px; }}
+    QLabel[calcRole="status"][statusKind="plain"] {{ color: {p.primary_bg}; font-weight: 700; }}
+    QLabel[calcRole="sectionLabel"] {{ color: {p.text_primary}; font-weight: 700;
+        border-bottom: 1px solid {p.border}; padding: 2px 0px; }}
+    QFrame[calcRole="valueCard"] QLineEdit {{ padding: 2px 6px; }}
+    QPushButton[calcRole="primary"] {{ background: {p.primary_bg}; color: {p.primary_fg};
+        border: 1px solid {p.primary_bg}; font-weight: 700; padding: 5px 12px; }}
+    QPushButton[calcRole="primary"]:hover {{ background: {p.primary_bg}; color: {p.primary_fg}; border: 1px solid {p.primary_fg}; }}
+    QPushButton[calcRole="primary"]:pressed {{ background: {p.primary_bg}; color: {p.primary_fg}; border: 2px solid {p.primary_fg}; }}
+    QPushButton[calcRole="primary"]:focus {{ border: 2px dotted {p.primary_fg}; }}
+    QPushButton[calcRole="primary"]:disabled {{ background: {p.bg_header}; color: {p.text_muted}; border: 1px solid {p.border}; }}
+    QToolButton[calcRole="iconButton"][copyFeedback="true"] {{ background: {p.success_bg}; border: 1px solid {p.success}; }}
     QToolTip {{ color: {p.text_primary}; background: {p.bg_header}; border: 1px solid {p.border}; }}
     """
-    # Base stylesheet dimensions are authored at 100%, with a 10pt UI font.
-    style = re.sub(r"font-size: (\d+)px", lambda m: f"font-size: {round(int(m[1]) * cfg.ui_font_size / 10)}px", style)
+    for field, (accent, background) in representation_colors(p).items():
+        style += f"""
+        QFrame[calcRole="valueCard"][representation="{field}"] {{
+            background: {background}; border-left: 3px solid {accent}; }}
+        QFrame[calcRole="valueCard"][representation="{field}"] QLabel[calcRole="cardTitle"] {{ color: {accent}; }}
+        """
+    # Typography uses points throughout; only layout dimensions use scaled pixels.
+    # Keep a small, consistent body/caption hierarchy instead of rounding font pixels.
+    def font_size(match):
+        authored = int(match[1])
+        ratio = {10: .8, 11: .9, 12: .9, 13: 1., 14: 1.1}.get(authored, authored / 13)
+        return f"font-size: {cfg.ui_font_size * ratio * cfg.ui_scale / 100:g}pt"
+    style = re.sub(r"font-size: (\d+)px", font_size, style)
     style = re.sub(r"(\d+(?:\.\d+)?)px", lambda m: f"{max(1, round(float(m[1]) * cfg.ui_scale / 100)) if float(m[1]) else 0}px", style)
-    style = style.replace('"Segoe UI", "Microsoft JhengHei UI", sans-serif', qss_family(cfg.ui_font_family))
-    code_family = qss_family(code_font_family(cfg.code_font_family))
+    ui_family = font_stack(cfg.ui_font_family)
+    style = style.replace('"Segoe UI", "Microsoft JhengHei UI", sans-serif', ui_family)
+    code_family = font_stack(cfg.code_font_family, code=True)
     style = style.replace('"Cascadia Mono", "Consolas", monospace', code_family)
     code_size = cfg.code_font_size * cfg.ui_scale / 100
+    ui_size = cfg.ui_font_size * cfg.ui_scale / 100
     style += f"""
+    QComboBox, QSpinBox, QHeaderView, QHeaderView::section {{
+        font-family: {ui_family}; font-size: {ui_size:g}pt;
+    }}
+    QLabel[calcRole="settingsHint"] {{ color: {p.text_secondary};
+        background: {p.bg_header}; border-left: 2px solid {p.border};
+        border-radius: 3px; padding: 4px 6px;
+        font-size: {ui_size * .9:g}pt; font-weight: 400;
+    }}
+    QSplitter::handle:hover {{ background: {p.bg_selected}; }}
     QLineEdit, QPlainTextEdit, QTableWidget, QTableView, QWidget[calcCode="true"] {{
         font-family: {code_family}; font-size: {code_size:g}pt;
+    }}
+    QLineEdit[calcRole="search"], QFontComboBox, QFontComboBox QLineEdit {{
+        font-family: {ui_family}; font-size: {ui_size:g}pt;
     }}
     """
     return style

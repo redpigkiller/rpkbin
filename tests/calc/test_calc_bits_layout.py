@@ -21,6 +21,7 @@ class Controller(QObject):
     operation_finished = Signal(object, str)
     console_executed = Signal(str)
     edit_finished = Signal(object, str)
+    interaction_enabled = Signal(bool)
 
     def __init__(self, cfg):
         super().__init__()
@@ -247,14 +248,20 @@ def test_shrinking_word_length_keeps_remaining_bit_widgets_and_removes_old_cells
     assert widget.bit_grid_host.minimumSizeHint().height() < 150
 
 
-def test_value_card_titles_keep_readable_width_next_to_pin_and_copy(inspector_factory):
+@pytest.mark.parametrize("mode", ["grid", "list"])
+def test_value_card_titles_keep_readable_width_next_to_pin_and_copy(inspector_factory, app, mode):
     widget, _, _ = inspector_factory(bits=128, width=480)
+    widget._apply_cards_layout(mode)
+    settle(app)
     for card in widget._cards:
         if card.isHidden():
             continue
         label = card.title_lbl
         assert label.isVisible()
-        assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
+        from PySide6.QtCore import QRect
+        bounds = label.fontMetrics().boundingRect(QRect(0, 0, label.width(), 1000),
+                                                  Qt.TextFlag.TextWordWrap, label.text())
+        assert label.height() >= bounds.height() - 1
         assert label.height() > 0
 
 
@@ -271,6 +278,9 @@ def test_numeric_representations_copy_without_enabling_native_bit_edits(inspecto
     snapshot = session.get_inspector_snapshot("x")
     widget.render_snapshot(snapshot)
     settle(app)
+    if kind == "float":
+        assert widget.card_hex.isHidden() and widget.card_bin.isHidden()
+        widget.native_details_toggle.click()
     assert widget.card_hex.isVisible() and widget.card_bin.isVisible()
     assert widget.card_hex.edit.isReadOnly() and widget.card_bin.edit.isReadOnly()
     assert not widget.card_real.pin_btn.isVisible() and not widget.card_hex.pin_btn.isVisible()
@@ -279,7 +289,7 @@ def test_numeric_representations_copy_without_enabling_native_bit_edits(inspecto
     for card, key in ((widget.card_hex, "hex"), (widget.card_bin, "binary")):
         card.copy_btn.click()
         assert app.clipboard().text() == snapshot.native_bits[key]
-    if kind in ("float", "apyfloat"):
+    if kind == "apyfloat":
         assert len(widget._bit_cells) == snapshot.native_bits["width"]
         assert all(button.isEnabled() == (kind == "apyfloat") for _, _, button, _ in widget._bit_cells.values())
         assert not any(dot.isVisible() for _, _, _, dot in widget._bit_cells.values())

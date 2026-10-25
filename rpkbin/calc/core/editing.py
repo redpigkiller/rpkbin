@@ -278,6 +278,8 @@ def conversion_preview(session, name, fmt, pin="real", coord=None):
         if example is None:
             example = {"before": str(value), "after": str(updated)}
     return {"name": name, "format": fmt, "pin": pin, "total_cells": size,
+            "same_format": isinstance(obj, (apy.APyFixed, apy.APyFixedArray)) and extract_spec(obj) == spec,
+            "quant": session.config.default_quant, "overflow": session.config.default_overflow,
             "checked_cells": len(original), "complete": full,
             "scope": "whole variable" if full else "selected cell sample; Apply changes the WHOLE variable",
             "changed_values": changed, "saturated_cells": saturated, "discarded_high_bits_cells": truncated,

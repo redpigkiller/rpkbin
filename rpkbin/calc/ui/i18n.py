@@ -59,7 +59,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "lbl_hex_value": "Hex (Raw Bits)",
         "lbl_s2_value": "2's Comp (Signed Int)",
         "lbl_uint_value": "Unsigned Int",
-        "lbl_c1_value": "1's Comp (Read-Only)",
+        "lbl_c1_value": "1's Comp",
         "no_var_selected": "Select a variable in the Workspace above to inspect or edit its FXP & bits",
     },
 }
@@ -72,11 +72,12 @@ ENGLISH_WORKSPACE_TERMS = frozenset({
     "Command Window", "Workspace", "Inspector", "Name", "Value", "Format",
     "Hex", "2's Int", "UInt", "1's Comp", "Binary", "Bits (WL/IWL/FWL)",
     "LSB & Range", "Shape", "Min .. Max", "Real Value", "Hex (Raw Bits)",
-    "2's Comp (Signed Int)", "Unsigned Int", "1's Comp (Read-Only)",
+    "2's Comp (Signed Int)", "Unsigned Int",
     "Type:", "Format:", "FXP format", "Array format:", "Array format", "Dtype:",
     "Real", "2's", "Bits (MSB → LSB)", "Bits (LSB → MSB)",
     "Sign", "Integer", "Fraction", "Exponent", "exponent", "int", "frac", "Col {index}", "Row {index}",
-    "Hex (integer value)",
+    "Hex (integer value)", "All types", "Arrays", "Scalars", "Filter variable names",
+    "Columns", "Open array", "{visible} / {total} shown",
     "{name} shape={shape}",
 })
 
@@ -124,18 +125,35 @@ class UiText:
             getattr(target, method)(self(source))
 
 
-def ask(parent, title, text, buttons, default, lang="en_US"):
+def ask(parent, title, text, buttons, default, lang="en_US", *, icon=None):
     """A question whose application buttons follow the selected UI language."""
-    from PySide6.QtWidgets import QMessageBox
+    from .theme import repolish
+    from PySide6.QtWidgets import QDialogButtonBox, QMessageBox
     from PySide6.QtCore import Qt
 
-    box = QMessageBox(QMessageBox.Icon.Question, title, text, buttons, parent)
+    box = QMessageBox(parent)
+    native_option = getattr(getattr(QMessageBox, "Option", None), "DontUseNativeDialog", None)
+    if native_option is not None:  # Available since Qt 6.6; retain the declared 6.5 minimum.
+        box.setOption(native_option, True)
+    if parent is not None:
+        box.setStyleSheet(parent.window().styleSheet())
+    box.setIcon(QMessageBox.Icon.Question if icon is None else icon)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(buttons)
+    if buttons == (QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel):
+        # Set the child policy directly so an inherited Windows layout is rebuilt.
+        # KDE ordering puts Apply before Cancel, preserving standard return values.
+        box.findChild(QDialogButtonBox).setStyleSheet("QDialogButtonBox { button-layout: 2; }")
     box.setTextFormat(Qt.TextFormat.PlainText)
     box.setDefaultButton(default)
     for name in ("Yes", "No", "Apply", "Cancel", "Ok", "Close"):
         button = box.button(getattr(QMessageBox.StandardButton, name))
         if button is not None:
             button.setText(t("OK" if name == "Ok" else name, lang))
+            if name == "Apply":
+                button.setProperty("calcRole", "primary")
+                repolish(button)
     return box.exec()
 
 
