@@ -1,0 +1,26 @@
+8051
+80c51
+mcs51
+mcs-51
+acc
+accumulator
+psw
+dptr
+sfr
+idata
+xdata
+bdata
+iram
+ajmp
+acall
+lcall
+ljmp
+sjmp
+djnz
+cjne
+movx
+movc
+bit-addressable
+bit addressable
+register bank
+special function register

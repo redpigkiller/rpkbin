@@ -12,12 +12,12 @@ from PySide6.QtTest import QTest
 from PySide6.QtGui import QFontMetricsF
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolButton, QWidget
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.ui.app import CalcMainWindow
-from rpkbin.calc.ui.i18n import tr
-from rpkbin.calc.ui.icons import make_icon
-from rpkbin.calc.ui.settings_dialog import SettingsDialog
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.ui.studio_window import CalcMainWindow
+from rpkbin.app.calc.ui.i18n import tr
+from rpkbin.app.calc.ui.icons import make_icon
+from rpkbin.app.calc.ui.settings_dialog import SettingsDialog
 
 
 @pytest.fixture(scope="module")
@@ -197,7 +197,7 @@ def _contrast(foreground, background):
 @pytest.mark.parametrize("theme", ["light","dark"])
 def test_action_and_card_colors_retain_text_contrast_and_visible_primary_fill(app, theme):
     from PySide6.QtWidgets import QPushButton, QVBoxLayout
-    from rpkbin.calc.ui.theme import build_stylesheet, get_palette, representation_colors, set_role
+    from rpkbin.app.calc.ui.theme import build_stylesheet, get_palette, representation_colors, set_role
     cfg=CalcConfig(theme=theme)
     palette=get_palette(theme)
     assert _contrast(palette.primary_fg,palette.primary_bg)>=4.5
@@ -244,8 +244,8 @@ def test_grid_is_new_default_and_left_button_and_saved_list_preference_still_wor
 def test_real_confirmation_uses_widget_dialog_and_colored_apply(window,app,theme):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QMessageBox
-    from rpkbin.calc.ui.i18n import ask
-    from rpkbin.calc.ui.theme import get_palette
+    from rpkbin.app.calc.ui.i18n import ask
+    from rpkbin.app.calc.ui.theme import get_palette
     window.controller.update_config(replace(window.controller.config,theme=theme))
     captured=[]
     def inspect():
@@ -376,6 +376,8 @@ def test_custom_import_and_startup_preview_have_independent_scrollbars(window, a
     dialog = SettingsDialog(window.controller.config, window)
     dialog.tabs.setCurrentIndex(2)
     dialog.resize(820, 680)
+    dialog._add_custom_group()
+    dialog.startup_toggle.setChecked(True)
     dialog.custom_imports_edit.setPlainText("\n".join(f"import math  # line {i}" for i in range(300)))
     dialog.startup_store.path.write_text("\n".join(f"# helper note {i}" for i in range(300)), encoding="utf-8")
     dialog._refresh_startup_preview()
@@ -396,7 +398,7 @@ def test_custom_import_and_startup_preview_have_independent_scrollbars(window, a
 @pytest.mark.parametrize("language", ["en_US", "zh_TW"])
 @pytest.mark.parametrize("font_size,scale", [(10, 100), (13, 100), (16, 160), (24, 160)])
 def test_conversion_initial_size_fits_final_width_before_platform_show(window, app, language, font_size, scale):
-    from rpkbin.calc.ui.conversion_dialog import FixedPointConversionDialog
+    from rpkbin.app.calc.ui.conversion_dialog import FixedPointConversionDialog
     cfg = replace(window.controller.config, language=language, ui_font_size=font_size, ui_scale=scale)
     window.controller.update_config(cfg)
     session = WorkspaceSession(cfg, seed_demo_vars=False)
@@ -425,7 +427,7 @@ def test_primary_action_is_left_of_cancel_in_settings_conversion_and_import(wind
     from dataclasses import asdict
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QPushButton
-    from rpkbin.calc.ui.conversion_dialog import FixedPointConversionDialog
+    from rpkbin.app.calc.ui.conversion_dialog import FixedPointConversionDialog
     cfg = replace(window.controller.config, language=language)
     window.controller.update_config(cfg)
     settings = SettingsDialog(cfg, window)
@@ -464,7 +466,7 @@ def test_primary_action_is_left_of_cancel_in_settings_conversion_and_import(wind
 def test_confirmation_action_order_keeps_standard_results_and_cancel_default(window, app, action):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QMessageBox
-    from rpkbin.calc.ui.i18n import ask
+    from rpkbin.app.calc.ui.i18n import ask
     captured = []
     def inspect():
         box = app.activeModalWidget()
@@ -488,7 +490,7 @@ def test_confirmation_action_order_keeps_standard_results_and_cancel_default(win
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_help_background_and_console_scroll_thumb_are_distinct_from_splitter(window, app, theme):
     from PySide6.QtWidgets import QStyle, QStyleOptionSlider
-    from rpkbin.calc.ui.theme import get_palette
+    from rpkbin.app.calc.ui.theme import get_palette
     cfg = replace(window.controller.config, theme=theme)
     window.controller.update_config(cfg)
     window.resize(1300, 850)

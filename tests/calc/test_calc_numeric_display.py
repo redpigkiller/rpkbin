@@ -10,12 +10,12 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QMenu
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.config import KERNEL_CONFIG_FIELDS
-from rpkbin.calc.ui.i18n import tr
-from rpkbin.calc.ui.numeric_display import MAX_FIXED_CHARACTERS, format_numeric_text
-from rpkbin.calc.ui import workspace_widget
-from rpkbin.calc.ui.workspace_widget import WorkspaceWidget
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.config import KERNEL_CONFIG_FIELDS
+from rpkbin.app.calc.ui.i18n import tr
+from rpkbin.app.calc.ui.numeric_display import MAX_FIXED_CHARACTERS, format_numeric_text
+from rpkbin.app.calc.ui import workspace_widget
+from rpkbin.app.calc.ui.workspace_widget import WorkspaceWidget
 
 
 @pytest.mark.parametrize("text", [

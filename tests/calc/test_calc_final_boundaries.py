@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession, make_fxp
-from rpkbin.calc.core.editing import conversion_preview
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession, make_fxp
+from rpkbin.app.calc.core.editing import conversion_preview
 
 
 @pytest.fixture

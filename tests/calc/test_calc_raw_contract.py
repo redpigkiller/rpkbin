@@ -1,14 +1,14 @@
 """Raw FXP boundaries, explicit reformat policy, and hardware bit fields."""
 
 from fractions import Fraction
-from rpkbin.calc.core.config import CalcConfig
+from rpkbin.app.calc.core.config import CalcConfig
 import math
 
 import numpy as np
 import pytest
 
-from rpkbin.calc.core.format_engine import FxpSpec
-from rpkbin.calc.core.fxp_model import (
+from rpkbin.app.calc.core.format_engine import FxpSpec
+from rpkbin.app.calc.core.fxp_model import (
     extract_spec,
     make_fxp,
     make_fxp_from_raw_uint,
@@ -215,8 +215,8 @@ def test_real_editor_call_and_attribute_payloads_have_no_side_effects(tmp_path):
 
 
 def test_malicious_fxp_paste_is_rejected_before_any_cell_changes(tmp_path):
-    from rpkbin.calc.core import WorkspaceSession
-    from rpkbin.calc.core.editing import EditJournal, paste_rectangle
+    from rpkbin.app.calc.core import WorkspaceSession
+    from rpkbin.app.calc.core.editing import EditJournal, paste_rectangle
 
     session = WorkspaceSession(CalcConfig(), seed_demo_vars=False)
     source = make_fxp([[1, 2]], "Q8.0")

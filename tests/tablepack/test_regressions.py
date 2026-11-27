@@ -5,14 +5,18 @@ depending on private encoder details while exercising the public decoder.
 """
 
 import math
+import os
 import struct
+import subprocess
+import sys
 from enum import IntEnum, StrEnum
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from rpkbin.tablepack import (
-    Bool, Category, DecodeLimits, Enum, Float, Int, Schema, Str, Uint,
+    Bool, Bytes, Category, DecodeLimits, Enum, Float, Int, Schema, Str, Uint,
     iter_unpack, pack, unpack,
 )
 from rpkbin.tablepack._varint import encode_varint, zigzag_encode
@@ -167,11 +171,11 @@ def test_uint64_row_count_is_rejected_before_allocation():
 
 COMPRESSORS = [None, "zlib", "lzma"]
 try:
-    import brotli  # noqa: F401
+    import brotli
+    if hasattr(getattr(brotli, "Decompressor", None), "can_accept_more_data"):
+        COMPRESSORS.append("brotli")
 except ImportError:
     pass
-else:
-    COMPRESSORS.append("brotli")
 
 
 @pytest.mark.parametrize("compress", COMPRESSORS)
@@ -217,3 +221,69 @@ def test_zero_bit_enum_rows_are_not_inferred_from_payload_bytes(compress):
     blob = pack(rows, schema, compress=compress, embed_schema=False)
     limits = DecodeLimits(max_payload_bytes=64, max_rows=20, max_cells=20)
     assert unpack(blob, schema, limits=limits) == rows
+
+
+@pytest.mark.parametrize("bad_col", [bytearray(b"abc"), memoryview(b"abc")])
+def test_bytes_like_objects_are_rejected_as_column_sequences(bad_col):
+    with pytest.raises(TypeError, match="expected a sequence"):
+        pack({"a": bad_col}, Schema(Uint("a")))
+
+    rows = pack({"a": [bytearray(b"abc"), memoryview(b"def")]}, Schema(Bytes("a")))
+    assert unpack(rows) == [{"a": b"abc"}, {"a": b"def"}]
+
+
+def test_legacy_brotli_excluded_from_test_matrices(tmp_path):
+    (tmp_path / "brotli.py").write_text("class Decompressor:\n    pass\n", encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), str(repo_root)])
+    script = (
+        "from tests.tablepack import ("
+        "test_tablepack, test_regressions, test_decode_boundaries, "
+        "test_infer_optimization, test_generated_cases"
+        ")\n"
+        "assert 'brotli' not in test_tablepack.COMPRESS\n"
+        "assert 'brotli' not in test_regressions.COMPRESSORS\n"
+        "assert 'brotli' not in test_decode_boundaries.CODECS\n"
+        "assert 'brotli' not in test_infer_optimization._compressors()\n"
+        "assert 'brotli' not in test_generated_cases.CODECS\n"
+        "test_generated_cases.test_generated_mixed_register_roundtrip(3)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_schema_contains_names_and_columns():
+    s = Schema(Uint("addr", bits=16), Str("name"))
+    assert "addr" in s
+    assert "name" in s
+    assert "missing" not in s
+    assert Uint("addr", bits=16) in s
+    assert Str("addr") not in s
+    assert Uint("addr", bits=8) not in s
+    assert 123 not in s
+    assert None not in s
+
+
+def test_invalid_utf8_surrogate_carries_row_and_column_context():
+    with pytest.raises(ValueError, match=r"row 0, column 's'"):
+        pack([{"s": "\ud800"}], Schema(Str("s")))
+    with pytest.raises(ValueError, match=r"row 1, column 's'"):
+        pack([{"s": "ok"}, {"s": "\ud800"}], Schema(Category("s")))
+
+
+def test_column_describe_matches_encoding_semantics():
+    assert Uint("a").describe() == "uint"
+    assert Uint("a", bits=12).describe() == "uint12"
+    assert Uint("a", bits=12, delta=True).describe() == "uint+delta"
+    assert Uint("a", bits=12, varint=True).describe() == "uint"
+    assert Uint("a", bits=4, pack=True, nullable=True).describe() == "uint4+pack+nullable"
+    assert Float("f", bits=32).describe() == "float32"
+
+

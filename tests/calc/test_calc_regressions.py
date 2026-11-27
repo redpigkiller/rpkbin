@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession, make_fxp, make_fxpi
-from rpkbin.calc.core.fxp_model import PlainValueSnapshot, extract_spec
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession, make_fxp, make_fxpi
+from rpkbin.app.calc.core.fxp_model import PlainValueSnapshot, extract_spec
 
 
 def test_appearance_preferences_validate_and_roundtrip(tmp_path):
@@ -119,7 +119,7 @@ def test_array_cell_saturation_and_quantization_provenance(session):
 
 
 def test_large_array_saturation_summary_never_reuses_cached_flag(session, monkeypatch):
-    from rpkbin.calc.core.fxp_model import RpkFixedArray
+    from rpkbin.app.calc.core.fxp_model import RpkFixedArray
     session.user_ns["A"] = make_fxp([99.0]+[0.0]*4096,"Q4.4")
     assert session.get_inspector_snapshot("A").status_kind == "saturated"
     assert session.list_variables()[0].is_saturated is None
@@ -185,7 +185,7 @@ def test_sparse_array_saturation_summary_validates_repl_writes_and_copies(sessio
 def test_workspace_saturation_status_is_json_tristate(session, value):
     import json
     from dataclasses import asdict, replace
-    from rpkbin.calc.protocol import rows_from_dict
+    from rpkbin.app.calc.protocol import rows_from_dict
     session.user_ns["A"] = make_fxp([0], "Q4.4")
     row = replace(session.list_variables()[0], is_saturated=value)
     encoded = json.loads(json.dumps([asdict(row)], allow_nan=False))
@@ -286,7 +286,7 @@ def test_gui_edits_on_arithmetic_array_use_sparse_independent_provenance(session
 
 def test_untracked_inspector_is_strict_json_serializable(session):
     import json
-    from rpkbin.calc.protocol import inspector_from_dict, inspector_to_dict
+    from rpkbin.app.calc.protocol import inspector_from_dict, inspector_to_dict
     session.user_ns["x"] = make_fxp("0xFF", "Q8.0")
     snapshot = session.get_inspector_snapshot("x")
     payload = json.loads(json.dumps(inspector_to_dict(snapshot), allow_nan=False))
@@ -308,7 +308,7 @@ def test_exact_fxp_source_survives_copy_and_real_edit_without_float_loss(session
 
 def test_saturating_arbitrary_integer_keeps_json_diagnostics_finite(session):
     import json
-    from rpkbin.calc.protocol import inspector_to_dict
+    from rpkbin.app.calc.protocol import inspector_to_dict
     session.user_ns["x"] = make_fxp(1 << 2048, "Q8.0")
     snapshot = session.get_inspector_snapshot("x")
     assert snapshot.status_kind == "saturated"
@@ -437,7 +437,7 @@ def test_read_only_array_is_read_only_in_inspector_and_core(session):
 
 @pytest.mark.parametrize("value", [1, np.uint8(1), [1], np.array([1]), np.array([[1]])])
 def test_native_conversion_rejects_hex_pin_and_real_conversion_is_consistent(value):
-    from rpkbin.calc.core.fxp_model import reformat_value
+    from rpkbin.app.calc.core.fxp_model import reformat_value
     with pytest.raises(TypeError, match="Hex pin"):
         reformat_value(value, "Q4.4", pin_mode="hex")
     converted = reformat_value(value, "Q4.4", pin_mode="real")
@@ -508,7 +508,7 @@ def test_config_loads_malformed_json_root_and_saves_atomically(tmp_path):
 def test_snapshot_protocol_round_trip_and_build_mismatch(session):
     import json
     from dataclasses import asdict
-    from rpkbin.calc.protocol import inspector_from_dict, inspector_to_dict, matrix_from_dict, validate_envelope
+    from rpkbin.app.calc.protocol import inspector_from_dict, inspector_to_dict, matrix_from_dict, validate_envelope
     session.user_ns["x"] = make_fxp(-0.03, "Q-2.12")
     snapshot = session.get_inspector_snapshot("x")
     decoded = inspector_from_dict(json.loads(json.dumps(inspector_to_dict(snapshot))))

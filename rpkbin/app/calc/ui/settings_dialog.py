@@ -1,0 +1,996 @@
+"""Draft-only preferences UI with explicit import preview and script consent."""
+from __future__ import annotations
+
+import copy
+import html
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+from uuid import uuid4
+
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
+    QFontComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSpinBox,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
+)
+
+from ..core.config import CalcConfig, DEFAULT_CONFIG_PATH
+from ..core.auto_imports import BUILTIN_BINDINGS, import_collisions, validate_custom_groups
+from ..core.format_engine import FormatEngine, FxpSpec
+from ..core.settings_transfer import export_preferences, merge_preferences, parse_preferences
+from ..core.startup import StartupFile
+from .i18n import UiText, notify
+from .icons import make_icon
+from .theme import build_stylesheet, font_stack, get_palette, install_shift_horizontal_wheel, set_role
+
+
+class _GroupTitleLabel(QLabel):
+    clicked = Signal()
+    doubleClicked = Signal()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class _IgnoreWheel:
+    """Let parent scroll areas handle wheel input; keyboard and arrows still work."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class PreferenceCombo(_IgnoreWheel, QComboBox):
+    pass
+
+
+class PreferenceFontCombo(_IgnoreWheel, QFontComboBox):
+    pass
+
+
+class PreferenceSpin(_IgnoreWheel, QSpinBox):
+    pass
+
+
+class SettingsDialog(QDialog):
+    """All edits, imports and reset affect a draft; Apply returns it to the owner."""
+    def __init__(self, config: CalcConfig, parent: QWidget | None = None,
+                 *, config_path: Path | str | None = None, controller=None) -> None:
+        super().__init__(parent)
+        controller = controller or getattr(parent, "controller", None)
+        config_path = config_path or getattr(controller, "_config_path", None)
+        self._working_cfg = copy.deepcopy(config)
+        self._accepted_cfg = copy.deepcopy(config)
+        self._text = UiText(config.language, keep_english_terms=config.keep_english_terms)
+        self._orig_lang = getattr(getattr(controller, "config", None), "language", config.language)
+        self._orig_terms = getattr(getattr(controller, "config", None), "keep_english_terms", config.keep_english_terms)
+        self._retranslate_items: list[tuple[Any, str]] = []
+        self._retranslate_accessible: list[tuple[QWidget, str]] = []
+        self._retranslate_tables: list[tuple[QLabel, tuple, tuple]] = []
+        self._config_path = Path(config_path or DEFAULT_CONFIG_PATH).expanduser().resolve()
+        self.controller = controller
+        self.startup_store = StartupFile(self._config_path)
+        self._startup_pending = None
+        self._startup_revision = None
+        self._startup_read_error = ""
+        try:
+            if self.controller or self.startup_store.path.exists():
+                self._startup_revision = self.startup_store.revision()
+        except (OSError, ValueError, UnicodeError) as exc:
+            self._startup_read_error = str(exc)
+        self.palette = get_palette(config.theme)
+        if parent is None:
+            self.setStyleSheet(build_stylesheet(self.palette, config))
+        self.setWindowTitle(self._text("Settings"))
+        self.resize(820, 680)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        self.tabs = QTabWidget(self)
+        for builder, title in ((self._build_appearance_tab, "Appearance"),
+                               (self._build_format_tab, "FXP format"),
+                               (self._build_auto_import_tab, "Auto-import"),
+                               (self._build_management_tab, "Preferences")):
+            self.tabs.addTab(builder(), self._text(title))
+        layout.addWidget(self.tabs, 1)
+        buttons = QHBoxLayout()
+        hint = self._label("Apply saves preferences. Startup code runs separately.")
+        set_role(hint, "muted")
+        self.apply_hint = hint
+        buttons.addWidget(hint, 1)
+        self.cancel_btn = self._button("Cancel", self.reject)
+        self.save_btn = self._button("Apply", self._on_save)
+        self.save_btn.setToolTip(self._text("Save preferences and apply changes"))
+        set_role(self.save_btn, "primary")
+        buttons.addWidget(self.save_btn)
+        buttons.addWidget(self.cancel_btn)
+        self.setTabOrder(self.save_btn, self.cancel_btn)
+        layout.addLayout(buttons)
+        self.language_combo.currentIndexChanged.connect(self._on_language_preview_changed)
+        self.english_terms_check.toggled.connect(self._on_language_preview_changed)
+        self._update_preview()
+
+    def _label(self, source, *, bold=False, retranslate=True):
+        label = QLabel(self._text(source), self)
+        label.setWordWrap(True)
+        set_role(label, "sectionLabel" if bold else "settingsHint")
+        if retranslate:
+            self._retranslate_items.append((label, source))
+        return label
+
+    def _button(self, source, slot):
+        button = QPushButton(self._text(source), self)
+        button.clicked.connect(slot)
+        self._retranslate_items.append((button, source))
+        return button
+
+    def _add_form_row(self, form: QFormLayout, label_text: str, field: QWidget):
+        if label_text:
+            lbl = QLabel(self._text(label_text), self)
+            lbl.setBuddy(field)
+            if not field.accessibleName():
+                field.setAccessibleName(self._text(label_text))
+                self._retranslate_accessible.append((field, label_text))
+            self._retranslate_items.append((lbl, label_text))
+            form.addRow(lbl, field)
+        else:
+            form.addRow("", field)
+
+    def _scroll(self, page):
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        install_shift_horizontal_wheel(scroll)
+        return scroll
+
+    def _render_table(self, label, headers, rows):
+        def esc(source):
+            return html.escape(self._text(source))
+        markup = '<table cellspacing="0" cellpadding="5" width="100%"><tr>'
+        markup += "".join(f'<th align="left">{esc(cell)}</th>' for cell in headers) + '</tr>'
+        markup += "".join('<tr>' + ''.join(f'<td>{esc(cell)}</td>' for cell in row) + '</tr>'
+                          for row in rows) + '</table>'
+        label.setText(markup)
+
+    def _table(self, headers, rows):
+        label = QLabel(self)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._retranslate_tables.append((label, headers, rows))
+        self._render_table(label, headers, rows)
+        return label
+
+    def _on_language_preview_changed(self, *_):
+        lang = self.language_combo.currentData() or "en_US"
+        terms = self.english_terms_check.isChecked()
+        self.set_language(lang, keep_english_terms=terms)
+
+    def set_language(self, lang: str, *, preserve_english_terms: bool | None = None, keep_english_terms: bool | None = None) -> None:
+        terms = keep_english_terms if keep_english_terms is not None else preserve_english_terms
+        if terms is None:
+            terms = self.english_terms_check.isChecked()
+        self._text.refresh(lang, keep_english_terms=terms)
+        self.retranslate_ui()
+
+    def retranslate_ui(self) -> None:
+        self.setWindowTitle(self._text("Settings"))
+        tab_titles = ("Appearance", "FXP format", "Auto-import", "Preferences")
+        for idx, title in enumerate(tab_titles):
+            self.tabs.setTabText(idx, self._text(title))
+        for widget, source in self._retranslate_items:
+            widget.setText(self._text(source))
+        for widget, source in self._retranslate_accessible:
+            widget.setAccessibleName(self._text(source))
+        for label, headers, rows in self._retranslate_tables:
+            self._render_table(label, headers, rows)
+        if hasattr(self, "launch_mode_combo"):
+            for idx, title in enumerate(("Simple", "Python", "Last used")):
+                self.launch_mode_combo.setItemText(idx, self._text(title))
+        if hasattr(self, "keypad_size_mode_combo"):
+            for idx, title in enumerate(("Expand with window", "Cap at desktop size")):
+                self.keypad_size_mode_combo.setItemText(idx, self._text(title))
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.setItemText(0, self._text("Dark"))
+            self.theme_combo.setItemText(1, self._text("Light"))
+        if hasattr(self, "save_btn"):
+            self.save_btn.setToolTip(self._text("Save preferences and apply changes"))
+        if hasattr(self, "defaults_btn"):
+            self.defaults_btn.setToolTip(self._text("Restore defaults preserves your startup.py."))
+        if hasattr(self, "startup_notice"):
+            notice = getattr(self.controller, "_startup_notice", "")
+            self.startup_notice.setText(self._text("Startup file notice: {notice}", notice=notice))
+            self.startup_notice.setVisible(bool(notice))
+        if hasattr(self, "startup_edit"):
+            self._refresh_startup_preview()
+        if self.controller is not None:
+            if getattr(getattr(self.controller, "transport", None), "ready", False):
+                self._show_import_state(self.controller.import_error)
+            self._show_startup_state(self.controller.startup_state)
+        if hasattr(self, "custom_imports_edit"):
+            self.custom_imports_edit.setAccessibleName(self._text("Custom imports"))
+            self.custom_imports_edit.setPlaceholderText(self._text("One import per line (e.g. import scipy as sp)"))
+        if hasattr(self, "startup_toggle"):
+            self.startup_toggle.setText(self._text("Startup script"))
+            self._update_startup_toggle_icon()
+        if hasattr(self, "custom_groups_container"):
+            self._refresh_groups(getattr(self, "_custom_group_index", -1))
+        if hasattr(self, "_group_checks"):
+            for key, checkbox in self._group_checks.items():
+                checkbox.setAccessibleName(checkbox.text())
+        self._update_preview()
+
+    def reject(self):
+        self.set_language(self._orig_lang, keep_english_terms=self._orig_terms)
+        super().reject()
+
+    def _build_appearance_tab(self):
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.launch_mode_combo = PreferenceCombo(page)
+        for title, mode in (("Simple", "simple"), ("Python", "python"), ("Last used", "last")):
+            self.launch_mode_combo.addItem(self._text(title), mode)
+        self.launch_mode_combo.setCurrentIndex(self.launch_mode_combo.findData(self._working_cfg.launch_mode))
+        self._add_form_row(form, "Launch mode", self.launch_mode_combo)
+        self.keypad_size_mode_combo = PreferenceCombo(page)
+        for title, mode in (("Expand with window", "expand"), ("Cap at desktop size", "capped")):
+            self.keypad_size_mode_combo.addItem(self._text(title), mode)
+        self.keypad_size_mode_combo.setCurrentIndex(
+            self.keypad_size_mode_combo.findData(self._working_cfg.simple_keypad_size_mode)
+        )
+        self._add_form_row(form, "Simple keypad sizing", self.keypad_size_mode_combo)
+        self.language_combo = PreferenceCombo(page)
+        for label, key in (("English", "en_US"), ("繁體中文", "zh_TW")):
+            self.language_combo.addItem(label, key)
+        self.language_combo.setCurrentIndex(self.language_combo.findData(self._working_cfg.language))
+        self._add_form_row(form, "Language", self.language_combo)
+        self.english_terms_check = QCheckBox(self._text("Keep workspace terms in English"), page)
+        self.english_terms_check.setChecked(self._working_cfg.keep_english_terms)
+        self._retranslate_items.append((self.english_terms_check, "Keep workspace terms in English"))
+        form.addRow("", self.english_terms_check)
+        self.theme_combo = PreferenceCombo(page)
+        for label, key in (("Dark", "dark"), ("Light", "light")):
+            self.theme_combo.addItem(self._text(label), key)
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(self._working_cfg.theme))
+        self._add_form_row(form, "Theme", self.theme_combo)
+        self.ui_font_combo = PreferenceFontCombo(page)
+        self.code_font_combo = PreferenceFontCombo(page)
+        self.code_font_combo.setFontFilters(QFontComboBox.FontFilter.MonospacedFonts)
+        for control, family in ((self.ui_font_combo, self._working_cfg.ui_font_family),
+                                (self.code_font_combo, self._working_cfg.code_font_family)):
+            control.setCurrentFont(QFont(family))
+            control.setMinimumContentsLength(18)
+            control.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.ui_font_size = PreferenceSpin(page)
+        self.code_font_size = PreferenceSpin(page)
+        self.scale_spin = PreferenceSpin(page)
+        for control, low, high, value, suffix in (
+                (self.ui_font_size, 8, 24, self._working_cfg.ui_font_size, " pt"),
+                (self.code_font_size, 8, 32, self._working_cfg.code_font_size, " pt"),
+                (self.scale_spin, 80, 160, self._working_cfg.ui_scale, " %")):
+            control.setRange(low, high)
+            control.setValue(value)
+            control.setSuffix(suffix)
+        self.scale_spin.setSingleStep(10)
+        for source, control in (("Interface font", self.ui_font_combo),
+                                ("Interface font size", self.ui_font_size),
+                                ("Code and values font", self.code_font_combo),
+                                ("Code and values font size", self.code_font_size),
+                                ("Interface scale", self.scale_spin)):
+            self._add_form_row(form, source, control)
+        layout.addLayout(form)
+        self.font_preview = self._label("Preview: Workspace / Variable Inspector")
+        set_role(self.font_preview, "secondary")
+        self.code_preview = QLabel('A = np.array([1.25, -0.03]); 0x385  0123456789', page)
+        layout.addWidget(self.font_preview)
+        layout.addWidget(self.code_preview)
+        for control in (self.ui_font_combo, self.code_font_combo):
+            control.currentFontChanged.connect(self._update_font_preview)
+        for control in (self.ui_font_size, self.code_font_size, self.scale_spin):
+            control.valueChanged.connect(self._update_font_preview)
+        self._update_font_preview()
+        layout.addWidget(self._label('Appearance changes keep your variables and command history.\nWindow and panel sizes are saved when you close the app.'))
+        layout.addStretch()
+        return self._scroll(page)
+
+    def _update_font_preview(self, *_):
+        for label, combo, size in ((self.font_preview, self.ui_font_combo, self.ui_font_size),
+                                   (self.code_preview, self.code_font_combo, self.code_font_size)):
+            font = combo.currentFont()
+            points = size.value() * self.scale_spin.value() / 100
+            label.setStyleSheet(f"font-family: {font_stack(font.family(), code=label is self.code_preview)}; font-size: {points:g}pt;")
+
+    def _build_format_tab(self):
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._label("Format display notation", bold=True))
+        self.preset_group = QButtonGroup(self)
+        self._radio_map = {}
+        for key, label in (("q_format", "Q-format"), ("matlab", "MATLAB short"),
+                           ("custom", "Custom display template")):
+            radio = QRadioButton(self._text(label), page)
+            radio.setChecked(self._working_cfg.format_preset == key)
+            self.preset_group.addButton(radio)
+            self._radio_map[key] = radio
+            self._retranslate_items.append((radio, label))
+            layout.addWidget(radio)
+        layout.addWidget(self._table(("Notation", "Example", "Meaning"), (
+            ("Q-format", "Q4.12 / UQ4.12", "16 total bits; 12 fractional bits"),
+            ("MATLAB short", "sfix16_En12 / ufix16_En12", "16 total bits; 12 fractional bits"),
+        )))
+        layout.addWidget(self._label("Qm.n: m includes sign; total bits = m + n. Q15 means Q1.15.\n"
+                                    "Q conventions vary across tools. sfix/Q are signed; ufix/UQ are unsigned."))
+        layout.addWidget(self._label('Changing the notation does not change stored values.\nYou can also enter custom formats when the sign and bit widths are unambiguous.'))
+        self.custom_frame = QFrame(page)
+        set_role(self.custom_frame, "custom")
+        form = QFormLayout(self.custom_frame)
+        self.signed_tpl_edit = QLineEdit(self._working_cfg.custom_signed_tpl, page)
+        self.unsigned_tpl_edit = QLineEdit(self._working_cfg.custom_unsigned_tpl, page)
+        self.int_tpl_edit = QLineEdit(self._working_cfg.custom_int_tpl, page)
+        for source, control in (("Signed fractional template", self.signed_tpl_edit),
+                                ("Unsigned fractional template", self.unsigned_tpl_edit),
+                                ("Integer template (FWL = 0)", self.int_tpl_edit)):
+            self._add_form_row(form, source, control)
+        self.template_fields_hint = self._label(
+            "{wl}: total bits · {iwl}: integer bits (includes sign) · {fwl}: fractional bits\n"
+            "{q_prefix}: Q / UQ · {s_or_u}: s / u · {S_or_U}: S / U (signed / unsigned)")
+        form.addRow(self.template_fields_hint)
+        self.custom_frame.setVisible(self._working_cfg.format_preset == "custom")
+        layout.addWidget(self.custom_frame)
+        self.integer_template_hint = self._label("Integer template is display-only; try {s_or_u}{wl}.0i.")
+        self.integer_template_hint.hide()
+        layout.addWidget(self.integer_template_hint)
+        self.preview_lbl = QLabel(page)
+        self.preview_lbl.setWordWrap(True)
+        set_role(self.preview_lbl, "preview", code=True)
+        layout.addWidget(self.preview_lbl)
+        for radio in self._radio_map.values():
+            radio.toggled.connect(self._on_preset_toggled)
+        for control in (self.signed_tpl_edit, self.unsigned_tpl_edit, self.int_tpl_edit):
+            control.textChanged.connect(self._update_preview)
+        layout.addWidget(self._label('FXP conversion defaults', bold=True))
+        layout.addWidget(self._label("Used for value edits and format conversions in the Inspector and conversion dialogs.\nPython code follows APyTypes' own rules."))
+        defaults_form = QFormLayout()
+        self.quant_combo = PreferenceCombo(page)
+        self.ovf_combo = PreferenceCombo(page)
+        for mode in ("RND", "RND_EVEN", "TRN", "TRN_ZERO"):
+            self.quant_combo.addItem(mode, mode)
+        for mode in ("SAT", "WRAP"):
+            self.ovf_combo.addItem(mode, mode)
+        self.quant_combo.setCurrentIndex(self.quant_combo.findData(self._working_cfg.default_quant))
+        self.ovf_combo.setCurrentIndex(self.ovf_combo.findData(self._working_cfg.default_overflow))
+        self._add_form_row(defaults_form, "Quantization", self.quant_combo)
+        self._add_form_row(defaults_form, "Overflow", self.ovf_combo)
+        layout.addLayout(defaults_form)
+        layout.addWidget(self._table(("Option", "Behavior"), (
+            ("RND", "Nearest; ties toward +infinity"),
+            ("RND_EVEN", "Nearest; ties to even"),
+            ("TRN", "Round toward -infinity (floor)"),
+            ("TRN_ZERO", "Truncate toward zero"),
+            ("SAT", "Clamp to the minimum or maximum"),
+            ("WRAP", "Wrap within the available bits"),
+        )))
+        layout.addStretch()
+        return self._scroll(page)
+
+    def _build_auto_import_tab(self):
+        page = QWidget(self)
+        self._auto_import_page = page
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._label("Function packs", bold=True))
+        layout.addWidget(self._label("When all groups are disabled, Calc injects no auto-import names."))
+        self._group_checks = {}
+        pack_specs = (
+            (
+                "math",
+                "Math",
+                "Standard library math (no extra install): sin, cos, tan, asin, acos, atan, atan2, "
+                "exp, log, log2, log10, sqrt, deg2rad, rad2deg, pi, e",
+            ),
+            (
+                "fxp_core",
+                "FXP core",
+                "Fixed-point and floating-point types and helpers: apy, APyFixed, APyFixedArray, "
+                "APyFloat, APyFloatArray, fxp, fxpi",
+            ),
+            (
+                "numpy",
+                "NumPy",
+                "Arrays, linear algebra, fitting and FFT: np, svd, eig, inv, pinv, norm, det, eye, "
+                "zeros, ones, diag, arange, linspace, polyfit, polyval, linfit, qfunc, erfc, erf, "
+                "fft, ifft, fftshift, ifftshift",
+            ),
+        )
+        for key, title, desc_source in pack_specs:
+            checkbox = QCheckBox(self._text(title), page)
+            checkbox.setChecked(self._working_cfg.auto_import_groups.get(key, True))
+            checkbox.setToolTip(BUILTIN_BINDINGS[key])
+            checkbox.toggled.connect(self._validate_groups)
+            self._group_checks[key] = checkbox
+            self._retranslate_items.append((checkbox, title))
+            layout.addWidget(checkbox)
+            desc = self._label(desc_source)
+            desc.setContentsMargins(22, 0, 0, 4)
+            layout.addWidget(desc)
+
+        custom_header = QHBoxLayout()
+        custom_header.addWidget(self._label("Custom imports", bold=True), 1)
+        self.add_group_btn = self._button("Add group", self._add_custom_group)
+        custom_header.addWidget(self.add_group_btn)
+        layout.addLayout(custom_header)
+
+        self._custom_group_index = -1
+        self._renaming_group_index: int | None = None
+        self.custom_groups_container = QWidget(page)
+        self.custom_groups_layout = QVBoxLayout(self.custom_groups_container)
+        self.custom_groups_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_groups_layout.setSpacing(6)
+        layout.addWidget(self.custom_groups_container)
+
+        self.custom_imports_edit = QPlainTextEdit(page)
+        self.custom_imports_edit.setAccessibleName(self._text("Custom imports"))
+        self.custom_imports_edit.setPlaceholderText(self._text("One import per line (e.g. import scipy as sp)"))
+        self.custom_imports_edit.setMinimumHeight(96)
+        set_role(self.custom_imports_edit, "code", code=True)
+        self.custom_imports_edit.textChanged.connect(self._change_custom_group_code)
+        self.custom_imports_edit.hide()
+
+        self.group_validation = QLabel(page)
+        self.group_validation.setWordWrap(True)
+        self.group_validation.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.group_validation)
+        self._refresh_groups()
+
+        self.import_status = self._label("Not run in this session.")
+        set_role(self.import_status, "secondary")
+        self.import_status.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.import_status)
+        if self.controller:
+            self.controller.import_state_changed.connect(self._show_import_state)
+            if self.controller.transport.ready:
+                self._show_import_state(self.controller.import_error)
+
+        self.startup_toggle = QPushButton(self._text("Startup script"), page)
+        set_role(self.startup_toggle, "startupToggleBtn")
+        self.startup_toggle.setCheckable(True)
+        self.startup_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.startup_toggle.setIconSize(QSize(14, 14))
+        self._update_startup_toggle_icon()
+        layout.addWidget(self.startup_toggle)
+
+        startup_panel = QWidget(page)
+        layout.addWidget(startup_panel)
+        startup_panel.hide()
+        self.startup_toggle.toggled.connect(startup_panel.setVisible)
+        self.startup_toggle.toggled.connect(lambda _: self._update_startup_toggle_icon())
+        s_layout = QVBoxLayout(startup_panel)
+        s_layout.addWidget(self._label('Available names follow the enabled Auto-import groups.\nStartup code runs at launch/restart or when you choose Reload and run.\nSaving alone does not run it. Imports and functions stay out of Workspace.'))
+        self.startup_path_edit = QLineEdit(str(self.startup_store.path), page)
+        self.startup_path_edit.setReadOnly(True)
+        self.startup_path_edit.setAccessibleName(self._text("Startup script"))
+        self._retranslate_accessible.append((self.startup_path_edit, "Startup script"))
+        s_layout.addWidget(self.startup_path_edit)
+        actions = QHBoxLayout()
+        self.open_startup_btn = self._button("Open text editor", self._open_startup_editor)
+        self.refresh_startup_btn = self._button("Refresh preview", self._refresh_startup_preview)
+        self.reload_startup_btn = self._button("Reload and run", self._reload_startup)
+        for button in (self.open_startup_btn, self.refresh_startup_btn, self.reload_startup_btn):
+            actions.addWidget(button)
+        s_layout.addLayout(actions)
+        self.startup_status = self._label("Not run in this session.")
+        set_role(self.startup_status, "secondary")
+        s_layout.addWidget(self.startup_status)
+        self.startup_notice = self._label("Startup file notice: {notice}", retranslate=False)
+        set_role(self.startup_notice, "secondary")
+        notice = getattr(self.controller, "_startup_notice", "")
+        self.startup_notice.setText(self._text("Startup file notice: {notice}", notice=notice))
+        self.startup_notice.setVisible(bool(notice))
+        s_layout.addWidget(self.startup_notice)
+        self.startup_edit = QPlainTextEdit(page)
+        self.startup_edit.setReadOnly(True)
+        self.startup_edit.setMinimumHeight(150)
+        self.startup_edit.setAccessibleName(self._text("Startup script"))
+        s_layout.addWidget(self.startup_edit, 1)
+        s_layout.addWidget(self._label('Edit and save startup.py in your text editor.\nCancel does not undo saved file changes; use Reload and run to execute them.'))
+        self._refresh_startup_preview()
+        self.reload_startup_btn.setEnabled(bool(self.controller and self.controller.is_available))
+        if self.controller:
+            self.controller.startup_state_changed.connect(self._show_startup_state)
+            self.controller.interaction_enabled.connect(self._startup_enabled)
+            self._show_startup_state(self.controller.startup_state)
+        return self._scroll(page)
+
+    def _update_startup_toggle_icon(self):
+        if not hasattr(self, "startup_toggle"):
+            return
+        icon_name = "chevron_up" if self.startup_toggle.isChecked() else "chevron_down"
+        self.startup_toggle.setIcon(make_icon(icon_name, self.palette.text_secondary, 14))
+
+    def _refresh_groups(self, index: int | None = None):
+        groups = self._working_cfg.custom_import_groups
+        if index is None:
+            index = self._custom_group_index
+        if not (0 <= index < len(groups)):
+            index = -1
+        self._custom_group_index = index
+
+        # Detach shared editor before clearing row widgets so it is never deleted
+        self.custom_imports_edit.blockSignals(True)
+        self.custom_imports_edit.hide()
+        self.custom_imports_edit.setParent(self._auto_import_page)
+
+        while self.custom_groups_layout.count():
+            item = self.custom_groups_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+
+        for idx, grp in enumerate(groups):
+            card = QFrame(self.custom_groups_container)
+            set_role(card, "customGroupCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 5, 8, 5)
+            card_layout.setSpacing(4)
+
+            top_row = QHBoxLayout()
+            top_row.setContentsMargins(0, 0, 0, 0)
+            top_row.setSpacing(6)
+
+            chk = QCheckBox(card)
+            chk.setChecked(bool(grp["enabled"]))
+            chk_label = self._text("Enable or disable group {name}", name=grp["name"])
+            chk.setAccessibleName(chk_label)
+            chk.setToolTip(chk_label)
+            chk.toggled.connect(lambda checked, i=idx: self._toggle_custom_group_enabled(i, checked))
+            top_row.addWidget(chk)
+
+            if self._renaming_group_index == idx:
+                ren = QLineEdit(grp["name"], card)
+                ren.setMaxLength(128)
+                ren.setAccessibleName(self._text("Rename group"))
+                ren.selectAll()
+                ren.returnPressed.connect(lambda i=idx, e=ren: self._finish_group_rename(i, e.text()))
+                ren.editingFinished.connect(lambda i=idx, e=ren: self._finish_group_rename(i, e.text()))
+                top_row.addWidget(ren, 1)
+                ren.setFocus()
+            else:
+                name_lbl = _GroupTitleLabel(grp["name"], card)
+                set_role(name_lbl, "cardTitle")
+                name_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                name_lbl.setToolTip(self._text("Double-click to rename"))
+                name_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                name_lbl.clicked.connect(lambda i=idx: self._toggle_expand_custom_group(i))
+                name_lbl.doubleClicked.connect(lambda i=idx: self._start_group_rename(i))
+                top_row.addWidget(name_lbl, 1)
+
+            ren_btn = QToolButton(card)
+            set_role(ren_btn, "iconButton")
+            ren_btn.setIcon(make_icon("edit", self.palette.text_secondary, 13))
+            ren_btn.setIconSize(QSize(13, 13))
+            ren_btn.setFixedSize(24, 24)
+            ren_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ren_btn.setAccessibleName(self._text("Rename group"))
+            ren_btn.setToolTip(self._text("Rename group"))
+            ren_btn.clicked.connect(lambda _=False, i=idx: self._start_group_rename(i))
+            top_row.addWidget(ren_btn)
+
+            f2_ren = QShortcut(QKeySequence(Qt.Key.Key_F2), card)
+            f2_ren.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            f2_ren.activated.connect(lambda i=idx: self._start_group_rename(i))
+
+            is_exp = idx == self._custom_group_index
+            exp_btn = QToolButton(card)
+            set_role(exp_btn, "iconButton")
+            exp_btn.setIcon(make_icon("chevron_up" if is_exp else "chevron_down", self.palette.text_secondary, 13))
+            exp_btn.setIconSize(QSize(13, 13))
+            exp_btn.setFixedSize(24, 24)
+            exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            exp_btn.setAccessibleName(self._text("Expand or collapse group"))
+            exp_btn.setToolTip(self._text("Expand or collapse group"))
+            exp_btn.clicked.connect(lambda _=False, i=idx: self._toggle_expand_custom_group(i))
+            top_row.addWidget(exp_btn)
+
+            del_btn = QToolButton(card)
+            set_role(del_btn, "iconButton")
+            del_btn.setIcon(make_icon("close", self.palette.text_secondary, 13))
+            del_btn.setIconSize(QSize(13, 13))
+            del_btn.setFixedSize(24, 24)
+            del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            del_btn.setAccessibleName(self._text("Remove group"))
+            del_btn.setToolTip(self._text("Remove group"))
+            del_btn.clicked.connect(lambda _=False, i=idx: self._remove_custom_group(i))
+            top_row.addWidget(del_btn)
+            card_layout.addLayout(top_row)
+
+            if is_exp:
+                self.custom_imports_edit.setPlainText(grp["code"])
+                self.custom_imports_edit.setEnabled(True)
+                self.custom_imports_edit.show()
+                card_layout.addWidget(self.custom_imports_edit)
+
+            self.custom_groups_layout.addWidget(card)
+
+        if self._custom_group_index < 0:
+            self.custom_imports_edit.setPlainText("")
+            self.custom_imports_edit.setEnabled(False)
+        self.custom_imports_edit.blockSignals(False)
+        self._validate_groups()
+
+    def _toggle_custom_group_enabled(self, index: int, checked: bool):
+        if 0 <= index < len(self._working_cfg.custom_import_groups):
+            self._working_cfg.custom_import_groups[index]["enabled"] = bool(checked)
+            self._validate_groups()
+
+    def _toggle_expand_custom_group(self, index: int):
+        target = -1 if self._custom_group_index == index else index
+        self._refresh_groups(target)
+
+    def _start_group_rename(self, index: int):
+        self._renaming_group_index = index
+        self._refresh_groups(self._custom_group_index)
+
+    def _finish_group_rename(self, index: int, new_name: str):
+        if self._renaming_group_index != index:
+            return
+        self._renaming_group_index = None
+        cleaned = new_name.strip()
+        if cleaned and 0 <= index < len(self._working_cfg.custom_import_groups):
+            self._working_cfg.custom_import_groups[index]["name"] = cleaned[:128]
+        self._refresh_groups(self._custom_group_index)
+
+    def _change_custom_group_code(self, *_):
+        index = self._custom_group_index
+        if 0 <= index < len(self._working_cfg.custom_import_groups):
+            self._working_cfg.custom_import_groups[index]["code"] = self.custom_imports_edit.toPlainText()
+            self._validate_groups()
+
+    def _add_custom_group(self):
+        groups = self._working_cfg.custom_import_groups
+        if len(groups) < 100:
+            groups.append({"id": uuid4().hex, "name": f"Group {len(groups) + 1}", "enabled": True, "code": ""})
+            self._refresh_groups(len(groups) - 1)
+            self.custom_imports_edit.setFocus()
+
+    def _remove_custom_group(self, index: int | None = None):
+        if index is None:
+            index = self._custom_group_index
+        groups = self._working_cfg.custom_import_groups
+        if 0 <= index < len(groups):
+            groups.pop(index)
+            if self._custom_group_index == index:
+                next_idx = min(index, len(groups) - 1) if groups else -1
+            elif self._custom_group_index > index:
+                next_idx = self._custom_group_index - 1
+            else:
+                next_idx = self._custom_group_index
+            self._renaming_group_index = None
+            self._refresh_groups(next_idx)
+
+    def _validate_groups(self, *_):
+        if not hasattr(self, "group_validation"):
+            return
+        try:
+            groups = validate_custom_groups(self._working_cfg.custom_import_groups)
+            warnings = import_collisions({k: c.isChecked() for k, c in self._group_checks.items()}, groups)
+            message = "\n".join(warnings)
+        except ValueError as exc:
+            message = str(exc)
+        self.group_validation.setText(message)
+
+    def _show_import_state(self, error):
+        self.import_status.setText(self._text("Last import load failed: {error}", error=error)
+                                   if error else self._text("Last import load succeeded."))
+
+    def _startup_enabled(self, enabled):
+        self.reload_startup_btn.setEnabled(enabled and self._startup_pending is None)
+
+    def _refresh_startup_preview(self):
+        try:
+            source = self._startup_source()
+            self.startup_edit.setPlainText(source)
+        except (OSError, ValueError, UnicodeError) as exc:
+            self.startup_edit.setPlainText(str(exc))
+            self.startup_status.setText(self._text("Could not read startup.py: {error}", error=str(exc)))
+
+    def _startup_source(self):
+        if self._startup_pending is not None:
+            return self._startup_pending
+        if self.startup_store.path.exists():
+            return self.startup_store.read()
+        return self._working_cfg.startup_script
+
+    def _open_startup_editor(self):
+        # Windows .py associations may execute Python. Select an actual text
+        # editor explicitly, never shell-open the script.
+        try:
+            self.startup_store.initialize(self._working_cfg.startup_script)
+            self._startup_revision = self.startup_store.revision()
+            if sys.platform == "win32":
+                editor = str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "notepad.exe")
+                subprocess.Popen([editor, str(self.startup_store.path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-e", str(self.startup_store.path)])
+            else:
+                editor, _ = QFileDialog.getOpenFileName(self, self._text("Choose a text editor executable"))
+                if editor:
+                    subprocess.Popen([editor, str(self.startup_store.path)])
+        except OSError as exc:
+            self._warning(self._text("Could not open text editor: {error}", error=str(exc)))
+
+    def _reload_startup(self):
+        if self._startup_pending is not None:
+            self._warning("Apply imported startup code before reloading.")
+            return
+        self._refresh_startup_preview()
+        if self.controller and self.controller.reload_startup():
+            self.startup_status.setText(self._text("Running startup.py..."))
+            self.reload_startup_btn.setEnabled(False)
+
+    def _show_startup_state(self, state):
+        if state:
+            self.startup_toggle.setText(self._text("Startup script") + (" ⚠" if not state.get("ok") else ""))
+            self._update_startup_toggle_icon()
+            self.startup_status.setText(self._text("Last run succeeded." if state.get("ok") else "Last run failed. See details below."))
+            if state.get("error"):
+                self.startup_edit.setPlainText(state["error"])
+
+    def _build_management_tab(self):
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._label("Settings file", bold=True))
+        self.path_edit = QLineEdit(str(self._config_path), page)
+        self.path_edit.setReadOnly(True)
+        self.path_edit.setAccessibleName(self._text("Settings file"))
+        self._retranslate_accessible.append((self.path_edit, "Settings file"))
+        layout.addWidget(self.path_edit)
+        self.open_folder_btn = self._button("Open settings folder", self._open_settings_folder)
+        layout.addWidget(self.open_folder_btn)
+        layout.addWidget(self._label("Transfer preferences", bold=True))
+        layout.addWidget(self._label("Exports include preferences and startup code, not variables, history or window sizes.\n"
+                                    "Import previews changes first; startup code is excluded unless you select it."))
+        actions = QHBoxLayout()
+        self.export_btn = self._button("Export preferences...", self._export_preferences)
+        self.import_btn = self._button("Import preferences...", self._import_preferences)
+        self.defaults_btn = self._button("Restore defaults", self._restore_defaults)
+        self.defaults_btn.setToolTip(self._text("Restore defaults preserves your startup.py."))
+        for button in (self.export_btn, self.import_btn, self.defaults_btn):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+        layout.addWidget(self._label('Review imported or restored settings before applying. Cancel keeps your current settings.\nImported startup code is saved by Apply; use Reload and run when ready.'))
+        layout.addStretch()
+        return self._scroll(page)
+
+    def _open_settings_folder(self):
+        try:
+            self._config_path.parent.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._config_path.parent))):
+                raise OSError("Could not open settings folder")
+        except OSError:
+            self._warning("Could not open settings folder.")
+
+    def _warning(self, source):
+        notify(self, self._text("Settings"), self._text(source), self._text.lang, warning=True)
+
+    def _selected_preset(self):
+        return next((key for key, radio in self._radio_map.items() if radio.isChecked()), "q_format")
+
+    def _on_preset_toggled(self):
+        self.custom_frame.setVisible(self._selected_preset() == "custom")
+        self._update_preview()
+
+    def _update_preview(self):
+        cfg = copy.deepcopy(self._working_cfg)
+        cfg.format_preset = self._selected_preset()
+        cfg.custom_signed_tpl = self.signed_tpl_edit.text().strip()
+        cfg.custom_unsigned_tpl = self.unsigned_tpl_edit.text().strip()
+        cfg.custom_int_tpl = self.int_tpl_edit.text().strip()
+        integer_reversible = True
+        for signed in (True, False):
+            spec = FxpSpec(signed, 16, 0)
+            try:
+                integer_reversible &= FormatEngine.parse_input(FormatEngine.format(spec, cfg), cfg) == spec
+            except ValueError:
+                integer_reversible = False
+        self.integer_template_hint.setVisible(cfg.format_preset == "custom" and not integer_reversible)
+        values = [FormatEngine.format(FxpSpec(signed, 16, fractional), cfg)
+                  for signed, fractional in ((True, 12), (False, 12), (True, 0))]
+        self.preview_lbl.setText(self._text("Preview: signed → {signed} | unsigned → {unsigned} | integer → {integer}",
+                                           signed=values[0], unsigned=values[1], integer=values[2]))
+
+    def _draft_config(self, *, validate_imports=True):
+        cfg = copy.deepcopy(self._working_cfg)
+        cfg.language = self.language_combo.currentData()
+        cfg.keep_english_terms = self.english_terms_check.isChecked()
+        cfg.theme = self.theme_combo.currentData()
+        cfg.ui_font_family = self.ui_font_combo.currentFont().family()
+        cfg.code_font_family = self.code_font_combo.currentFont().family()
+        cfg.ui_font_size = self.ui_font_size.value()
+        cfg.code_font_size = self.code_font_size.value()
+        cfg.ui_scale = self.scale_spin.value()
+        cfg.format_preset = self._selected_preset()
+        for key, control, fallback in (("custom_signed_tpl", self.signed_tpl_edit, "Q{iwl}.{fwl}"),
+                                       ("custom_unsigned_tpl", self.unsigned_tpl_edit, "UQ{iwl}.{fwl}"),
+                                       ("custom_int_tpl", self.int_tpl_edit, "{q_prefix}{wl}.0")):
+            setattr(cfg, key, control.text().strip() or fallback)
+        cfg.default_quant = self.quant_combo.currentData()
+        cfg.default_overflow = self.ovf_combo.currentData()
+        cfg.auto_import_groups = {key: checkbox.isChecked() for key, checkbox in self._group_checks.items()}
+        cfg.launch_mode = self.launch_mode_combo.currentData()
+        cfg.simple_keypad_size_mode = self.keypad_size_mode_combo.currentData()
+        if validate_imports:
+            validate_custom_groups(cfg.custom_import_groups)
+        cfg.startup_file = str(self.startup_store.path)
+        cfg.startup_script = self._startup_source()
+        return cfg
+
+    def _update_controls(self, cfg):
+        self._working_cfg = copy.deepcopy(cfg)
+        self.english_terms_check.setChecked(cfg.keep_english_terms)
+        for control, value in ((self.language_combo, cfg.language), (self.theme_combo, cfg.theme),
+                               (self.quant_combo, cfg.default_quant), (self.ovf_combo, cfg.default_overflow)):
+            control.setCurrentIndex(control.findData(value))
+        self.ui_font_combo.setCurrentFont(QFont(cfg.ui_font_family))
+        self.code_font_combo.setCurrentFont(QFont(cfg.code_font_family))
+        self.ui_font_size.setValue(cfg.ui_font_size)
+        self.code_font_size.setValue(cfg.code_font_size)
+        self.scale_spin.setValue(cfg.ui_scale)
+        self._radio_map[cfg.format_preset].setChecked(True)
+        self.signed_tpl_edit.setText(cfg.custom_signed_tpl)
+        self.unsigned_tpl_edit.setText(cfg.custom_unsigned_tpl)
+        self.int_tpl_edit.setText(cfg.custom_int_tpl)
+        for key, checkbox in self._group_checks.items():
+            checkbox.setChecked(cfg.auto_import_groups[key])
+        self.launch_mode_combo.setCurrentIndex(self.launch_mode_combo.findData(cfg.launch_mode))
+        self.keypad_size_mode_combo.setCurrentIndex(
+            self.keypad_size_mode_combo.findData(cfg.simple_keypad_size_mode)
+        )
+        self._refresh_groups()
+        self._refresh_startup_preview()
+        self._update_preview()
+
+    def _export_preferences(self):
+        path, _ = QFileDialog.getSaveFileName(self, self._text("Export preferences"), "calc-preferences.json", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            payload = export_preferences(self._draft_config())
+            Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        except (OSError, ValueError):
+            self._warning("Could not export preferences.")
+
+    def _import_preferences(self):
+        path, _ = QFileDialog.getOpenFileName(self, self._text("Import preferences"), "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            if Path(path).stat().st_size > 2_000_000:
+                raise ValueError("File too large")
+            values = parse_preferences(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            self._warning("Invalid preferences file. Check its type, version and values.")
+            return
+        self._show_import_preview(values)
+
+    def _show_import_preview(self, values):
+        # Validate before opening the preview; no imported source is evaluated.
+        try:
+            draft = self._draft_config()
+            merged = merge_preferences(draft, values)
+        except (OSError, ValueError, UnicodeError) as exc:
+            self._warning(str(exc))
+            return
+        preview = QDialog(self)
+        preview.setWindowTitle(self._text("Preview preference changes"))
+        preview.resize(680, 520)
+        layout = QVBoxLayout(preview)
+        layout.addWidget(self._label("Review changes. Nothing is saved or executed until Apply in Settings.", retranslate=False))
+        changes = QPlainTextEdit(preview)
+        changes.setReadOnly(True)
+        old = export_preferences(draft)["preferences"]
+        new = export_preferences(merged)["preferences"]
+        labels = {
+            "language": "Language", "theme": "Theme", "format_preset": "Format display notation",
+            "keep_english_terms": "Keep workspace terms in English",
+            "ui_font_family": "Interface font", "ui_font_size": "Interface font size",
+            "code_font_family": "Code and values font", "code_font_size": "Code and values font size",
+            "ui_scale": "Interface scale", "default_quant": "Quantization", "default_overflow": "Overflow",
+            "custom_signed_tpl": "Signed fractional template", "custom_unsigned_tpl": "Unsigned fractional template",
+            "custom_int_tpl": "Integer template (FWL = 0)", "auto_import_groups": "Function packs",
+            "custom_import_groups": "Custom imports", "launch_mode": "Launch mode",
+            "simple_keypad_size_mode": "Simple keypad sizing",
+            "numeric_display": "Number display", "numeric_precision": "Decimal places…",
+            "inspector_view_mode": "Inspector layout", "inspector_pin_mode": "FXP pin",
+            "bit_order": "Bit display order", "visible_columns": "Visible columns", "column_order": "Column order",
+        }
+        lines = []
+        for key in sorted(values):
+            if key == "startup_script":
+                continue
+            value = values[key] if key == "custom_import_groups" else new[key]
+            if old[key] != value:
+                lines.append(f"{self._text(labels[key])}: {old[key]!r} → {value!r}")
+        changes.setPlainText("\n".join(lines) or self._text("No preference changes."))
+        layout.addWidget(changes, 1)
+        include_imports = QCheckBox(self._text("Include custom imports (runs after Apply)"), preview)
+        include_imports.setChecked(False)
+        include_imports.setEnabled("custom_import_groups" in values)
+        layout.addWidget(include_imports)
+        include = QCheckBox(self._text("Replace startup.py after Apply (does not run code)"), preview)
+        include.setChecked(False)
+        include.setEnabled("startup_script" in values)
+        layout.addWidget(include)
+        script = QPlainTextEdit(values.get("startup_script", ""), preview)
+        script.setReadOnly(True)
+        script.setPlaceholderText(self._text("No startup script in this file."))
+        layout.addWidget(script, 1)
+        buttons = QHBoxLayout()
+        cancel = QPushButton(self._text("Cancel"), preview)
+        accept = QPushButton(self._text('Use these settings'), preview)
+        cancel.clicked.connect(preview.reject)
+        accept.clicked.connect(preview.accept)
+        buttons.addStretch()
+        buttons.addWidget(accept)
+        buttons.addWidget(cancel)
+        set_role(accept, "primary")
+        preview.setTabOrder(accept, cancel)
+        layout.addLayout(buttons)
+        # Exposed for focused interaction tests and accessibility inspection.
+        preview.include_startup = include
+        preview.include_imports = include_imports
+        preview.script_preview = script
+        if preview.exec() == QDialog.DialogCode.Accepted:
+            self._apply_import(values, include_startup=include.isChecked(), include_imports=include_imports.isChecked())
+        preview.deleteLater()
+
+    def _apply_import(self, values, *, include_startup=False, include_imports=False):
+        merged = merge_preferences(self._draft_config(), values, include_startup=include_startup,
+                                   include_imports=include_imports)
+        if include_startup and "startup_script" in values:
+            self._startup_pending = values["startup_script"]
+            self.reload_startup_btn.setEnabled(False)
+        self._update_controls(merged)
+
+    def _restore_defaults(self):
+        draft = self._draft_config(validate_imports=False)
+        defaults = export_preferences(CalcConfig())["preferences"]
+        self._startup_pending = None
+        self._startup_enabled(bool(self.controller and self.controller.is_available))
+        self._update_controls(merge_preferences(draft, defaults, include_imports=True))
+
+    def _on_save(self):
+        try:
+            cfg = self._draft_config()
+            if self._startup_pending is not None:
+                if self._startup_revision is None:
+                    if self.startup_store.path.exists():
+                        raise ValueError("startup.py was created in another editor. Reopen Settings before importing code.")
+                    self.startup_store.initialize(self._working_cfg.startup_script)
+                    self._startup_revision = self.startup_store.revision()
+                self.startup_store.write(self._startup_pending, expected_revision=self._startup_revision)
+            if self.startup_store.path.exists():
+                cfg.startup_script = ""
+            self._working_cfg = cfg
+            self._accepted_cfg = copy.deepcopy(cfg)
+        except (OSError, ValueError, UnicodeError) as exc:
+            self._warning(str(exc))
+            return
+        self.accept()
+
+    def result_config(self):
+        return copy.deepcopy(self._accepted_cfg)

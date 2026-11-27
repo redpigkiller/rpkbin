@@ -1,4 +1,4 @@
-﻿"""Comprehensive tests for MapBV based on the public API (var, const, concat).
+"""Comprehensive tests for MapBV based on the public API (var, const, concat).
 
 This test suite rigorously validates the behavior of MapBV variables, constants,
 slices, and concatenated variables, as well as logic operations and symbolic evaluation.

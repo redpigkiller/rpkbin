@@ -6,10 +6,10 @@ import apytypes as apy
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.editing import EditJournal
-from rpkbin.calc.core.representations import numeric_representation
-from rpkbin.calc.protocol import inspector_from_dict, inspector_to_dict
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.editing import EditJournal
+from rpkbin.app.calc.core.representations import numeric_representation
+from rpkbin.app.calc.protocol import inspector_from_dict, inspector_to_dict
 
 
 @pytest.fixture
@@ -216,7 +216,7 @@ def test_apyfloat_array_support_is_not_implied_by_scalar_controls(session):
 
 def test_representation_source_changes_invalidate_kernel_build(monkeypatch):
     from pathlib import Path
-    from rpkbin.calc.protocol import build_id, validate_envelope, PROTOCOL_VERSION
+    from rpkbin.app.calc.protocol import build_id, validate_envelope, PROTOCOL_VERSION
 
     before = build_id()
     original = Path.read_bytes

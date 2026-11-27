@@ -1,0 +1,1 @@
+{"functions": {"add2": {"bytes": 2, "clobbers": ["a", "b"], "slots": [], "findings": [], "verified": true}}}

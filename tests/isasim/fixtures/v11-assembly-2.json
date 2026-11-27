@@ -1,0 +1,144 @@
+{
+  "format": "isasim-assembly-2",
+  "isa_hash": "05d59fea489d14d376f228dd4c7c1afda4e2821f95d069c5b21a9bd629e9bdec",
+  "source": "COUNT EQU 2\n.org 8\n.include \"part.inc\"\n.org 0\nstart: ADD COUNT\n.include \"part.inc\"\nEND\n",
+  "filename": "main.asm",
+  "source_sha256": "24e8d5d9a58ea13d227560fc002810b14376279fcb4bb14d64bdd9dba73e2d69",
+  "cell_bits": 8,
+  "cells": [
+    [
+      0,
+      18
+    ],
+    [
+      1,
+      89
+    ],
+    [
+      2,
+      57
+    ],
+    [
+      3,
+      7
+    ],
+    [
+      4,
+      8
+    ],
+    [
+      5,
+      240
+    ],
+    [
+      8,
+      89
+    ],
+    [
+      9,
+      57
+    ],
+    [
+      10,
+      7
+    ],
+    [
+      11,
+      8
+    ]
+  ],
+  "symbols": {
+    "start": 0
+  },
+  "lines": [
+    {
+      "addr": 8,
+      "cells": [
+        89,
+        57
+      ],
+      "line": 1,
+      "instruction": true,
+      "file": "part.inc"
+    },
+    {
+      "addr": 10,
+      "cells": [
+        7,
+        8
+      ],
+      "line": 2,
+      "instruction": false,
+      "file": "part.inc"
+    },
+    {
+      "addr": 0,
+      "cells": [
+        18
+      ],
+      "line": 5,
+      "instruction": true,
+      "file": "main.asm"
+    },
+    {
+      "addr": 1,
+      "cells": [
+        89,
+        57
+      ],
+      "line": 1,
+      "instruction": true,
+      "file": "part.inc"
+    },
+    {
+      "addr": 3,
+      "cells": [
+        7,
+        8
+      ],
+      "line": 2,
+      "instruction": false,
+      "file": "part.inc"
+    },
+    {
+      "addr": 5,
+      "cells": [
+        240
+      ],
+      "line": 7,
+      "instruction": true,
+      "file": "main.asm"
+    }
+  ],
+  "sources": {
+    "main.asm": "COUNT EQU 2\n.org 8\n.include \"part.inc\"\n.org 0\nstart: ADD COUNT\n.include \"part.inc\"\nEND\n",
+    "part.inc": "MIX 10, 5, 3\n.db 7, 8\n"
+  },
+  "main": "main.asm",
+  "sources_sha256": {
+    "main.asm": "24e8d5d9a58ea13d227560fc002810b14376279fcb4bb14d64bdd9dba73e2d69",
+    "part.inc": "b65e504c0b6b628c8a0d2fdf9909d8d86421c85026db54354e38de4c2d5cef9d"
+  },
+  "options": {
+    "endian": null,
+    "case_sensitive_names": true,
+    "defines": {}
+  },
+  "includes": [
+    {
+      "from": "main.asm",
+      "line": 3,
+      "text": "part.inc",
+      "to": "part.inc"
+    },
+    {
+      "from": "main.asm",
+      "line": 6,
+      "text": "part.inc",
+      "to": "part.inc"
+    }
+  ],
+  "constants": {
+    "COUNT": 2
+  }
+}

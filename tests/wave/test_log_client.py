@@ -8,17 +8,17 @@ from pathlib import Path
 import pytest
 
 
-WEB_PY = Path(__file__).parents[2] / "rpkbin" / "wave" / "web.py"
+APP_JS = Path(__file__).parents[2] / "rpkbin" / "wave" / "static" / "app.js"
 NODE = shutil.which("node")
 
 
 def _page_script():
-    html = WEB_PY.read_text(encoding="utf-8")
-    match = re.search(r"<script>(.*?)</script>", html, re.DOTALL)
-    assert match, "Wave page script was not found"
-    return re.sub(
-        r"\nsetupMonitorLayout\(\);\s*\npollState\(\);\s*$", "\n", match.group(1)
+    source = APP_JS.read_text(encoding="utf-8")
+    script, removed = re.subn(
+        r"\nsetupMonitorLayout\(\);\s*\npollState\(\);\s*$", "\n", source
     )
+    assert removed == 1, "Wave page script was not found"
+    return script
 
 
 @pytest.mark.skipif(
@@ -232,3 +232,118 @@ const query = index => new URL(urls[index], 'http://wave.test').searchParams;
         "utf-8", errors="replace"
     )
     assert b"fetch-state-checks-complete" in result.stdout
+
+
+@pytest.mark.skipif(
+    NODE is None, reason="Node.js is required for the browser-side check"
+)
+def test_analysis_log_ansi_find_and_tail_behaviors():
+    analysis_source = (Path(__file__).parents[2] / "rpkbin" / "wave" / "analysis.js").read_text(encoding="utf-8")
+    checks = r"""
+const nodes = new Map();
+function element(id) {
+  if (!nodes.has(id)) nodes.set(id, {
+    id, dataset: {}, value: '', checked: false, hidden: false, disabled: false,
+    attributes: {}, listeners: {}, textContent: '', innerHTML: '',
+    scrollTop: 0, scrollHeight: 10000, clientHeight: 300, children: [],
+    classList: { toggle() {} },
+    addEventListener(event, fn) { (this.listeners[event] ??= []).push(fn); },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return this.attributes[name]; },
+    focus() { document.activeElement = this; },
+    select() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    getBoundingClientRect() { return { top: 0, bottom: 300 }; },
+    appendChild(child) { child.parentElement = this; },
+    replaceChildren() { this.innerHTML = ''; }
+  });
+  return nodes.get(id);
+}
+const document = { getElementById: element, activeElement: null };
+const STATE = { workspace_id: 'ws', archive: { run_id: 'run1', enabled: true } };
+const RunHistory = { selection: null };
+let WORKSPACE_LAYOUT = 'split';
+const queries = [];
+let responder = async () => ({ rows: [], first: null, last: null, next: null, has_more: false, scanned: 0, scanned_seq: 0, end_seq: 0 });
+function fetchJson(url) {
+  const q = Object.fromEntries(new URL(url, 'http://wave.test').searchParams);
+  queries.push(q);
+  return responder(q);
+}
+function escHtml(v) {
+  return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+""" + analysis_source + r"""
+(async () => {
+  // 1. ANSI stripping and SGR rendering
+  assert.strictEqual(AnalysisWorkspace.stripAnsi('\x1b[1;32mPASS\x1b[0m \x1b[2Kdone'), 'PASS done');
+  const parsed = AnalysisWorkspace.parseAnsi('\x1b[33mWARN\x1b[0m: check');
+  assert.strictEqual(parsed.plain, 'WARN: check');
+  assert.strictEqual(parsed.runs[0].classes, 'ansi-fg-yellow');
+
+  // 2. Hidden layout guard stops background polling in jobs/charts layout
+  WORKSPACE_LAYOUT = 'jobs';
+  await AnalysisWorkspace.refresh({ id: 'j1', attempt_id: 'a1', total_lines: 5 });
+  assert.strictEqual(queries.length, 0);
+  WORKSPACE_LAYOUT = 'charts';
+  await AnalysisWorkspace.refresh({ id: 'j1', attempt_id: 'a1', total_lines: 5 });
+  assert.strictEqual(queries.length, 0);
+
+  // 3. Incremental forward tailing and Find-in-Context vs Filter Mode
+  WORKSPACE_LAYOUT = 'split';
+  element('analysisFollow').checked = true;
+  responder = async () => ({
+    rows: [
+      { seq: 1, text: '\x1b[31mFailure\x1b[0m on step_1', elapsed: 0.1, source: 'stdout' },
+      { seq: 2, text: 'step_2 failure retry', elapsed: 0.2, source: 'stdout' }
+    ],
+    first: 'c1', last: 'c2', next: 'c2', has_more: false, scanned: 2, scanned_seq: 2, end_seq: 2
+  });
+  await AnalysisWorkspace.refresh({ id: 'j1', attempt_id: 'a1', total_lines: 2 });
+  assert.strictEqual(queries.length, 1);
+  assert.strictEqual(queries[0].direction, 'backward');
+
+  responder = async () => ({
+    rows: [{ seq: 3, text: 'step_3 FAILURE final', elapsed: 0.3, source: 'stdout' }],
+    first: 'c3', last: 'c3', next: 'c3', has_more: false, scanned: 1, scanned_seq: 3, end_seq: 3
+  });
+  await AnalysisWorkspace.refresh({ id: 'j1', attempt_id: 'a1', total_lines: 3 });
+  assert.strictEqual(queries.length, 2);
+  assert.strictEqual(queries[1].direction, 'forward');
+  assert.strictEqual(queries[1].cursor, 'c2');
+
+  // Find-in-Context (Mode B) highlights all 3 matches and steps through them
+  element('analysisQuery').value = 'failure';
+  await AnalysisWorkspace.apply();
+  assert.strictEqual(element('analysisMatchCount').textContent, '1 of 3');
+  await AnalysisWorkspace.nextMatch();
+  assert.strictEqual(element('analysisMatchCount').textContent, '2 of 3');
+  await AnalysisWorkspace.prevMatch();
+  assert.strictEqual(element('analysisMatchCount').textContent, '1 of 3');
+
+  // Clearing query immediately clears highlights and counter
+  element('analysisQuery').value = '';
+  element('analysisQuery').listeners.input[0]();
+  assert.strictEqual(element('analysisMatchCount').textContent, '');
+  assert.ok(!element('analysisRows').innerHTML.includes('<mark class="log-hit'));
+})().then(() => console.log('analysis-log-checks-complete'))
+  .catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    harness = (
+        "const vm = require('node:vm');\n"
+        "const assert = require('node:assert/strict');\n"
+        "const context = vm.createContext({ assert, URL, URLSearchParams, AbortController, Date, setTimeout, clearTimeout, console, process });\n"
+        "vm.runInContext(" + repr(checks) + ", context);\n"
+    )
+    result = subprocess.run(
+        [NODE, "-"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr).decode(
+        "utf-8", errors="replace"
+    )
+    assert b"analysis-log-checks-complete" in result.stdout

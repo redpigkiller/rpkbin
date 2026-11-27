@@ -1,108 +1,111 @@
-# MapBV Quickstart: Creating, Reading, and Slicing Bitfields
+# `rpkbin.mapbv`
 
 [繁體中文](../../zh/mapbv/README.md) · [Documentation Index](../README.md) · [Usage Scenarios](scenarios.md) · [API Reference](reference.md)
 
-MapBV (MapBitVector) is a lightweight Python bitfield library designed for digital IC design, hardware register modeling, and testbench development.
+`rpkbin.mapbv` models unsigned hardware registers and bitfields in pure Python, keeping slices, parent registers, concatenated buses, and logic expressions synchronized.
 
-It solves a fundamental problem in hardware modeling: **how to slice and manipulate register fields with guaranteed live, bidirectional synchronization between slices, parent registers, and concatenated buses**.
+## Syntax
 
----
+```python
+reg = mbv.var(name, width, value=0)
+c = mbv.const(value, width)
+bus = mbv.concat(name, *parts)
+field = reg[high:low]
+bit = reg[bit_index]
+text = f"{reg:hex}"
+bits = f"{reg:bin}"
+```
 
-## 5-Minute Quickstart
+## Description
 
-### 1. Variables and Constants
+- `reg = mbv.var(name, width, value=0)` creates a mutable, named unsigned register of `width` bits initialized to `value`.
+- `c = mbv.const(value, width)` creates an immutable constant node for fixed IDs or reserved bits.
+- `bus = mbv.concat(name, *parts)` builds a live MSB-to-LSB bus view over existing variables, constants, slices, or buses; writes split back to each underlying writable part.
+- `field = reg[high:low]` and `bit = reg[bit_index]` create inclusive closed-interval views (`high >= low`); assigning to `.value` or `reg[high:low] = val` updates the parent register immediately.
+- `f"{reg:hex}"` and `f"{reg:bin}"` format values zero-padded to the node's bit width (`ceil(width / 4)` hex digits or `width` binary digits).
 
-Create named register variables using `var()`, and immutable constants using `const()`:
+## Examples
+
+### 1. Minimal Example: Variables, Constants, and Formatting
+
+Create a 16-bit register variable and a 4-bit constant, then format them with `to_hex()`, `to_bin()`, and f-string specifiers.
 
 ```python
 import rpkbin.mapbv as mbv
 
-# Create a 16-bit register variable named REG0 with initial value 0x1234
 reg = mbv.var("REG0", 16, 0x1234)
-
-# Create an immutable 4-bit constant mask 0xF
 mask = mbv.const(0xF, 4)
 
-print(f"Variable: {reg.name}, width: {reg.width} bits, value: 0x{reg.value:04X}")
-print(f"Constant: {mask.name}, width: {mask.width} bits, value: 0x{mask.value:X}")
+print(f"Variable: {reg.name}, width: {reg.width} bits, hex: {reg.to_hex()}")
+print(f"Constant: {mask.name}, width: {mask.width} bits, hex: {mask:hex}")
+print(f"Binary:   {reg:bin}")
 ```
 
-### 2. Format Hexadecimal and Binary Outputs
-
-MapBV provides conversion methods and native Python f-string format specifiers:
-
-```python
-# Conversion methods
-print(reg.to_hex())  # Output: 0x1234
-print(reg.to_bin())  # Output: 0b0001001000110100
-
-# Native f-string format specifiers
-print(f"{reg:hex}")  # Output: 0x1234
-print(f"{reg:bin}")  # Output: 0b0001001000110100
+Output:
+```text
+Variable: REG0, width: 16 bits, hex: 0x1234
+Constant: Constant, width: 4 bits, hex: 0xF
+Binary:   0b0001001000110100
 ```
 
-### 3. Slicing Fields and Single Bits
+### 2. Progressive Example: Slicing and Live Synchronization
 
-MapBV follows hardware description conventions (Verilog / SystemVerilog) using **closed-interval** indexing `[high:low]` (both high and low bits inclusive, requiring $high \ge low$):
+Slice bitfields using inclusive Verilog-style `[high:low]` bounds and verify bidirectional updates between the parent register and its slices.
 
 ```python
-# Slice high byte [15:8]
+import rpkbin.mapbv as mbv
+
+reg = mbv.var("REG0", 16, 0x1234)
 high_byte = reg[15:8]
-print(f"high_byte width: {len(high_byte)} bits, value: {high_byte:hex}")  # 8 bits, 0x12
-
-# Slice single bit [3]
 bit3 = reg[3]
-print(f"bit3 width: {len(bit3)} bits, value: {bit3.value}")  # 1 bit, 0
+
+print(f"high_byte width: {len(high_byte)} bits, value: {high_byte:hex}")
+print(f"bit3 width: {len(bit3)} bits, value: {bit3.value}")
+
+reg[15:8] = 0xAB
+print(f"After slice index write: reg={reg:hex}, high_byte={high_byte:hex}")
+
+high_byte.value = 0x55
+print(f"After slice .value write: reg={reg:hex}")
 ```
 
-### 4. Live Bidirectional Synchronization
+Output:
+```text
+high_byte width: 8 bits, value: 0x12
+bit3 width: 1 bits, value: 0
+After slice index write: reg=0xAB34, high_byte=0xAB
+After slice .value write: reg=0x5534
+```
 
-Slices are **live, bidirectional views** linked to their parent register:
-- Modifying a slice immediately writes through to the parent register.
-- Modifying the parent register is instantly reflected when reading the slice.
+## Tips and Limitations
+
+- **Identity vs. value equality (`==`)**: `reg == other` compares object identity (`self is other`) so mutable nodes stay hashable in dicts and sets. Comparing a `MapBV` or `MapBVExpr` directly with an integer (`reg == 0x5534`) raises `TypeError`; compare with `reg.value == 0x5534` or `reg.value_eq(0x5534)`.
+- **Unsigned bounds and closed intervals**: Negative values, values `>= 2**width`, slice steps (`reg[7:0:2]`), and reversed bounds (`reg[0:7]`) are rejected.
 
 ```python
-# Write through slice index
-reg[15:8] = 0xAB
+import rpkbin.mapbv as mbv
 
-# Parent register is updated immediately
-print(f"Updated parent register: {reg:hex}")  # Output: 0xAB34
-print(f"Read through slice view:   {high_byte:hex}")  # Output: 0xAB
+reg = mbv.var("REG0", 16, 0x5534)
+assert reg.value == 0x5534
+assert reg.value_eq(0x5534)
 
-# Assign directly to the slice object's .value property
-high_byte.value = 0x55
-print(f"Updated again:            {reg:hex}")  # Output: 0x5534
+for bad in (lambda: reg == 0x5534, lambda: reg[3:0].__setattr__("value", 0x10)):
+    try:
+        bad()
+    except (TypeError, ValueError) as exc:
+        print(f"{type(exc).__name__}: {exc}")
 ```
 
----
+Output:
+```text
+TypeError: MapBV == int compares identity and is almost certainly a bug; use `bv.value == n` or `bv.value_eq(n)`
+ValueError: Value 0x10 out of bounds for 4-bit MapBV (max 0xF)
+```
 
-## Important Caveats & Common Pitfalls
+- **Compatibility**: Pure Python `>= 3.11`, offline with no external I/O. Widths, values, and indices accept `__index__` integers (including NumPy integer scalars); `bool` is rejected (`TypeError`) for widths and slice indices. Verified on Windows with Python 3.13.
 
-> [!WARNING]
-> ### 1. Value Equality vs. Object Identity (`==`)
-> In Python, `reg == other` tests **object identity (`self is other`)**.
-> Comparing directly with an integer (`reg == 0x5534`) raises `TypeError` to catch common logic bugs.
->
-> **Correct value comparison**:
-> ```python
-> assert reg.value == 0x5534
-> # or
-> assert reg.value_eq(0x5534)
-> ```
+## See Also
 
-> [!CAUTION]
-> ### 2. Bit Width and Negative Value Guardrails
-> MapBV represents unsigned hardware signals.
-> - Negative values raise `ValueError`.
-> - Values exceeding bit width capacity raise `ValueError`.
-> ```python
-> reg[3:0] = 0x10  # ValueError: 0x10 out of bounds for 4-bit slice
-> reg[3:0] = -1    # ValueError: negative values not supported
-> ```
-
----
-
-## Next Steps
-
-- **[Practical Usage Scenarios](scenarios.md)**: Explore bus concatenation (`concat`), read-only constant protection, combinational logic trees, and symbolic `eval()`.
-- **[API Reference](reference.md)**: In-depth reference for methods, operators, and exceptions.
+- [Usage Scenarios](scenarios.md)
+- [API Reference](reference.md)
+- [Documentation Index](../README.md)

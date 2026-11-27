@@ -1,0 +1,4 @@
+from rpkbin.mcucc.lang import u8
+
+def add2(a: u8, b: u8) -> u8:
+    return a + b

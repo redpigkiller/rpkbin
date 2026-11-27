@@ -1,12 +1,20 @@
 """Reproducible register-like fixtures, independent of local workbooks."""
 
-import importlib.util
 import random
 import struct
 
 import pytest
 
 from rpkbin.tablepack import Bool, Bytes, Category, Float, Int, Schema, Uint, pack, unpack
+
+
+CODECS = [None, "zlib", "lzma"]
+try:
+    import brotli
+    if hasattr(getattr(brotli, "Decompressor", None), "can_accept_more_data"):
+        CODECS.append("brotli")
+except ImportError:
+    pass
 
 
 @pytest.mark.parametrize("seed", range(32))
@@ -37,10 +45,7 @@ def test_generated_mixed_register_roundtrip(seed):
             for name in ("reset", "offset", "gain", "raw"):
                 r[name] = rows[-1][name]
         rows.append(r)
-    codecs = [None, "zlib", "lzma"]
-    if importlib.util.find_spec("brotli"):
-        codecs.append("brotli")
-    compression = codecs[seed % len(codecs)]
+    compression = CODECS[seed % len(CODECS)]
     blob = pack(rows, schema, embed_schema=bool(seed & 4), compress=compression, verify=True)
     back = unpack(blob, schema)
     for a, b in zip(rows, back):

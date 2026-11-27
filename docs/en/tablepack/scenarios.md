@@ -2,13 +2,11 @@
 
 [繁體中文](../../zh/tablepack/scenarios.md) · [Documentation Index](../README.md) · [Quickstart](README.md) · [API Reference](reference.md)
 
-Scenarios run from a single minimal operation to composition and tuning. **Each code block is self-contained and can be run on its own** unless the text says otherwise. Sizes in outputs are example values: the schema-embedding and `compress="zlib"` ones are reproducible with the standard library; anything using the default compressor depends on whether brotli is installed.
-
----
+Eight self-contained scenarios progressing from basic typed columns to schema inference, size breakdown, external schemas, streaming, column tuning, compression, and error handling. Sizes shown in outputs reflect `brotli >= 1.2` where `"auto"` or `"brotli"` is used; `compress="zlib"` and `compress=None` sizes are reproducible with the Python standard library.
 
 ## Scenario 1: Describe a table with every column type
 
-**Task:** pack rows containing signed numbers, booleans, floats, and binary data, and get identical values back.
+Pack rows containing signed numbers, booleans, floats, and binary data, then restore the exact values.
 
 ```python
 from rpkbin.tablepack import Schema, Uint, Int, Bool, Float, Bytes, Str, pack, unpack
@@ -31,20 +29,15 @@ print(back[0])
 ```
 
 Output:
-
 ```text
 {'sensor': 's1', 'temp_c10': -125, 'valid': True, 'volt': 3.25, 'raw': b'\x01\x02'}
 ```
 
-Columns are looked up by name, and the order of columns in the schema is the key order of the returned dicts. `Uint` is for values `>= 0`; use `Int` when negatives are possible. The full list of types and options is in the [reference](reference.md#column-types).
-
-**Next:** you do not have to choose options by hand: see Scenario 2.
-
----
+Columns are matched by name, and the schema column order sets the key order in returned dicts. Use `Uint` for values `>= 0` and `Int` when negatives are possible. See [Column and Column Types](reference.md#column-and-column-types).
 
 ## Scenario 2: Let `infer` propose a schema, then save it
 
-**Task:** get a first schema for data you have not analysed, review it, and keep it as JSON text.
+Generate an initial schema for unanalyzed data, inspect the Python output, and serialize it to JSON.
 
 ```python
 from rpkbin.tablepack import Schema, infer, pack, unpack
@@ -55,17 +48,16 @@ rows = [
     for i in range(200)
 ]
 
-schema = infer(rows)             # advisory: review it, it does not know what your data means
+schema = infer(rows)             # advisory: review before locking it in production
 print(schema)
 
-text = schema.to_json()          # plain JSON text: save it wherever you like
+text = schema.to_json()
 assert Schema.from_json(text) == schema
 assert unpack(pack(rows, schema)) == rows
 print(len(text), "characters of JSON")
 ```
 
 Output:
-
 ```text
 Schema(
     Str('module', repeat=True),
@@ -76,15 +68,11 @@ Schema(
 209 characters of JSON
 ```
 
-`infer` first ranks each column's encodings by standalone zlib size, then measures up to eight whole-table candidates using the requested compressor and embedding setting. This bounded search can select a schema other than the first per-column choices; it is advisory and does not guarantee the global minimum. The baseline is always included and wins ties. `bits=13` is only the width today's maximum needs, so a later table with larger addresses would be rejected. If a column's range is a hardware fact, write that width yourself. `infer` never proposes `Enum` because it cannot know the value set is closed; it may propose `Category` (learned value set) or plain `Str`.
-
-`print(schema)` produces Python code you can paste into your own script and edit.
-
----
+`infer` ranks per-column zlib candidates first, then scores up to eight whole-table candidates using the target compressor and embedding flag (the baseline is always included and wins ties). Notice `bits=13` reflects only the current sample's maximum; if a register address can reach 16 bits in hardware, widen `bits=16` manually. `infer` never proposes `Enum` because a sample cannot prove a closed value set.
 
 ## Scenario 3: See where the bytes go
 
-**Task:** find which columns dominate the size, and compare the alternatives `infer` considered.
+Inspect each column's byte share with `explain()` and check all candidates ranked by `infer(..., report=True)`.
 
 ```python
 from rpkbin.tablepack import explain, infer
@@ -97,12 +85,11 @@ rows = [
 print(explain(rows, compress="zlib"))
 
 schema, report = infer(rows, report=True)
-for col, size in report["offset"]:           # every candidate for one column, smallest first
+for col, size in report["offset"]:
     print(f"{size:4d} B  {col.describe()}")
 ```
 
 Output:
-
 ```text
 column  encoding               bytes  share
 block   str                       69    40%
@@ -118,15 +105,11 @@ total: 160 rows -> 110 bytes (compress=zlib, schema not embedded)
   31 B  category
 ```
 
-The `bytes` figure for each column comes from packing that column alone, so the figures are a guide rather than an exact split: columns share flag bits, and each standalone blob carries its own header and compressor overhead, so here the total is smaller than the sum of the column sizes. `share` is relative to that sum. The report remains the per-column zlib ranking even though `infer` uses whole-table scoring for its final schema.
-
-`describe()` shows the encoding of a column (`uint5` is a fixed 5-bit width, `+pack` stores it in the shared flag bits).
-
----
+Each column's `bytes` value comes from packing that column alone (so it includes per-blob header and compressor overhead), while `share` divides by the sum of those standalone sizes. `col.describe()` summarizes the encoding (`uint5` is fixed 5-bit width; `+pack` stores values in shared flag bits).
 
 ## Scenario 4: Share one schema and skip embedding it
 
-**Task:** a producer script writes blobs and a consumer reads them; keep the blobs as small as possible.
+Produce minimal blobs by storing one application-versioned schema outside the blobs.
 
 ```python
 from rpkbin.tablepack import infer, pack, unpack, Schema
@@ -137,48 +120,40 @@ rows = [
     for i in range(200)
 ]
 
-# Producer: infer for the target codec and omit the schema from each blob.
 schema = infer(rows, compress="brotli", embed_schema=False)
-schema_text = schema.to_json()       # store this as an application-versioned artifact
+schema_text = schema.to_json()
 small = pack(rows, schema, embed_schema=False, compress="brotli")
 print(len(small))
 
-# Consumer: load the schema artifact that matches the producer's application version.
 consumer_schema = Schema.from_json(schema_text)
 print(unpack(small, consumer_schema) == rows)
 ```
 
 Output:
-
 ```text
 84
 True
 ```
 
-The producer selects a schema by measuring a bounded set of whole-table candidates with the target codec and without embedding the schema. It stores that schema separately; the consumer must use the matching application-versioned schema. Version 1 has no schema fingerprint, so a mismatched external schema is not guaranteed to be detected. Embedding remains enabled by default and makes a blob self-describing.
-
-If you pass a schema to `unpack` for a blob that **does** embed one, the two must be equal, otherwise `ValueError` is raised.
-
----
+Version 1 blobs carry no schema fingerprint, so consumers reading unembedded blobs must load the matching external schema. Passing a different `schema` to `unpack()` on a blob that *does* embed one raises `ValueError`.
 
 ## Scenario 5: Column-oriented data and row streaming
 
-**Task:** your data is already one list per column, or you want to process rows one at a time.
+Pack from `dict[str, sequence]` directly and iterate decoded rows with `iter_unpack()`.
 
 ```python
 from rpkbin.tablepack import pack, unpack, iter_unpack
 
 columns = {"addr": [0x10, 0x14, 0x18], "name": ["ctrl", "status", "data"], "ro": [False, True, True]}
-blob = pack(columns)                       # dict of equal-length sequences
+blob = pack(columns)
 print(unpack(blob, as_columns=True) == columns)
-print(unpack(blob)[0])                     # list of row dicts by default
+print(unpack(blob)[0])
 
-for row in iter_unpack(blob):              # one dict at a time instead of a full list
+for row in iter_unpack(blob):
     print(row["name"], hex(row["addr"]))
 ```
 
 Output:
-
 ```text
 True
 {'addr': 16, 'name': 'ctrl', 'ro': False}
@@ -187,13 +162,11 @@ status 0x14
 data 0x18
 ```
 
-`iter_unpack` saves building the whole `list[dict]`; the blob is still bounded-decompressed and decoded column by column before yielding the first row. Reader limits constrain this work, but do not provide an operating-system memory cap.
-
----
+`iter_unpack()` avoids allocating the full `list[dict]` while still decoding all columns before yielding row 0. Validation and decompression happen when iteration starts, not when `iter_unpack()` is called.
 
 ## Scenario 6: Tune columns and measure the effect
 
-**Task:** shrink a table by choosing better column options, and verify the gain with numbers.
+Shrink output size by selecting column options matched to your data patterns.
 
 ```python
 from rpkbin.tablepack import Schema, Uint, Enum, Category, Str, pack
@@ -207,42 +180,38 @@ rows = [
 naive = Schema(Str("module"), Uint("addr", bits=16), Uint("msb", bits=8), Uint("lsb", bits=8),
                Str("access"), Uint("reset", bits=8, nullable=True))
 tuned = Schema(
-    Category("module"),                         # value set learned from the data
-    Uint("addr", bits=16, delta=True),          # store the step, not the address
-    Uint("msb", bits=4, pack=True),             # tiny field: live in the shared flag bits
+    Category("module"),
+    Uint("addr", bits=16, delta=True),
+    Uint("msb", bits=4, pack=True),
     Uint("lsb", bits=4, pack=True),
-    Enum("access", ["RW", "RO", "W1C"]),        # known up front: no dictionary stored
-    Uint("reset", bits=8, nullable=True),       # None costs 1 bit, no payload
+    Enum("access", ["RW", "RO", "W1C"]),
+    Uint("reset", bits=8, nullable=True),
 )
 for label, s in (("naive", naive), ("tuned", tuned)):
     print(label, len(pack(rows, s, compress="zlib", embed_schema=False)))
 ```
 
 Output:
-
 ```text
 naive 405
 tuned 171
 ```
 
-Rules of thumb (the numbers above come from `explain`/`pack`, not from guessing):
-
-| Data looks like | Use |
+| Pattern | Recommended Column Option |
 | :--- | :--- |
-| Counters, addresses, sorted IDs | `Uint(..., delta=True)` or `Int(..., delta=True)` |
-| Same value as the row above (merged cells, grouped rows) | `repeat=True` on `Str`/`Uint`/`Int`/`Float`/`Bytes` |
-| A few distinct strings, set known in advance | `Enum([...])` |
-| A few distinct values, set not known in advance | `Category` |
-| Narrow fields (a few bits) | `Uint(bits=N, pack=True)` |
-| Sometimes missing | `nullable=True` (1 flag bit; absent values store nothing) |
+| Counters, addresses, monotonic IDs | `Uint(..., delta=True)` or `Int(..., delta=True)` |
+| Repeated consecutive values | `repeat=True` on `Str`, `Uint`, `Int`, `Float`, or `Bytes` |
+| Small closed set of known values | `Enum([...])` |
+| Small open set of distinct values | `Category` |
+| Narrow fields (few bits) | `Uint(bits=N, pack=True)` |
+| Bounded integers mostly small in value | `Uint(bits=N, varint=True)` |
+| Sparse `None` entries | `nullable=True` |
 
-`Category` warns (`UserWarning`) when a column with at least 16 rows has more than half as many distinct values as rows; that usually means `Str` is the better choice.
-
----
+`Category` emits a `UserWarning` if a table has 16 or more rows and distinct values exceed half the row count (`Str` is usually better there).
 
 ## Scenario 7: Choose the compressor and verify at build time
 
-**Task:** compare compressors, and make a build script fail loudly if a table would not round-trip.
+Compare codecs and use `verify=True` in build scripts to catch any round-trip discrepancy before writing artifacts.
 
 ```python
 from rpkbin.tablepack import Schema, Uint, Str, pack, unpack
@@ -251,12 +220,11 @@ schema = Schema(Str("k"), Uint("v"))
 rows = [{"k": f"key{i % 7}", "v": i * i} for i in range(300)]
 for c in ("auto", "brotli", "zlib", "lzma", None):
     print(f"{str(c):7s}", len(pack(rows, schema, compress=c)))
-blob = pack(rows, schema, compress="zlib", verify=True)   # decodes and compares before returning
-assert unpack(blob) == rows                               # codec is read from the header
+blob = pack(rows, schema, compress="zlib", verify=True)
+assert unpack(blob) == rows
 ```
 
-Output with compatible brotli >= 1.2 installed (`pip install -e ".[table]"`); `auto` uses brotli here, and the exact sizes depend on the compressor versions:
-
+Output (with `brotli >= 1.2` installed):
 ```text
 auto    765
 brotli  765
@@ -265,15 +233,11 @@ lzma    829
 None    2335
 ```
 
-Without compatible brotli, `"auto"` uses zlib and `compress="brotli"` raises `ImportError` with an upgrade/install hint. Decoding a brotli blob also requires compatible brotli on the reading machine.
-
-`verify=True` raises `ValueError("verify failed: ...")` if the decoded data differs from the input. It costs one extra decode, which is acceptable in a build script.
-
----
+Without compatible brotli, `"auto"` uses `zlib` and `compress="brotli"` raises `ImportError`. `verify=True` runs one extra decode pass and raises `ValueError("verify failed: ...")` if any column differs.
 
 ## Scenario 8: Read and fix errors
 
-**Task:** understand what the validation errors say.
+Inspect exact error types and messages produced by schema and value validation.
 
 ```python
 from rpkbin.tablepack import Schema, Uint, Enum, Float, pack
@@ -294,7 +258,6 @@ for rows, schema in cases:
 ```
 
 Output:
-
 ```text
 ValueError: row 1, column 'addr': 4096 doesn't fit in 12 bits
 ValueError: row 0, column 'kind': unknown value 'XX'; known values: ['RW', 'RO']
@@ -303,10 +266,10 @@ ValueError: row 0: unexpected column(s) ['extra']
 ValueError: row 0, column 'v': 0.1 isn't exactly representable as float32
 ```
 
-Row numbers start at 0. Wrong *types* (for example `True` for a `Uint`, or a `str` for an `Int`) raise `TypeError` with the same row/column prefix; value problems raise `ValueError`. When the problem is the schema rather than the data (for example `Uint("a", pack=True)` without `bits`), the error is raised when `Schema(...)` is built.
+Row indices are 0-based. Type mismatches (such as `True` for `Uint` or `str` for `Int`) raise `TypeError` with the same `row i, column '...'` prefix; out-of-range or invalid values raise `ValueError`. Schema construction errors (such as `Uint("a", pack=True)` without `bits`) fail immediately when creating `Schema(...)`.
 
----
+## See Also
 
-## Next Steps
-
-- **[API Reference](reference.md)**: exact signatures, defaults, accepted value types, exceptions, and the blob format.
+- [Quickstart](README.md)
+- [API Reference](reference.md)
+- [Documentation Index](../README.md)

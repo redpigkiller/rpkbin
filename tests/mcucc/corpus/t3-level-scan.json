@@ -1,0 +1,35 @@
+{
+  "asm": "level_scan:\n    st [0x0060], r0\n    st [0x0061], r1\n    st [0x0062], r2\n    st [0x0063], r3\n    ldi r0, #0\n.Llevel_scan_1:\n    ldi r1, #0\n    mov r2, r4\n    ldi r3, #0\n    cmpw x0, x1\n    jnc .Llevel_scan_3\n    ldi r1, #0\n    ld r2, [0x0060]\n    ld r3, [0x0061]\n    addw x1, x0\n    ld r2, [x1]\n    mov r6, r5\n    ldi r7, #0\n    ldi r3, #0\n    cmpw x2, x1\n    jc .Llevel_scan_2\n    ld r2, [0x0062]\n    ld r3, [0x0063]\n    st [x1], r0\n.Llevel_scan_2:\n    add r0, #1\n    jmp .Llevel_scan_1\n.Llevel_scan_3:\n    ret\n",
+  "report": {
+    "functions": {
+      "level_scan": {
+        "bytes": 53,
+        "clobbers": [
+          "r0",
+          "r1",
+          "r2",
+          "r3",
+          "r4",
+          "r5",
+          "r6",
+          "r7"
+        ],
+        "slots": [
+          [
+            "sram",
+            96,
+            2
+          ],
+          [
+            "sram",
+            98,
+            2
+          ]
+        ],
+        "findings": [],
+        "verified": "partial: alias parts use symbolic cell views; indirect memory is abstract",
+        "pool_contract": "private"
+      }
+    }
+  }
+}

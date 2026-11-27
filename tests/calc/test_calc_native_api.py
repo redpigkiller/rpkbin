@@ -5,8 +5,8 @@ from dataclasses import replace
 import apytypes as apy
 import pytest
 
-from rpkbin.calc.core import CalcConfig, FormatEngine, FxpSpec, WorkspaceSession
-from rpkbin.calc.core.math_helpers import build_namespace_symbols
+from rpkbin.app.calc.core import CalcConfig, FormatEngine, FxpSpec, WorkspaceSession
+from rpkbin.app.calc.core.math_helpers import build_namespace_symbols
 
 
 def test_native_classes_are_preloaded_without_constructor_wrappers():
@@ -15,8 +15,8 @@ def test_native_classes_are_preloaded_without_constructor_wrappers():
         assert session.user_ns[name] is getattr(apy, name)
         assert name not in session.user_variable_names()
     assert session.user_ns["apy"] is apy
-    assert "fxp" not in session.user_ns and "fxpi" not in session.user_ns
-    assert "NameError" in session.execute("fxp(1)").error_text
+    assert callable(session.user_ns["fxp"]) and callable(session.user_ns["fxpi"])
+    assert "Specify an FXP format" in session.execute("fxp(1)").error_text
 
 
 def test_raw_constructor_and_real_conversion_keep_native_semantics():
@@ -95,12 +95,12 @@ def test_custom_display_input_roundtrips_and_conflicting_display_falls_back():
 
 def test_default_namespace_does_not_install_user_convenience_helpers():
     symbols = build_namespace_symbols(CalcConfig())
-    assert "fxp" not in symbols and "fxpi" not in symbols
+    assert callable(symbols["fxp"]) and callable(symbols["fxpi"])
     assert FormatEngine.format(FxpSpec()) == "Q1.15"
 
 
 def test_native_array_gui_provenance_preserves_identity_aliases_and_undo():
-    from rpkbin.calc.core.editing import EditJournal
+    from rpkbin.app.calc.core.editing import EditJournal
     session = WorkspaceSession(CalcConfig(startup_script=""), seed_demo_vars=False)
     session.execute("A = APyFixedArray.from_float([0], bits=8, frac_bits=4)\nalias = A")
     owner = session.user_ns["A"]

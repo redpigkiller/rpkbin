@@ -8,10 +8,10 @@ import pytest
 from PySide6.QtCore import QObject, QPoint, Signal, Qt
 from PySide6.QtWidgets import QApplication
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.fxp_model import make_fxp
-from rpkbin.calc.ui.inspector_widget import VariableInspectorWidget
-from rpkbin.calc.ui.theme import build_stylesheet, get_palette
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.fxp_model import make_fxp
+from rpkbin.app.calc.ui.inspector_widget import VariableInspectorWidget
+from rpkbin.app.calc.ui.theme import build_stylesheet, get_palette
 
 
 class Controller(QObject):
@@ -116,7 +116,9 @@ def test_wide_bit_formats_fit_narrow_viewport_without_horizontal_scroll(inspecto
     assert widget.bit_scroll.verticalScrollBar().maximum() > 0
     assert widget.bit_scroll.height() <= widget.bit_scroll.maximumHeight()
     columns = widget._bit_layout_key[0]
-    assert columns in (4, 8, 16)
+    # Columns are selected in complete nibble groups. The exact count depends
+    # on platform font metrics and viewport sizing (Linux can fit 12 here).
+    assert columns >= 4 and columns % 4 == 0
     assert ordered_indices(widget) == list(reversed(range(bits)))
     viewport_width = widget.bit_scroll.viewport().width()
     for index, (box, _, button, _) in widget._bit_cells.items():
@@ -219,7 +221,7 @@ def test_bit_help_and_actions_are_hidden_until_an_fxp_value_is_selected(app):
 
 
 def test_edit_bit_range_action_keeps_inclusive_high_low_contract(inspector_factory, monkeypatch):
-    from rpkbin.calc.ui import inspector_widget
+    from rpkbin.app.calc.ui import inspector_widget
 
     widget, controller, _ = inspector_factory()
     monkeypatch.setattr(inspector_widget, "prompt_text", lambda *args: ("7:4 = 0xA", True))
@@ -399,6 +401,35 @@ def assert_hardware_nibbles_are_not_split(widget, bits, msb_first):
     assert ordered_indices(widget) == (list(reversed(range(bits))) if msb_first else list(range(bits)))
 
 
+def test_wide_bit_rows_do_not_add_full_nibble_padding(inspector_factory, app):
+    widget, _, _ = inspector_factory(bits=128, width=900)
+    columns = widget._bit_layout_key[0]
+    rows = {}
+    for index, (box, *_) in widget._bit_cells.items():
+        row, column, _, _ = widget.bit_grid_layout.getItemPosition(
+            widget.bit_grid_layout.indexOf(box)
+        )
+        rows.setdefault(row, []).append((column, index))
+
+    assert len(rows[0]) == columns
+    _, first_bit = min(rows[0])
+    assert first_bit == 127
+    assert widget._bit_cells[first_bit][0].x() == widget.bit_grid_layout.contentsMargins().left()
+    assert_hardware_nibbles_are_not_split(widget, 128, True)
+
+    # A wide-to-narrow resize still clears any old grid-column constraints.
+    widget.resize(1500, 900)
+    settle(app)
+    widget.resize(900, 900)
+    settle(app)
+    assert widget.bit_scroll.horizontalScrollBar().maximum() == 0
+    row_zero_count = sum(
+        1 for box, *_ in widget._bit_cells.values()
+        if widget.bit_grid_layout.getItemPosition(widget.bit_grid_layout.indexOf(box))[0] == 0
+    )
+    assert row_zero_count == widget._bit_layout_key[0]
+
+
 @pytest.mark.parametrize("bits", [1, 3, 6, 10, 17])
 @pytest.mark.parametrize("msb_first", [True, False])
 @pytest.mark.parametrize("width,font,scale", [(480, 16, 160), (1200, 10, 100)])
@@ -431,6 +462,51 @@ def test_partial_highest_nibble_stays_hardware_aligned_across_resizes(
     for index in dict.fromkeys((0, bits - 1)):
         identities[index].click()
     assert controller.calls == [("bit", index) for index in dict.fromkeys((0, bits - 1))]
+
+
+def test_compact_bit_spacing_stays_fixed_and_left_aligned_on_wide_rows(inspector_factory, app):
+    widget, _, _ = inspector_factory(bits=8, fwl=4, width=480)
+    assert widget._bit_layout_key[0] == 8
+
+    def positions():
+        return {
+            index: (box.x(), box.width())
+            for index, (box, *_rest) in widget._bit_cells.items()
+        }
+
+    first = positions()
+    assert first[7][0] == widget.bit_grid_layout.contentsMargins().left()
+
+    # Bit cells stay compact and left aligned when the viewport gains width.
+    widget.resize(900, 900)
+    settle(app)
+    assert widget._bit_layout_key[0] == 8
+    assert positions() == first
+
+    ordered = list(reversed(range(8)))
+    gaps = [
+        first[left][0] - (first[right][0] + first[right][1])
+        for right, left in zip(ordered, ordered[1:])
+    ]
+    # When the radix point is on the nibble boundary, it replaces the wide gap.
+    assert len(set(gaps)) == 1
+
+
+def test_radix_point_replaces_nibble_gap_only_when_they_coincide(inspector_factory):
+    aligned, _, _ = inspector_factory(bits=8, fwl=4, width=480)
+    assert aligned._bit_cells[4][3].isVisible()
+    assert aligned.bit_grid_layout.columnMinimumWidth(4) == 0
+
+    inside_nibble, _, _ = inspector_factory(bits=8, fwl=5, width=480)
+    assert inside_nibble._bit_cells[5][3].isVisible()
+    assert inside_nibble.bit_grid_layout.columnMinimumWidth(4) > 0
+    positions = {
+        index: (box.x(), box.width())
+        for index, (box, *_rest) in inside_nibble._bit_cells.items()
+    }
+    boundary_gap = positions[3][0] - (positions[4][0] + positions[4][1])
+    ordinary_gap = positions[4][0] - (positions[5][0] + positions[5][1])
+    assert boundary_gap > ordinary_gap
 
 
 def test_bit_direction_title_receives_width_alongside_order_button(inspector_factory, app):

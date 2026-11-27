@@ -11,16 +11,16 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QMenu
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import CalcConfig, WorkspaceSession, make_fxp
-from rpkbin.calc.core.config import ALL_WORKSPACE_COLUMNS
-from rpkbin.calc.core.format_engine import FormatEngine
-from rpkbin.calc.core.fxp_model import InspectorSnapshot
-from rpkbin.calc.kernel_runtime import CalcKernelRuntime
-from rpkbin.calc.protocol import PROTOCOL_VERSION, inspector_from_dict, inspector_to_dict
-from rpkbin.calc.ui.console_widget import CommandWindowWidget
-from rpkbin.calc.ui.inspector_widget import VariableInspectorWidget
-from rpkbin.calc.ui.workspace_widget import WorkspaceWidget
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession, make_fxp
+from rpkbin.app.calc.core.config import ALL_WORKSPACE_COLUMNS
+from rpkbin.app.calc.core.format_engine import FormatEngine
+from rpkbin.app.calc.core.fxp_model import InspectorSnapshot
+from rpkbin.app.calc.kernel_runtime import CalcKernelRuntime
+from rpkbin.app.calc.protocol import PROTOCOL_VERSION, inspector_from_dict, inspector_to_dict
+from rpkbin.app.calc.ui.console_widget import CommandWindowWidget
+from rpkbin.app.calc.ui.inspector_widget import VariableInspectorWidget
+from rpkbin.app.calc.ui.workspace_widget import WorkspaceWidget
 
 
 @pytest.fixture(scope="module")
@@ -94,7 +94,7 @@ def test_fxp_format_uses_existing_pin_and_float_target_is_explicit(ui, monkeypat
     inspector._on_format_committed()
     assert requests[-1] == (("reformat", "a", "Q8.8"), {"pin_mode": "hex", "expected_revision": 7})
     from PySide6.QtWidgets import QMessageBox
-    monkeypatch.setattr("rpkbin.calc.ui.inspector_widget.ask", lambda *args: QMessageBox.StandardButton.Apply)
+    monkeypatch.setattr("rpkbin.app.calc.ui.inspector_widget.ask", lambda *args: QMessageBox.StandardButton.Apply)
     inspector.convert_btn.click()
     assert requests[-1] == (("to_float", "a"), {"expected_revision": 7})
 
@@ -172,7 +172,7 @@ def test_workspace_shortcuts_only_navigate_and_keep_array_editor(ui, monkeypatch
         class MenuProbe(QMenu):
             def exec(self, *_args):
                 menus.append(self)
-        monkeypatch.setattr("rpkbin.calc.ui.workspace_widget.QMenu", MenuProbe)
+        monkeypatch.setattr("rpkbin.app.calc.ui.workspace_widget.QMenu", MenuProbe)
         workspace.show()
         app = QApplication.instance()
         app.processEvents()
@@ -247,9 +247,9 @@ def test_fxp_cell_in_a_python_list_does_not_enable_whole_array_conversion(ui):
 @pytest.mark.parametrize("change", [None, "revision", "pin", "quant", "overflow", "same_format"])
 def test_preview_apply_checks_captured_source_and_policy(ui, monkeypatch, change):
     from PySide6.QtWidgets import QMessageBox
-    from rpkbin.calc.core.editing import conversion_preview
-    from rpkbin.calc.ui.app import CalcMainWindow
-    from rpkbin.calc.ui.i18n import UiText
+    from rpkbin.app.calc.core.editing import conversion_preview
+    from rpkbin.app.calc.ui.studio_window import CalcMainWindow
+    from rpkbin.app.calc.ui.i18n import UiText
 
     inspector, controller, session, requests = ui
     select(inspector, controller, session, make_fxp(0.25, "Q4.12"))
@@ -268,7 +268,7 @@ def test_preview_apply_checks_captured_source_and_policy(ui, monkeypatch, change
         elif change == "overflow":
             controller.config.default_overflow = "WRAP"
         return QMessageBox.StandardButton.Apply
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", accept)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", accept)
     CalcMainWindow._show_preview(holder, preview)
     if change is None:
         assert requests == [(("reformat", "a", target), {"pin_mode": "real", "expected_revision": 7})]
@@ -288,7 +288,7 @@ def test_temporary_cleanup_retries_windows_locks_without_crashing(ui, monkeypatc
         if persistent or len(attempts) < 3:
             raise PermissionError("history.sqlite is still locked")
     controller.transport._temporary = SimpleNamespace(cleanup=cleanup)
-    monkeypatch.setattr("rpkbin.calc.kernel_client.time.sleep", sleeps.append)
+    monkeypatch.setattr("rpkbin.app.calc.kernel_client.time.sleep", sleeps.append)
     if persistent:
         with pytest.warns(RuntimeWarning, match="temporary files"):
             controller.transport._cleanup_temporary()
@@ -361,13 +361,13 @@ def test_float_confirmation_cancel_and_changed_source_are_read_only(ui, monkeypa
     from PySide6.QtWidgets import QMessageBox
     inspector, controller, session, requests = ui
     select(inspector, controller, session, make_fxp(2, "Q4.12"))
-    monkeypatch.setattr("rpkbin.calc.ui.inspector_widget.ask", lambda *args: QMessageBox.StandardButton.Cancel)
+    monkeypatch.setattr("rpkbin.app.calc.ui.inspector_widget.ask", lambda *args: QMessageBox.StandardButton.Cancel)
     inspector.convert_btn.click()
     assert not requests
     def stale(*args):
         controller.revision += 1
         return QMessageBox.StandardButton.Apply
-    monkeypatch.setattr("rpkbin.calc.ui.inspector_widget.ask", stale)
+    monkeypatch.setattr("rpkbin.app.calc.ui.inspector_widget.ask", stale)
     inspector.convert_btn.click()
     assert not requests and not inspector.error_lbl.isHidden()
 
@@ -458,9 +458,9 @@ def test_custom_input_is_normalized_before_preview_and_mutation(ui,monkeypatch):
 ])
 def test_preview_array_undo_warning_matches_actual_scope(ui, monkeypatch, array, same_format, expects_warning):
     from PySide6.QtWidgets import QMessageBox
-    from rpkbin.calc.core.editing import conversion_preview
-    from rpkbin.calc.ui.app import CalcMainWindow
-    from rpkbin.calc.ui.i18n import UiText
+    from rpkbin.app.calc.core.editing import conversion_preview
+    from rpkbin.app.calc.ui.studio_window import CalcMainWindow
+    from rpkbin.app.calc.ui.i18n import UiText
 
     inspector, controller, session, requests = ui
     value = make_fxp([[1.25]] if array else 1.25, "Q6.10")
@@ -472,7 +472,7 @@ def test_preview_array_undo_warning_matches_actual_scope(ui, monkeypatch, array,
     def cancel(_parent, _title, text, *_args, **_kwargs):
         texts.append(text)
         return QMessageBox.StandardButton.Cancel
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", cancel)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", cancel)
     holder = SimpleNamespace(controller=controller, _copy=UiText(), _show_error=lambda _: None)
     CalcMainWindow._show_preview(holder, preview)
     assert ("clear GUI Undo history" in texts[0]) is expects_warning

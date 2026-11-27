@@ -1,7 +1,6 @@
 """Generated fixtures only: no Excel or external source data is used here."""
 
 from fractions import Fraction
-import importlib.util
 import sys
 from types import SimpleNamespace
 
@@ -12,8 +11,12 @@ from rpkbin.tablepack import codec
 
 
 CODECS = [None, "zlib", "lzma"]
-if importlib.util.find_spec("brotli"):
-    CODECS.append("brotli")
+try:
+    import brotli
+    if hasattr(getattr(brotli, "Decompressor", None), "can_accept_more_data"):
+        CODECS.append("brotli")
+except ImportError:
+    pass
 
 
 @pytest.mark.parametrize("compression", CODECS)

@@ -51,7 +51,7 @@ def _to_columns(data, names: list[str] | None) -> tuple[list[str], dict[str, lis
     if isinstance(data, Mapping):
         cols = {}
         for k, v in data.items():
-            if isinstance(v, (str, bytes)) or not isinstance(v, Iterable):
+            if isinstance(v, (str, bytes, bytearray, memoryview)) or not isinstance(v, Iterable):
                 raise TypeError(f"Column '{k}': expected a sequence of values, got {type(v).__name__}")
             cols[k] = list(v)
         if names is not None:
@@ -107,6 +107,18 @@ def _learn_category(name: str, values: list, warn: bool) -> list:
     elif present:
         raise TypeError(f"Column '{name}': Category values must be all str or all int")
     uniq = sorted(set(present))
+    if uniq and isinstance(uniq[0], str):
+        for s in uniq:
+            try:
+                s.encode("utf-8")
+            except UnicodeEncodeError as e:
+                row_idx = next(
+                    (i for i, raw in enumerate(values) if isinstance(raw, str) and str.__str__(raw) == s),
+                    0,
+                )
+                raise ValueError(
+                    f"row {row_idx}, column '{name}': string is not valid UTF-8 ({e.reason})"
+                ) from None
     if warn and len(values) >= 16 and len(uniq) / len(values) > 0.5:
         warnings.warn(
             f"Column '{name}' has {len(uniq)} distinct values in {len(values)} rows; "
@@ -189,7 +201,12 @@ def _prep(p: _Plan, v):
     if k == "str":
         if not isinstance(v, str):
             raise TypeError(f"expected str, got {type(v).__name__}")
-        return str.__str__(v)
+        s = str.__str__(v)
+        try:
+            s.encode("utf-8")
+        except UnicodeEncodeError as e:
+            raise ValueError(f"string is not valid UTF-8 ({e.reason})") from None
+        return s
     if k == "bytes":
         if not isinstance(v, (bytes, bytearray, memoryview)):
             raise TypeError(f"expected bytes, got {type(v).__name__}")
@@ -268,7 +285,7 @@ def _decode_value(p: _Plan, data: bytes, pos: int, base: int, limits: DecodeLimi
 # Encode
 # ---------------------------------------------------------------------------
 
-def _encode_payload(names: list[str], cols: dict[str, list], n: int, schema: Schema,
+def _encode_payload(cols: dict[str, list], n: int, schema: Schema,
                     embed: bool, warn: bool = True) -> bytes:
     categories = {
         c.name: _learn_category(c.name, cols[c.name], warn)
@@ -529,16 +546,24 @@ def pack(data, schema: Schema | None = None, *, embed_schema: bool = True,
     codec = _compress.resolve(compress)
     names, cols, n = _to_columns(data, schema.names if schema is not None else None)
 
+    packed = None
     if schema is None:
-        if n == 0:
+        if n == 0 or not names:
             raise ValueError("Can't infer a schema from an empty table; pass a schema")
         if not embed_schema:
             raise ValueError("embed_schema=False needs an explicit schema")
-        from .infer import _infer_columns
-        schema = _infer_columns(names, cols, compress=compress, embed_schema=embed_schema)
+        from .infer import _infer_columns_with_blob
+        schema, _, packed = _infer_columns_with_blob(
+            names, cols, compress=compress, embed_schema=embed_schema,
+        )
 
-    payload = _encode_payload(names, cols, n, schema, embed_schema)
-    blob = _wrap(payload, codec)
+    if packed is not None:
+        payload_len, compressed = packed
+        blob = MAGIC + bytes([VERSION, codec]) + compressed
+    else:
+        payload = _encode_payload(cols, n, schema, embed_schema)
+        payload_len = len(payload)
+        blob = _wrap(payload, codec)
 
     if verify:
         # These budgets derive from trusted input we just encoded, rather than
@@ -547,9 +572,9 @@ def pack(data, schema: Schema | None = None, *, embed_schema: bool = True,
             DEFAULT_LIMITS, max_rows=max(DEFAULT_LIMITS.max_rows, n),
             max_cells=max(DEFAULT_LIMITS.max_cells, n * len(schema)),
             max_columns=max(DEFAULT_LIMITS.max_columns, len(schema)),
-            max_payload_bytes=max(DEFAULT_LIMITS.max_payload_bytes, len(payload)),
+            max_payload_bytes=max(DEFAULT_LIMITS.max_payload_bytes, payload_len),
             max_schema_bytes=max(DEFAULT_LIMITS.max_schema_bytes, len(schema.to_json().encode("utf-8"))),
-            max_integer_bytes=max(DEFAULT_LIMITS.max_integer_bytes, len(payload)),
+            max_integer_bytes=max(DEFAULT_LIMITS.max_integer_bytes, payload_len),
         )
         back = unpack(blob, None if embed_schema else schema, as_columns=True, limits=verify_limits)
         for c in schema:

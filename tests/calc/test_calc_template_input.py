@@ -1,7 +1,7 @@
 """Configured GUI templates resolve to explicit specs, never guessed hardware widths."""
 from dataclasses import replace
 import pytest
-from rpkbin.calc.core import CalcConfig, FormatEngine, FxpSpec
+from rpkbin.app.calc.core import CalcConfig, FormatEngine, FxpSpec
 
 
 @pytest.fixture

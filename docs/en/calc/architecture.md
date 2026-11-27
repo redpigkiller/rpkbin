@@ -1,102 +1,156 @@
 # rpk-calc Architecture and Data Boundaries
 
-The GUI separates interactive Python execution from Qt presentation. The IPython kernel is the sole owner of numeric objects; the Qt process handles the command window, Workspace, Inspector, matrix tables, and user interaction. The existing `core` layer provides `WorkspaceSession` and the inspection/editing logic for FXP and ordinary values. The GUI does not copy the complete Python namespace.
+[Quickstart and Reference](README.md) · [Documentation Index](../README.md) · [繁體中文](../../zh/calc/architecture.md)
 
-## Responsibilities and invariants
+`rpk-calc` separates execution boundaries by mode: Simple mode runs in-process inside `SimpleCalcEngine` without Python/APyTypes or an IPython subprocess, Python Studio runs Qt presentation against a dedicated local IPython kernel that owns all workspace objects, and `rpk-calc --eval` runs a headless `WorkspaceSession` directly without Qt or a kernel subprocess.
 
-- `kernel_client.py` starts and manages one IPython subprocess owned by the application, communicating over Jupyter channels bound to `127.0.0.1`. Replies are handled without blocking the Qt event loop. The kernel does not restart automatically; closing the application stops this process.
-- `kernel_runtime.py` executes user code inside the kernel, owns `WorkspaceSession`, and handles inspection, paging, and edit requests. The GUI receives formatted snapshots, not Python objects or complete arrays.
-- `controller.py` serializes GUI requests, tracks `view_id` and workspace `revision`, and coordinates busy state. The GUI stays responsive during execution, while numeric editing is disabled. Workspace scalar Value/Format activation routes to the Inspector's Value or shared conversion controls; array Value continues to open the matrix editor. Help is a compact three-tab reference with FXP selected by default.
-- `CalcMainWindow` uses Qt Fusion style, which draws the checkbox indicator normally and works with the existing application QSS; the checked state remains visible on Windows 11.
-- `SettingsDialog` collects preferences and presents a read-only startup preview; `CalcController` distinguishes Qt appearance, kernel numeric defaults, built-in function packs, custom imports, and startup-file actions. Built-in pack contents are fixed; their checkboxes only enable or disable each pack. Appearance and `keep_english_terms` update Qt only; numeric defaults update the existing session. Applying changed packs or custom imports reloads the configured imports in the existing kernel without executing `startup.py` or clearing the namespace. User variables and cached startup bindings retain their existing bindings. Startup code runs at kernel startup/restart or on an explicit Reload and run request. Apply does not restart the kernel, preserving console input/history and matrix tabs.
-- The Settings dialog places its Cancel/Apply footer below a stretchable tab area. The footer remains aligned while each settings page scrolls or grows.
-- The Workspace array button and double-click both open the existing matrix tab. Collapsing Inspector hides its body while the arrow/title header stays available to expand it; opening an array expands Inspector. Closing the app saves window geometry, splitter sizes, and the Inspector collapsed preference.
-- `protocol.py` and `MatrixTableModel` define JSON DTOs and bounded matrix pages. A normal matrix page contains at most 32 × 16 values, and the table caches at most 8 pages. Matrix-page shape/slice metadata queries do not read the whole array. The Workspace Min/Max column scans values only while displayed; an FXP array saturation summary checks at most 4,096 cells and reports unknown above that limit without scanning the whole array. Copying an entire matrix is capped at 100,000 cells; export larger data from Python.
+---
 
+## Execution Modes and Boundaries
 
-The native **Convert to FXP…** dialog produces a conversion request consumed by the kernel; it carries the existing `expected_revision` guard. FXP inline format controls and **Convert to float…** use the same established kernel conversion path. This UI adds no config field or schema. The Inspector continues to honor the saved list/grid layout preference.
+```text
+rpk-calc (cli.py)
+ ├── -e / --eval ──> WorkspaceSession (headless; CalcConfig + sibling startup.py; no Qt, no kernel)
+ └── GUI (ui/app.py: CalculatorWindow)
+      ├── Simple page ──> SimpleCalcWidget -> SimpleCalcEngine (local_engine.py, in-process)
+      │                                        (Fraction / Decimal + scalar_fxp; no kernel, no apytypes)
+      └── Python page ──> CalcMainWindow -> CalcController (controller.py)
+                                              │ 127.0.0.1 Jupyter channels (JSON DTOs only)
+                                              ▼
+                                         KernelTransport (kernel_client.py)
+                                              │
+                                              ▼
+                                         CalcKernelRuntime (kernel_runtime.py) -> WorkspaceSession
+```
 
-## FXP conversion provenance and status
+| File | Responsibility |
+|---|---|
+| `cli.py` | Argument parsing (`-V`/`--version`, `-c`/`--config`, `-e`/`--eval`, `--simple`, `--python`/`--studio`, `--mode`), headless `--eval` dispatch, and optional-dependency error checks. |
+| `local_engine.py` | `SimpleCalcEngine` state, expression parser/evaluator, 4 shift modes, `NAND`/`NOR`, `DEC` unscaled integer semantics, and `display_fraction`. |
+| `ui/app.py` | `CalculatorWindow` shell switching between `SimpleCalcWidget` and lazy-created `CalcMainWindow`, syncing shared `CalcConfig` and window geometry. |
+| `controller.py` | `CalcController` serializing Studio GUI requests, tracking `view_id` and `revision`, handling busy/out-of-sync state, and propagating `CalcConfig`. |
+| `kernel_client.py` | `KernelTransport` lifecycle for one owned IPython subprocess over `127.0.0.1` Jupyter channels with idle-aware request timeouts and cleanup. |
+| `kernel_runtime.py` | `CalcKernelRuntime` executing console code inside the kernel, owning `WorkspaceSession` and `EditJournal`, and serving JSON snapshots/pages. |
+| `protocol.py` | JSON-only DTO conversion, `PROTOCOL_VERSION = 1`, 16-hex `build_id()`, `PAGE_ROWS = 32`, `PAGE_COLS = 16`, `MAX_COPY_CELLS = 100_000`, and `CONTROL_MIME`. |
+| `core/session.py` | `WorkspaceSession` namespace, `whos`/`clc`/`clear`, `WorkspaceRowSnapshot`/`MatrixSnapshot`, and sparse array provenance sidecars. |
+| `core/config.py` | `CalcConfig` persistence (`~/.rpkbin/calc_settings.json` or `--config`), `KERNEL_CONFIG_FIELDS`, and `ALL_WORKSPACE_COLUMNS`. |
+| `core/public_fxp.py` | Public `fxp` and `fxpi` constructors (`RpkFixed` / `RpkFixedArray`) bound to the active session config provider. |
+| `core/editing.py` | `EditJournal` (100 entries / 8 MiB), atomic TSV `paste_rectangle`, `conversion_preview`, and `selection_statistics`. |
+| `core/representations.py` | Read-only `native_bits` descriptors and `APyFloat` bit-field metadata (including the 4,096-bit `int` display cap). |
+| `core/startup.py`, `core/auto_imports.py` | `StartupFile` revision-checked reads/writes and migration, plus validated absolute custom import loading. |
 
-APyTypes constructors create native values without calculator conversion-reference metadata. Such a value therefore shows `No conversion reference (error unknown)`, even when its bits exactly represent the input. Python `float` uses binary64; for example, `0.1` is already an approximation of decimal 0.1. A GUI Real-value edit or Real-pin reformat records a new comparison source. Raw-bit edits and Hex-pin reinterpretation do not. The Inspector's exact conversion status compares a tracked GUI operation's result with that operation's actual input; it says nothing about decimal intent or earlier arithmetic.
+---
 
-Native constructors start without GUI conversion-reference data; APyFixed scalars therefore show `No conversion reference (error unknown)` until a tracked GUI Real edit or Real-pin reformat. For native APyFixedArray GUI edits, the session stores sparse provenance in a sidecar keyed to the original owner; it does not replace the array or break aliases. Reads validate owner, shape, FXP spec, and current raw bits. A mismatch makes the diagnostic unknown. This is bounded diagnostic metadata, not an edit history for arbitrary Python: identical raw bits written back by Python cannot be distinguished from an unchanged value.
+## `SimpleCalcEngine` (`local_engine.py`) Architecture Boundary
 
-APyFixedArray constructors do not seed GUI provenance. GUI edits record changed-cell sources sparsely in the session sidecar, avoiding an array copy. The sidecar retains at most 32 owners and 100,000 cell records; LRU eviction drops diagnostic records only and never changes numeric values. Reset clears it; refresh removes records for owners no longer present in the namespace. Duplicate copies valid records, and Undo/Redo restores their source metadata. Settings `default_quant` / `default_overflow` (RND/SAT by default) apply to GUI real-value edits, native-to-FXP conversion, and Real-pinned FXP format changes; they do not override APyTypes constructor behavior or control ordinary Python/NumPy/APyTypes arithmetic. Native APyTypes constructors use their own quantization and overflow behavior (normally nearest ties away and WRAP). `protocol.py` build ids cover the FXP, session, and protocol sources; an incompatible GUI/kernel build rejects requests and requires a restart.
+`SimpleCalcEngine` provides the standalone fixed-point and programmer calculator backend for Simple mode:
 
-`RpkFixed` and `RpkFixedArray` retain GUI metadata and `copy()` behavior. Arithmetic operators are inherited from APyTypes: no calculator operand widening, implicit operand coercion, or result wrapping is applied. Result bits, formats and exceptions follow the installed APyTypes version; mixed Python operands can overflow during native conversion. Result types follow native dispatch, including NumPy dispatch where applicable; the calculator does not wrap them or attach GUI conversion provenance to new results. Explicit GUI edits continue to use their selected Pin/quantization/overflow policy.
+- **In-process execution and zero optional runtime dependencies**: `SimpleCalcEngine` runs synchronously in the Qt process using Python's `fractions.Fraction`, `decimal.Decimal`, `core/format_engine.py`, and `core/scalar_fxp.py`. It does not spawn an IPython kernel and does not import `apytypes` or `numpy`.
+- **Owned local state**: Each `SimpleCalcEngine(config: CalcConfig)` instance owns:
+  - `primary_spec: FxpSpec | None` (with `.spec` falling back to `INT32 = FxpSpec(wl=32, fwl=0, signed=True)` when `None`) and `compare_specs: list[FxpSpec]`.
+  - Current scalar state: `exact: Fraction`, `raw_uint: int`, `status_kind: str` (`"exact"`, `"quantized"`, `"saturated"`, or `"wrapped"`).
+  - Shift state: `shift_mode: str` (one of `SHIFT_MODES`: `"arithmetic"`, `"logical"`, `"rotate"`, `"rotate_carry"`) and `carry_bit: int` (`0` or `1`).
+  - Local variable table `variables: dict[str, VariableSnapshot | None]` pre-seeded with keys `"M"`, `"A"`, `"B"`, `"C"`, `"D"`, `"E"`, `"F"` (plus custom identifier slots added in `SimpleCalcWidget`), and `history: list[tuple[str, VariableSnapshot]]` capped at the last 100 entries.
+- **Mode isolation and shared configuration**:
+  - `SimpleCalcEngine.variables` and `SimpleCalcEngine.history` never enter `WorkspaceSession.user_ns`, `EditJournal`, or `CommandWindowWidget` history.
+  - Switching between Simple and Python modes in `CalculatorWindow` disables/hides the inactive page on `ActivePageStack`. Python Studio (`CalcMainWindow` and `CalcController`) is instantiated lazily on the first switch to `"python"` and stays alive when returning to `"simple"`.
+  - Both modes share `CalcConfig`. Local changes in Simple mode (primary FXP format, format history, quantization/overflow drawer, bit order) emit `local_state_changed`, which updates `CalculatorWindow.config` and calls `CalcController.update_config(cfg)` if Studio exists, or saves directly to disk otherwise.
+- **Bounded exact evaluation and invariants**:
+  - String inputs are capped at `_MAX_INPUT = 512` characters; parenthesis nesting is capped at `_MAX_DEPTH = 64`, while unary operators (`+`, `-`, `~`) parse iteratively to prevent `RecursionError`.
+  - Word length `wl` is bounded to `[1, 256]` (the UI FXP drawer spinboxes use `1..128` for `WL` and `-128..128` for `FWL`), `abs(fwl) <= 256` in `parse_format()`, and shift counts are integers in `[0, 256]` evaluated with `unscaled=True` so shift counts are not scaled by `2^-fwl`.
+  - `evaluate()` is transactional: it snapshots `carry_bit` before parsing and restores `carry_bit` on any exception without mutating `exact`, `raw_uint`, or `status_kind`.
+  - `set_primary()` re-quantizes from `self.exact` rather than `self.real`, preserving exact `REAL` precision across primary format changes.
+  - `parse_operand()` rejects `+` or `-` immediately after `0x`, `0o`, or `0b` prefixes, enforces `0 <= value < 2^wl` for non-`DEC` radix literals, and scales `DEC` integer literals by `2^-fwl`.
+  - `display_fraction()` prints exact terminating decimals when `denominator = 2^a * 5^b` within `_MAX_EXACT_BITS = 3322` and `_MAX_EXACT_POWER = 1000` (avoiding Python's 4,300-digit `int` string limit), and falls back to 16-significant-digit `Decimal` notation otherwise.
+- **Scope boundary**: `SimpleCalcEngine` handles scalar fixed-point and integer bit operations only. Arrays, NumPy/SciPy, `APyFloat`, `RpkFixed`/`RpkFixedArray`, `EditJournal`, and `startup.py` belong exclusively to `WorkspaceSession` (Python Studio and `--eval`).
 
-## Workspace array saturation markers
+---
 
-The kernel produces `WorkspaceRowSnapshot.is_saturated: bool | null` for Qt to consume. `true` means at least one cell's current bits still match a tracked saturated GUI edit; `false` means every cell has a matching current source and none saturated; `null` means provenance is incomplete, bits no longer match their source, or the array has more than 4,096 cells. Arrays over the limit keep a conservative unknown whole-array summary and are not scanned; the selected cell can still report `SATURATED`. For smaller arrays, sparse GUI `cell_sources` are checked. Per-cell Inspector checks remain available regardless of array size.
+## Python Studio Responsibilities and Invariants
 
-Qt prefixes only the Workspace Value cell of an FXP array with `[SAT]` or `[SAT?]`; `true` uses red `[SAT]`, while `null` uses neutral `[SAT?]` with a tooltip explaining incomplete provenance. `false` adds no marker. `[SAT?]` means unknown, not saturated or safe. The marker is display text and does not change `value_str` or copied numeric data. A 4,097-cell `APyFixedArray` exceeds the scan limit, so Workspace shows `[SAT?]`. If the user edits one cell to `99` in the Inspector Real field on an 8-bit word with four fractional bits, that cell saturates to 7.9375 and Inspector reports `SATURATED`; the whole-array summary remains conservatively unknown above the 4,096-cell limit.
+- `kernel_client.py` starts and manages one IPython subprocess owned by the application over Jupyter channels bound to `127.0.0.1`, prepending `Path(__file__).resolve().parents[3]` to `PYTHONPATH` when present. Replies are processed asynchronously without blocking the Qt event loop. `_idle_clock()` excludes time spent busy running user cells from the 15-second internal request timeout, `_timed_out_ids` discards late replies from timed-out internal requests without clearing an active user run, and `_cleanup_resources()` tears down channels, kernel, log handles, and the temporary runtime directory on both shutdown and startup/health failures (25-second startup timeout). The kernel never restarts automatically; closing the window stops it.
+- `kernel_runtime.py` executes user code inside the kernel, owns `WorkspaceSession` and `EditJournal`, and handles inspection, paging, copy, preview, statistics, and mutation requests. The GUI receives formatted snapshots rather than live Python objects or full arrays.
+- `controller.py` serializes GUI requests (up to 32 queued operations), tracks `view_id` and workspace `revision`, and coordinates busy state (`interaction_enabled`). `restart_kernel()` resets `self.revision = -1` so the restarted kernel's `revision = 0` replies are accepted immediately. Failed or empty matrix page replies at matching `revision` emit `matrix_page_failed` so pending tiles do not stay stuck. `update_config()` forwards `KERNEL_CONFIG_FIELDS` (`format_preset`, `custom_signed_tpl`, `custom_unsigned_tpl`, `custom_int_tpl`, `default_quant`, `default_overflow`, `auto_import_groups`, `custom_import_groups`, `startup_file`, `visible_columns`) via `op: "config"`, skipping redundant queuing before `transport.ready` or while `_out_of_sync`. `inspector_pin_mode` is excluded from `KERNEL_CONFIG_FIELDS` because `CalcController` passes `pin_mode` explicitly per `preview`/`reformat` request.
+- `CalcMainWindow` uses Qt Fusion style so checkbox indicators remain visible with the application QSS on Windows 11. Workspace scalar Value/Format activation routes to the Inspector's Value or shared conversion controls, while array Value opens the matrix editor. **Hints** (or **Help → Command hints**) opens a non-modal three-tab reference (**FXP**, **Python / NumPy**, **Workspace**) with **FXP** selected by default.
+- `SettingsDialog` collects preferences and shows a read-only startup preview. Appearance and `keep_english_terms` update Qt only; numeric defaults update the live session. Applying changed built-in function packs or custom imports reloads configured imports in the existing kernel without executing `startup.py`, clearing the namespace, or restarting the kernel. Startup code runs at kernel start/restart or on an explicit **Reload and run** request.
+- The Settings dialog places its Cancel/Apply footer below a stretchable tab area so the footer stays aligned as pages scroll or grow.
+- Collapsing Inspector hides its body while keeping the title/arrow header visible; opening an array expands Inspector. Closing the window saves geometry, splitter sizes, and Inspector collapsed state.
+- `protocol.py` and `MatrixTableModel` define JSON DTOs and bounded matrix pages (`PAGE_ROWS = 32`, `PAGE_COLS = 16`, up to `MAX_CACHED_PAGES = 8` cached pages in `MatrixTableModel`). Shape and slice metadata queries do not read the whole array. Workspace Min/Max scans values only while that column is visible; FXP array saturation summaries check at most 4,096 cells (`MAX_SATURATION_CHECK_CELLS`). Copying an entire matrix is capped at 100,000 cells (`MAX_COPY_CELLS`).
+- The native **Convert to FXP…** dialog produces a kernel conversion request with `expected_revision`; FXP inline format controls and **Convert to float…** share the same conversion path.
 
-DTO example: `{"is_saturated":null}`. The kernel computes this field and sends it to Qt over JSON; the existing build-id check rejects incompatible builds and requires a restart. A single-cell array edit updates only that cell's saturation metadata and no longer runs a full-array `np.any` reduction over the saturation mask.
+---
 
-## Native values and the FXP boundary
+## FXP Conversion Provenance and Status
 
-Python `int` retains arbitrary precision and an assignment such as `a = 2` in the console rebinds `a` to an int. Inspector represents ordinary numbers with `PlainValueSnapshot`; radix and bit views follow the original type without implicit FXP word length or pin semantics; Workspace shows the native type/dtype and does not assume native values are FXP or have an LSB. Inspector conversion controls can convert native real scalars/arrays to FXP and FXP values to Python `float` or NumPy `float64`; array conversions preserve shape. APyFloat and unsupported types use the console for conversion or format changes. Native arrays' matrix Format field remains their dtype. FXP format changes apply to the whole variable/array and use the Inspector's Real/Hex pin; the existing matrix-editor Format/Preview controls use the same conversion flow. Native↔FXP and FXP→float are numeric conversions and ignore that pin.
+APyTypes constructors create native values without calculator conversion-reference metadata, so they display `No conversion reference (error unknown)` even when their bits represent the input exactly. Python `float` uses binary64 (`0.1` is already a binary approximation of decimal 0.1). A GUI Real edit, `fxp(...)`, or Real-pinned reformat records a comparison source; raw-bit edits and Hex-pin reinterpretation do not.
 
-The kernel produces `native_bits` descriptors in `representations.py`, and Qt renders them by type. For a fixed-width NumPy integer scalar: Inspector may include a read-only `native_bits` summary (dtype, width, signedness, Hex, and binary), without FXP bit editing. Python int HEX/BIN uses signed magnitude notation with a minus sign and no assumed storage width. Python float and NumPy float16/32/64 expose read-only floating-point fields and special-value classifications from their storage bits. Layouts for longdouble, complex and APyFloatArray are not guessed.
+For native `APyFixedArray` GUI edits, `WorkspaceSession` stores sparse provenance in a bounded sidecar (`_native_sources`) keyed to the original owner object without replacing the array or breaking aliases. Reads check owner identity, shape, FXP spec, and current raw bits; any mismatch yields unknown status. The sidecar retains at most 32 owners and 100,000 cell records using LRU eviction (dropping diagnostics only, never numeric values). Reset clears the sidecar, refresh drops vanished owners, `duplicate` copies valid records, and Undo/Redo restores source metadata.
 
-The kernel preloads `apy`, `APyFixed`, `APyFixedArray`, `APyFloat`, and `APyFloatArray` as the original APyTypes module and class objects, not wrappers. Use these constructors directly: `APyFixed.from_float(0.25, bits=16, frac_bits=12)` converts a numeric value; `APyFixed(0x400, bits=16, frac_bits=12)` interprets its first argument as raw bits; `APyFixedArray.from_float([0.25, -0.125], bits=16, frac_bits=12)` constructs an array; and `APyFloat.from_float(0.25, exp_bits=8, man_bits=23)` constructs an APyFloat. For `APyFixed(7, 4, 2)`, raw bits are 7, `int_bits=4`, `frac_bits=2`, and the value is 1.75; to encode numeric value 7, call `APyFixed.from_float(7, int_bits=4, frac_bits=2)`. APyTypes constructors use their native defaults (normally nearest ties away and WRAP) and do not apply GUI RND/SAT defaults or create conversion-reference metadata. A scalar APyFloat supports numeric preview, floating-point bit inspection and individual bit toggles; its format and bias remain fixed and numeric/format fields are read-only.
+Settings `default_quant` and `default_overflow` (defaults `"RND"` and `"SAT"`) apply to GUI real-value edits, native-to-FXP conversions, Real-pinned FXP format changes, and `fxp(...)` defaults. They do not override native APyTypes constructors (`APyFixed.from_float(...)` defaults to nearest ties away and `WRAP`) or console arithmetic.
 
-GUI format input is resolved by `FormatEngine.parse_input` against standard notation and the currently enabled custom templates. Only simple placeholders that uniquely recover signedness, WL and FWL are reversible; repeated fields must agree, adjacent numeric captures and advanced format specifications are not reversed. Conflicts, including conflicts with standard notation, are rejected. `CalcController` normalizes the resolved `FxpSpec` to canonical Q text before producing the existing JSON request; the kernel consumes the same standard format contract. No config field or transport schema is added, and native APyTypes constructors stay unchanged. The Q convention here counts the sign in `m` for `Qm.n`, so total width is `m+n`; `UQm.n` is unsigned. Other tools may use a different convention, so constructor bit counts remain the clearest declaration of hardware width.
+`RpkFixed` and `RpkFixedArray` preserve GUI metadata and `copy()` behavior, while arithmetic operators inherit directly from APyTypes without calculator operand widening or result wrapping. Results follow native APyTypes/NumPy dispatch and carry no GUI conversion provenance.
 
-For a repeated shorthand, define a function in **Settings → Auto-import**, for example `def fxp(value, bits=16, frac_bits=12): return APyFixed.from_float(value, bits=bits, frac_bits=frac_bits)`. This is user-defined startup code, not a preloaded calculator constructor. Inspector conversion controls perform GUI conversions; Workspace only routes the user to that section and does not edit values inline.
+---
 
-Matrix labels show **Array format:** for FXP and **Dtype:** for native arrays; Inspector labels native values **Type:**, and the FXP format row identifies its scope as **Whole variable**.
+## Workspace Array Saturation Markers
 
-The kernel DTO reports whole-variable conversion capability independently of the selected array cell. Inspector Value edits affect the selected element; Conversion operations affect the whole variable or array. Conversion requests carry `expected_revision` in the request envelope, which the kernel checks before mutation. The preview DTO returns pin, quantization, overflow, and revision; the UI rejects Apply if the policy changed after preview. Writable NumPy array edits preserve dtype, and integer edits reject fractional or out-of-range values. Native-to-FXP conversion and Real-pinned FXP format changes use GUI quantization/overflow settings; these settings do not alter APyTypes constructors or arithmetic entered in the Python console. The FXP Inspector Real-value field uses a bounded AST evaluator: it accepts numeric literals, `pi`/`e`, arithmetic, and integer bitwise operators, and rejects function calls, attributes, containers, and general Python statements. Input is limited to 4,096 characters and 512 AST nodes; integer results are limited to 16,384 bits, exponent magnitude and shift counts to 4,096, and results must be finite real values. The ordinary Python REPL is not restricted by this field parser; the restriction is not a kernel sandbox. Native bitwise operations use the Python/NumPy REPL; GUI FXP raw-bit controls do not apply to native values.
+The kernel computes `WorkspaceRowSnapshot.is_saturated: bool | None` for Qt:
 
-Inspector HEX/BIN fields for ordinary numbers are read-only. Above 4,096 magnitude bits, Python int uses an explicitly marked bounded preview with copying of truncated text disabled; the stored value is unchanged. Workspace name/type filters change only the visible list; if the selected Inspector target is filtered out, the target and table scroll position remain intact.
+- `True`: at least one cell's current bits still match a tracked saturated GUI edit.
+- `False`: every cell has a matching verified source and none saturated.
+- `None`: provenance is incomplete, bits no longer match their recorded source, or the array has more than 4,096 cells (`MAX_SATURATION_CHECK_CELLS`).
 
-## Numeric representation DTO and APyFloat edits
+Qt prefixes the Workspace Value cell of an FXP array with red `[SAT]` for `True`, neutral `[SAT?]` (with tooltip explaining incomplete provenance) for `None`, and no marker for `False`. The marker is display text only and never modifies `value_str` or copied values. A single-cell edit updates only that cell's saturation metadata without scanning the array, and per-cell Inspector checks still work regardless of array size.
 
-`PlainValueSnapshot.native_bits` is an internal JSON DTO produced by the kernel session
-and consumed by the Qt Inspector. A scalar APyFloat descriptor looks like this
-(other snapshot fields omitted):
+---
+
+## Native Values and the FXP Boundary
+
+Python `int` keeps arbitrary precision, and console assignments such as `a = 2` follow Python rebinding semantics. Inspector represents native values with `PlainValueSnapshot` without inventing an FXP word length or pin semantics. Inspector can convert native real scalars/arrays to FXP and FXP values to Python `float` or NumPy `float64` (preserving array shape); `APyFloat` and unsupported types convert in the console.
+
+The kernel produces read-only `native_bits` descriptors in `core/representations.py`:
+- NumPy fixed-width integer scalars report dtype, width, signedness, hex, and binary without FXP bit editing.
+- Python `int` Hex/Binary uses signed-magnitude notation; above 4,096 magnitude bits (`MAX_INTEGER_DISPLAY_BITS`), Inspector shows an explicitly marked bounded preview with copying of truncated text disabled.
+- Python `float` and NumPy `float16`/`float32`/`float64` expose read-only sign, exponent, fraction, and special-value classifications from storage bits (`longdouble`, `complex`, and `APyFloatArray` layouts are not guessed).
+
+GUI format input uses `FormatEngine.parse_input()` against `Q`, `MATLAB`, and active `custom` templates. Only simple placeholders that uniquely recover signedness, `wl`, and `fwl` are reversible; conflicts are rejected, and `CalcController` normalizes resolved specs to canonical `Qm.n` / `UQm.n` before sending requests.
+
+The FXP Inspector Real-value field uses a bounded AST evaluator accepting numeric literals, `pi`/`e`, arithmetic, and integer bitwise operators while rejecting calls, attributes, containers, and general statements. Limits are 4,096 characters, 512 AST nodes, 16,384-bit integer results, exponent/shift magnitudes up to 4,096, and finite real results. The Python REPL is not restricted by this field parser.
+
+---
+
+## Numeric Representation DTO and `APyFloat` Edits
+
+`PlainValueSnapshot.native_bits` is a JSON DTO produced by the kernel session for Qt. A scalar `APyFloat` descriptor looks like:
 
 ```json
 {"kind":"float","dtype":"APyFloat","width":8,"hex":"0x1E","binary":"00011110","exp_bits":5,"man_bits":2,"bias":7,"classification":"Normal","editable":true}
 ```
 
-The descriptor's `editable` controls bit buttons separately from the numeric input's
-`PlainValueSnapshot.editable`. Only a scalar APyFloat permits bit editing; native
-floats and selected native array elements keep read-only bits. Qt receives no APyFloat
-objects and never reconstructs them via Python float. The kernel uses `to_bits` /
-`from_bits` to retain format, bias and NaN payload. Journal fingerprints use raw bits
-and full format, including signed zero, rather than floating-point equality.
-REPL execution still clears GUI edit history under the existing rules.
+`native_bits["editable"]` controls bit-toggle buttons separately from `PlainValueSnapshot.editable`. Only scalar `APyFloat` supports bit toggling (`to_bits` / `from_bits` preserve format, bias, and NaN payloads without casting through Python `float`). Native floats and selected array elements remain read-only. `EditJournal` fingerprints use raw bits and full format (distinguishing `+0.0` and `-0.0`).
 
-The build id includes `representations.py`; mismatched GUI/kernel sources are rejected
-by envelope validation and require a restart. This is internal transport metadata;
-users do not create configuration files or sidecars for it.
+---
 
-## GUI editing, matrix operations, and command history
+## GUI Editing, Matrix Operations, and Command History
 
-`EditJournal` is owned by `CalcKernelRuntime` and tracks only GUI numeric/bit edits to scalars, individual cells, and rectangular pastes. It retains at most 100 entries or 8 MiB. It does not copy large arrays; instead it records each edit target, original owner, location, value fingerprint, and structural signature. Before Undo/Redo, it checks the variable binding, slice/cell, shape, dtype, strides, FXP format, and current value. A REPL cell, array structural operation, whole-array reformat, or slice change clears the journal; a failed guard also clears it and refuses replay. This is not general undo for arbitrary Python. Console Ctrl+Z remains text editing.
+- **`EditJournal`** (`core/editing.py`): Owned by `CalcKernelRuntime`; tracks GUI numeric/bit edits to scalars, individual cells, and rectangular pastes up to 100 entries or 8 MiB without copying large arrays. Before Undo/Redo, it verifies variable binding, cell/slice coordinates, shape, dtype, strides, FXP format, and current value fingerprint. Any REPL execution, array structural operation, whole-array reformat, or slice change clears the journal.
+- **TSV paste**: `paste_rectangle()` parses and validates the entire rectangle, bounds, dtype/range, and editability up to 100,000 cells (`MAX_EDIT_CELLS`) and 8 MiB before applying writes, rolling back on unexpected errors.
+- **Matrix snapshots and statistics**: `MatrixSnapshot` carries `full_shape` and `slice_indices`; trailing axes beyond 2D default to `0`. `selection_statistics()` summarizes finite values over up to 100,000 cells via `float64`/`complex128` conversion (`count`, `finite_count`, `sum`, `mean`, `min_abs`, `max_abs`, plus `min`/`max` for real data).
+- **Command history**: `CommandWindowWidget` buffers submitted console text in Qt (separate from IPython history), retaining up to 1,000 commands or 1 MiB (single commands over 1 MiB are omitted). Exporting writes UTF-8 `.py` files noting that IPython magics may require IPython.
 
-Paste TSV parses and validates the complete rectangle, bounds, dtype/range, and editability before writing; the limits are 100,000 cells and 8 MiB. Rejected input is not partially applied, and an unexpected write error rolls back changed cells. A rejected single-cell edit keeps the entered text and shows the reason so the user can correct and retry.
+---
 
-Matrix snapshots carry `full_shape` and `slice_indices`. The GUI shows the first two axes; trailing indices default to 0 and can be changed in the slice field. Row/column jumps are zero-based. Selected-rectangle statistics are limited to 100,000 cells and summarize finite values only. Values are converted to float64/complex128 first, so FXP and large-integer results are approximate. Results include count, finite_count, sum, mean, min_abs, and max_abs; real-valued data also includes min/max. Whole-array conversion and FXP format preview/apply are handled by Inspector conversion controls; the matrix editor remains for per-cell inspection and edits.
+## Display and DTO Scope
 
-History is a Qt-side `CommandWindowWidget` buffer of submitted source, separate from IPython's kernel history. It is cleared whenever a new kernel client is created; it retains at most 1,000 commands/1 MiB and omits a single command larger than 1 MiB. Searching and previewing do not execute commands; Use as input only restores text to the editor. Export explicitly writes a UTF-8 `.py` file, whose header notes that IPython syntax may require IPython to run.
+`Workspace` `numeric_display` (`"auto"`, `"scientific"`, `"fixed"`) and `numeric_precision` (`1` to `17` decimal places) format only finite real display strings in Workspace Value and Matrix `DisplayRole`; Inspector, Matrix `EditRole`, copied text, and raw bits stay exact. Fixed strings estimated over 256 characters fall back to scientific notation. **View → Reset layout** resets window size, splitters, and Inspector collapse state only.
 
-## Display and DTO scope
+Currently one command window owns one IPython kernel; adding multiple command windows later would require explicit decisions on kernel/namespace sharing, stream routing, and interrupt ownership.
 
-`native_bits` is read-only NumPy integer inspection data in the Inspector snapshot; it does not create an FXP format. Undo state, matrix `full_shape`/`slice_indices`, format Preview, and selection Statistics are computed in the kernel and sent to Qt as JSON DTOs. For example, Undo state is `{"can_undo":true,"can_redo":false,"undo_count":1,"redo_count":0}`. The FXP display setting offers Q, MATLAB, and Custom display template. Changing the representation does not mutate values. GUI edits use uniquely reversible template text or fall back to unambiguous standard notation; the kernel request always uses canonical Q. The separate Workspace `numeric_display`/`numeric_precision` settings format only finite real number text in Workspace Value and Matrix `DisplayRole`, using Full/automatic, Scientific, or Fixed with 1–17 decimal places; Inspector, Matrix `EditRole`, copied data, and raw bits remain unchanged. Fixed output estimated to exceed 256 characters falls back to scientific notation. View's Reset layout restores only window size, splitters, and expanded Inspector; it does not restart the kernel or change appearance preferences. DTOs do not contain numeric objects or a namespace that Qt can edit independently. The `protocol.py` build id includes `core/editing.py`; an incompatible GUI/kernel build is rejected.
+---
 
-## Deferred work
+## Kernel Protocol Envelope
 
-The app currently has one command window and one application-owned kernel. Before adding multiple command windows, decide whether they share or own separate kernels/namespaces, which window owns each output stream, and how Stop/interrupt behaves. This feature is not implemented.
-
-For arrays with more than two dimensions, the table shows the first two dimensions and defaults trailing indices to 0 (for example, `A[:, :, 0]`); the slice field can set other indices, and the page identifies the active slice. Inspector and matrix edits still operate on the original kernel values; display snapshots are not an independently editable workspace.
-
-## Example kernel envelope
-
-Control operations request an `application/json` result through Jupyter `user_expressions`. The protocol carries JSON-only data and does not use pickle. `clc` separately sends a Jupyter `display_data` message with `application/vnd.rpk.calc.control+json`, containing `protocol`, `build`, and `action: "clear_console"`; this tells the frontend to clear its display and carries no numeric data. A simplified request and response look like this:
+Control requests use Jupyter `user_expressions` returning `application/json` (never pickle); `clc` publishes `CONTROL_MIME` (`"application/vnd.rpk.calc.control+json"`) over IOPub `display_data` with `action: "clear_console"`.
 
 ```json
 {
@@ -125,27 +179,26 @@ Control operations request an `application/json` result through Jupyter `user_ex
 }
 ```
 
-Fields are illustrative; the actual DTOs are defined by `protocol.py` and the `core` snapshot dataclasses. Every request carries a protocol version and a build id computed from protocol and runtime sources. A mismatch is rejected and requires a restart so the GUI and kernel cannot silently use different data structures or semantics. `view_id` lets the UI discard stale selection results; `revision` lets it reject old matrix pages.
+`validate_envelope()` checks `type(payload.get("protocol")) is int` and `protocol == 1`, plus matching `build` computed from `protocol.py`, `kernel_runtime.py`, and the 11 `core/*.py` files. Mismatches are rejected and require a kernel restart.
 
-Settings are saved in `~/.rpkbin/calc_settings.json`. The connection file, IPython history, and kernel log live in a temporary runtime directory that is removed at shutdown; interactive history is not retained between sessions. `rpk-calc --eval` is a separate path that creates a headless `WorkspaceSession` without starting or connecting to an IPython kernel.
+---
 
+## Settings Transfer and Startup File Ownership
 
-## Settings, language, and preference transfer
-
-`SettingsDialog` owns the four preference pages: Appearance, FXP format, Auto-import, and Preferences. `CalcConfig` is the in-memory/settings-file model; `core/settings_transfer.py` defines the portable subset and validates imports before the dialog merges them into a draft. Settings produces and consumes JSON shaped like:
+`SettingsDialog` exposes four pages: Appearance, FXP format, Auto-import, and Preferences. `core/settings_transfer.py` exports and validates portable JSON envelopes:
 
 ```json
 {"kind":"rpk-calc-preferences","version":1,"preferences":{"language":"zh_TW","theme":"light"}}
 ```
 
-The exact kind and version are required. Unknown keys, unsupported versions, and invalid types or values are rejected. Runtime `startup_file`, window geometry, splitter/collapse state, workspace variables, and command history are excluded; portable `startup_script` and `custom_imports` remain source text in the envelope. Import previews the changes; startup source is excluded unless the user opts in to **Replace startup.py after Apply (does not run code)**, and custom imports are excluded unless the user separately opts in to **Include custom imports (runs after Apply)**. Apply writes opted-in startup source without running it and loads opted-in custom imports in the current kernel. A revision mismatch rejects the startup write; before replacement the app saves `startup.before-import-HASH.py`. Restore defaults preserves the startup file. Cancel discards the Settings draft but cannot undo changes already saved by an external editor.
+Runtime `startup_file`, window geometry, splitter/collapse state, workspace variables, and command history are excluded from exports. Imports require explicit opt-in checkboxes for **Replace startup.py after Apply (does not run code)** (with SHA-256 revision check and `startup.before-import-HASH.py` backup) and **Include custom imports (runs after Apply)**.
 
-Language switching and `keep_english_terms` are Qt presentation settings. The latter defaults to `false`, is excluded from kernel configuration, and keeps selected application labels such as Command Window, Workspace, Name, and Format in English when the UI language is Traditional Chinese. Other explanations still use the selected UI language. Submitted Python, variable names, values, and user startup code remain unchanged. The active widget tree is retranslated in place, without rebuilding the kernel or clearing the namespace, history, pending console input, or selection. Translation coverage is bounded to application-owned interface strings.
+`StartupFile` (`core/startup.py`) owns `startup.py` beside the active settings JSON file (for both GUI and `rpk-calc --eval`, using `--config` if supplied or `~/.rpkbin/calc_settings.json` otherwise). Legacy `startup_script` JSON values migrate once into `startup.py` (preserving an existing differing file by saving `startup.legacy-HASH.py`). Load order is: built-in packs, custom imports (validated by `parse_imports()` to allow only explicit absolute imports and comments without `_`-prefixed bindings), then `startup.py`. Each custom import statement is attempted independently so one failure does not drop valid imports.
 
-## Startup file ownership and execution
+---
 
-The GUI's `StartupFile` creates `startup.py` beside the active settings file; the CLI headless `--eval` path uses the default settings directory. After initialization, `startup.py` is the GUI's source of truth. `CalcConfig.startup_file` carries its resolved path at runtime and is never persisted. The legacy JSON `startup_script` is read during migration and is retained in preference exports as portable source text. A first-run file contains comments only, with examples for SciPy imports, explicitly overriding FFT helpers, `db20`, and `fxp`.
+## See Also
 
-On migration, if `startup.py` is absent, legacy JSON source initializes it. If a different `startup.py` already exists, the app preserves it, writes the legacy source to `startup.legacy-HASH.py`, and reports a notice. The Settings Auto-import page reads and previews the file but does not edit it inline. Open text editor launches Notepad on Windows and TextEdit on macOS; Linux asks for a text-editor executable. Refresh preview rereads external saves, and Cancel cannot undo those saves. The kernel reads the file, compiles it with the actual filename, then executes it in the live session namespace; errors include the path and line number. Startup-defined functions can use variables entered later in the console.
-
-Apply saves preferences and immediately loads changed function packs/custom imports in the current kernel; it preserves user variables and cached startup bindings and never runs `startup.py`. The startup file runs when a kernel starts/restarts or when the user selects **Reload and run**. Custom imports accept only explicit absolute Python import statements and comments. Wildcard imports, relative imports, other code, and names or aliases beginning with `_` are rejected; packages must already be installed, and Calc does not install them. Imports load in the order function packs → custom imports → `startup.py`. Each statement is attempted independently; failures appear in Auto-import status and the application error, while successful statements remain loaded. A failed statement publishes no partial bindings, though module side effects cannot be rolled back. Reload is ordinary Python execution: it does not roll back side effects, guarantee removal of old script-created names, or reload imported modules. Only calculator-owned prior bindings are refreshed when they still retain calculator ownership; user-rebound names are preserved, while assignments made explicitly by the script can overwrite names as normal Python code does. `clear` restores cached helpers without rerunning the script. Imported startup source replaces the file only after explicit consent and Apply, using a revision check to reject a concurrent editor save and a `startup.before-import-HASH.py` backup.
+- [rpk-calc Quickstart and Reference](README.md)
+- [Documentation Index](../README.md)
+- [rpk-calc 架構與資料邊界 (繁體中文)](../../zh/calc/architecture.md)

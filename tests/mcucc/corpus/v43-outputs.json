@@ -1,0 +1,1800 @@
+{
+  "sizes": {
+    "t0-8": {
+      "add2": 3,
+      "inc": 3,
+      "rsub": 7,
+      "three": 3,
+      "fold": 3,
+      "mix": 11,
+      "maxu": 7,
+      "clamp": 11,
+      "abs_diff": 16,
+      "count_down": 29,
+      "shifty": 12,
+      "bits": 30,
+      "many": 41,
+      "mem_inc": 7,
+      "mem_sum": null,
+      "load": null,
+      "getc": 3,
+      "add16": null,
+      "lo_plus": null,
+      "hi_of": null,
+      "widen": null,
+      "cmp16": null
+    },
+    "t1-8": {
+      "add2": 2,
+      "inc": 3,
+      "rsub": 3,
+      "three": 2,
+      "fold": 3,
+      "mix": 6,
+      "maxu": 5,
+      "clamp": 5,
+      "abs_diff": 8,
+      "count_down": 13,
+      "shifty": 6,
+      "bits": 15,
+      "many": 11,
+      "mem_inc": 7,
+      "mem_sum": null,
+      "load": null,
+      "getc": 3,
+      "add16": null,
+      "lo_plus": null,
+      "hi_of": null,
+      "widen": null,
+      "cmp16": null
+    },
+    "t2-8": {
+      "add2": 2,
+      "inc": 3,
+      "rsub": 4,
+      "three": 2,
+      "fold": 3,
+      "mix": 7,
+      "maxu": 6,
+      "clamp": 6,
+      "abs_diff": 11,
+      "count_down": 13,
+      "shifty": 10,
+      "bits": 18,
+      "many": 18,
+      "mem_inc": 7,
+      "mem_sum": 20,
+      "load": 2,
+      "getc": 3,
+      "add16": 2,
+      "lo_plus": 2,
+      "hi_of": 2,
+      "widen": 4,
+      "cmp16": 9
+    },
+    "t2-16": {
+      "add2": 2,
+      "inc": 3,
+      "rsub": 4,
+      "three": 2,
+      "fold": 3,
+      "mix": 7,
+      "maxu": 6,
+      "clamp": 6,
+      "abs_diff": 11,
+      "count_down": 13,
+      "shifty": 10,
+      "bits": 18,
+      "many": 18,
+      "mem_inc": 9,
+      "mem_sum": 31,
+      "load": 2,
+      "getc": 4,
+      "add16": 2,
+      "lo_plus": 2,
+      "hi_of": 2,
+      "widen": 4,
+      "cmp16": 9
+    }
+  },
+  "outputs": {
+    "t0-8": {
+      "add2": {
+        "asm": "add2:\n    add w, [0x10]\n    ret\n",
+        "report": {
+          "functions": {
+            "add2": {
+              "bytes": 3,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add2: 3 bytes; clobbers: w; slots: -\nadd2:\n    add w, [0x10]\n    ret\n"
+      },
+      "inc": {
+        "asm": "inc:\n    add w, #1\n    ret\n",
+        "report": {
+          "functions": {
+            "inc": {
+              "bytes": 3,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn inc: 3 bytes; clobbers: w; slots: -\ninc:\n    add w, #1\n    ret\n"
+      },
+      "rsub": {
+        "asm": "rsub:\n    st [0x20], w\n    ld w, [0x10]\n    sub w, [0x20]\n    ret\n",
+        "report": {
+          "functions": {
+            "rsub": {
+              "bytes": 7,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn rsub: 7 bytes; clobbers: w; slots: sram:0x20+1\nrsub:\n    st [0x20], w\n    ld w, [0x10]\n    sub w, [0x20]\n    ret\n"
+      },
+      "three": {
+        "asm": "three:\n    add w, [0x11]\n    ret\n",
+        "report": {
+          "functions": {
+            "three": {
+              "bytes": 3,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn three: 3 bytes; clobbers: w; slots: -\nthree:\n    add w, [0x11]\n    ret\n"
+      },
+      "fold": {
+        "asm": "fold:\n    add w, #7\n    ret\n",
+        "report": {
+          "functions": {
+            "fold": {
+              "bytes": 3,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn fold: 3 bytes; clobbers: w; slots: -\nfold:\n    add w, #7\n    ret\n"
+      },
+      "mix": {
+        "asm": "mix:\n    and w, #0xf\n    st [0x20], w\n    ldi w, #0x30\n    xor w, [0x10]\n    or w, [0x20]\n    ret\n",
+        "report": {
+          "functions": {
+            "mix": {
+              "bytes": 11,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mix: 11 bytes; clobbers: w; slots: sram:0x20+1\nmix:\n    and w, #0xf\n    st [0x20], w\n    ldi w, #0x30\n    xor w, [0x10]\n    or w, [0x20]\n    ret\n"
+      },
+      "maxu": {
+        "asm": "maxu:\n    cmp w, [0x10]\n    jnc .Lmaxu_1\n    ld w, [0x10]\n.Lmaxu_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "maxu": {
+              "bytes": 7,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn maxu: 7 bytes; clobbers: w; slots: -\nmaxu:\n    cmp w, [0x10]\n    jnc .Lmaxu_1\n    ld w, [0x10]\n.Lmaxu_1:\n    ret\n"
+      },
+      "clamp": {
+        "asm": "clamp:\n    st [0x20], w\n    ld w, [0x10]\n    cmp w, [0x20]\n    jc .Lclamp_1\n    ld w, [0x20]\n.Lclamp_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "clamp": {
+              "bytes": 11,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn clamp: 11 bytes; clobbers: w; slots: sram:0x20+1\nclamp:\n    st [0x20], w\n    ld w, [0x10]\n    cmp w, [0x20]\n    jc .Lclamp_1\n    ld w, [0x20]\n.Lclamp_1:\n    ret\n"
+      },
+      "abs_diff": {
+        "asm": "abs_diff:\n    st [0x20], w\n    cmp w, [0x10]\n    jnc .Labs_diff_1\n    ld w, [0x10]\n    sub w, [0x20]\n    ret\n.Labs_diff_1:\n    ld w, [0x20]\n    sub w, [0x10]\n.Labs_diff_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "abs_diff": {
+              "bytes": 16,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn abs_diff: 16 bytes; clobbers: w; slots: sram:0x20+1\nabs_diff:\n    st [0x20], w\n    cmp w, [0x10]\n    jnc .Labs_diff_1\n    ld w, [0x10]\n    sub w, [0x20]\n    ret\n.Labs_diff_1:\n    ld w, [0x20]\n    sub w, [0x10]\n.Labs_diff_2:\n    ret\n"
+      },
+      "count_down": {
+        "asm": "count_down:\n    st [0x20], w\n    ldi w, #0\n    st [0x21], w\n.Lcount_down_1:\n    ldi w, #0\n    cmp w, [0x20]\n    jz .Lcount_down_2\n    ld w, [0x20]\n    add w, [0x21]\n    st [0x21], w\n    ld w, [0x20]\n    sub w, #1\n    st [0x20], w\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    ld w, [0x21]\n    ret\n",
+        "report": {
+          "functions": {
+            "count_down": {
+              "bytes": 29,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ],
+                [
+                  "sram",
+                  33,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn count_down: 29 bytes; clobbers: w; slots: sram:0x20+1 sram:0x21+1\ncount_down:\n    st [0x20], w\n    ldi w, #0\n    st [0x21], w\n.Lcount_down_1:\n    ldi w, #0\n    cmp w, [0x20]\n    jz .Lcount_down_2\n    ld w, [0x20]\n    add w, [0x21]\n    st [0x21], w\n    ld w, [0x20]\n    sub w, #1\n    st [0x20], w\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    ld w, [0x21]\n    ret\n"
+      },
+      "shifty": {
+        "asm": "shifty:\n    st [0x20], w\n    shl w\n    shl w\n    st [0x21], w\n    ld w, [0x20]\n    shr w\n    xor w, [0x21]\n    ret\n",
+        "report": {
+          "functions": {
+            "shifty": {
+              "bytes": 12,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ],
+                [
+                  "sram",
+                  33,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn shifty: 12 bytes; clobbers: w; slots: sram:0x20+1 sram:0x21+1\nshifty:\n    st [0x20], w\n    shl w\n    shl w\n    st [0x21], w\n    ld w, [0x20]\n    shr w\n    xor w, [0x21]\n    ret\n"
+      },
+      "bits": {
+        "asm": "bits:\n    st [0x20], w\n    ld w, [0x10]\n    cmp w, [0x20]\n    jnz .Lbits_2\n.Lbits_1:\n    ld w, [0x10]\n    and w, [0x20]\n    ret\n.Lbits_2:\n    ld w, [0x20]\n    cmp w, #0x10\n    jnc .Lbits_3\n    ldi w, #0\n    cmp w, [0x10]\n    jnz .Lbits_1\n.Lbits_3:\n    ld w, [0x10]\n    or w, [0x20]\n.Lbits_4:\n    ret\n",
+        "report": {
+          "functions": {
+            "bits": {
+              "bytes": 30,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn bits: 30 bytes; clobbers: w; slots: sram:0x20+1\nbits:\n    st [0x20], w\n    ld w, [0x10]\n    cmp w, [0x20]\n    jnz .Lbits_2\n.Lbits_1:\n    ld w, [0x10]\n    and w, [0x20]\n    ret\n.Lbits_2:\n    ld w, [0x20]\n    cmp w, #0x10\n    jnc .Lbits_3\n    ldi w, #0\n    cmp w, [0x10]\n    jnz .Lbits_1\n.Lbits_3:\n    ld w, [0x10]\n    or w, [0x20]\n.Lbits_4:\n    ret\n"
+      },
+      "many": {
+        "asm": "many:\n    st [0x20], w\n    ld w, [0x10]\n    add w, [0x20]\n    st [0x21], w\n    ld w, [0x10]\n    xor w, [0x11]\n    st [0x22], w\n    ld w, [0x11]\n    sub w, [0x20]\n    st [0x23], w\n    ld w, [0x21]\n    and w, [0x22]\n    st [0x24], w\n    ld w, [0x22]\n    or w, [0x23]\n    add w, [0x24]\n    st [0x25], w\n    ld w, [0x21]\n    sub w, [0x23]\n    xor w, [0x25]\n    ret\n",
+        "report": {
+          "functions": {
+            "many": {
+              "bytes": 41,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  32,
+                  1
+                ],
+                [
+                  "sram",
+                  33,
+                  1
+                ],
+                [
+                  "sram",
+                  34,
+                  1
+                ],
+                [
+                  "sram",
+                  35,
+                  1
+                ],
+                [
+                  "sram",
+                  36,
+                  1
+                ],
+                [
+                  "sram",
+                  37,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn many: 41 bytes; clobbers: w; slots: sram:0x20+1 sram:0x21+1 sram:0x22+1 sram:0x23+1 sram:0x24+1 sram:0x25+1\nmany:\n    st [0x20], w\n    ld w, [0x10]\n    add w, [0x20]\n    st [0x21], w\n    ld w, [0x10]\n    xor w, [0x11]\n    st [0x22], w\n    ld w, [0x11]\n    sub w, [0x20]\n    st [0x23], w\n    ld w, [0x21]\n    and w, [0x22]\n    st [0x24], w\n    ld w, [0x22]\n    or w, [0x23]\n    add w, [0x24]\n    st [0x25], w\n    ld w, [0x21]\n    sub w, [0x23]\n    xor w, [0x25]\n    ret\n"
+      },
+      "mem_inc": {
+        "asm": "mem_inc:\n    ld w, [0x30]\n    add w, #1\n    st [0x30], w\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_inc": {
+              "bytes": 7,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mem_inc: 7 bytes; clobbers: w; slots: -\nmem_inc:\n    ld w, [0x30]\n    add w, #1\n    st [0x30], w\n    ret\n"
+      },
+      "mem_sum": {
+        "unsupported": "mem_sum:8: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "load": {
+        "unsupported": "load:6: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "getc": {
+        "asm": "getc:\n    ld w, [0x30]\n    ret\n",
+        "report": {
+          "functions": {
+            "getc": {
+              "bytes": 3,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn getc: 3 bytes; clobbers: w; slots: -\ngetc:\n    ld w, [0x30]\n    ret\n"
+      },
+      "add16": {
+        "unsupported": "add16: ABI has no argument location for width 16"
+      },
+      "lo_plus": {
+        "unsupported": "lo_plus: ABI has no argument location for width 16"
+      },
+      "hi_of": {
+        "unsupported": "hi_of: ABI has no argument location for width 16"
+      },
+      "widen": {
+        "unsupported": "widen: ABI has no return location for width 16"
+      },
+      "cmp16": {
+        "unsupported": "cmp16: ABI has no argument location for width 16"
+      },
+      "level_scan": {
+        "unsupported": "level_scan:7: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "lt16": {
+        "unsupported": "lt16: ABI has no argument location for width 16"
+      },
+      "lt_zext": {
+        "unsupported": "lt_zext:6: (br, 16) has no ideal expansion; missing form/register class"
+      },
+      "ge8": {
+        "asm": "ge8:\n    cmp w, [0x10]\n    jc .Lge8_1\n    ldi w, #1\n    ret\n.Lge8_1:\n    ldi w, #0\n.Lge8_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "ge8": {
+              "bytes": 10,
+              "clobbers": [
+                "w"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn ge8: 10 bytes; clobbers: w; slots: -\nge8:\n    cmp w, [0x10]\n    jc .Lge8_1\n    ldi w, #1\n    ret\n.Lge8_1:\n    ldi w, #0\n.Lge8_2:\n    ret\n"
+      }
+    },
+    "t1-8": {
+      "add2": {
+        "asm": "add2:\n    add r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "add2": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add2: 2 bytes; clobbers: r0 r1; slots: -\nadd2:\n    add r0, r1\n    ret\n"
+      },
+      "inc": {
+        "asm": "inc:\n    add r0, #1\n    ret\n",
+        "report": {
+          "functions": {
+            "inc": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn inc: 3 bytes; clobbers: r0; slots: -\ninc:\n    add r0, #1\n    ret\n"
+      },
+      "rsub": {
+        "asm": "rsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "rsub": {
+              "bytes": 3,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn rsub: 3 bytes; clobbers: r0 r1; slots: -\nrsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n"
+      },
+      "three": {
+        "asm": "three:\n    add r0, r2\n    ret\n",
+        "report": {
+          "functions": {
+            "three": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn three: 2 bytes; clobbers: r0 r1 r2; slots: -\nthree:\n    add r0, r2\n    ret\n"
+      },
+      "fold": {
+        "asm": "fold:\n    add r0, #7\n    ret\n",
+        "report": {
+          "functions": {
+            "fold": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn fold: 3 bytes; clobbers: r0; slots: -\nfold:\n    add r0, #7\n    ret\n"
+      },
+      "mix": {
+        "asm": "mix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "mix": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mix: 6 bytes; clobbers: r0 r1; slots: -\nmix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n"
+      },
+      "maxu": {
+        "asm": "maxu:\n    cmp r0, r1\n    jnc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "maxu": {
+              "bytes": 5,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn maxu: 5 bytes; clobbers: r0 r1; slots: -\nmaxu:\n    cmp r0, r1\n    jnc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n"
+      },
+      "clamp": {
+        "asm": "clamp:\n    cmp r1, r0\n    jnc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "clamp": {
+              "bytes": 5,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn clamp: 5 bytes; clobbers: r0 r1; slots: -\nclamp:\n    cmp r1, r0\n    jnc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n"
+      },
+      "abs_diff": {
+        "asm": "abs_diff:\n    cmp r0, r1\n    jnc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "abs_diff": {
+              "bytes": 8,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn abs_diff: 8 bytes; clobbers: r0 r1; slots: -\nabs_diff:\n    cmp r0, r1\n    jnc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n"
+      },
+      "count_down": {
+        "asm": "count_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "count_down": {
+              "bytes": 13,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn count_down: 13 bytes; clobbers: r0 r1; slots: -\ncount_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n"
+      },
+      "shifty": {
+        "asm": "shifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "shifty": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn shifty: 6 bytes; clobbers: r0 r1; slots: -\nshifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n"
+      },
+      "bits": {
+        "asm": "bits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jnc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n",
+        "report": {
+          "functions": {
+            "bits": {
+              "bytes": 15,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn bits: 15 bytes; clobbers: r0 r1; slots: -\nbits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jnc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n"
+      },
+      "many": {
+        "asm": "many:\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n",
+        "report": {
+          "functions": {
+            "many": {
+              "bytes": 11,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn many: 11 bytes; clobbers: r0 r1 r2 r3; slots: -\nmany:\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n"
+      },
+      "mem_inc": {
+        "asm": "mem_inc:\n    ld r0, [0x30]\n    add r0, #1\n    st [0x30], r0\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_inc": {
+              "bytes": 7,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mem_inc: 7 bytes; clobbers: r0; slots: -\nmem_inc:\n    ld r0, [0x30]\n    add r0, #1\n    st [0x30], r0\n    ret\n"
+      },
+      "mem_sum": {
+        "unsupported": "mem_sum:8: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "load": {
+        "unsupported": "load:6: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "getc": {
+        "asm": "getc:\n    ld r0, [0x30]\n    ret\n",
+        "report": {
+          "functions": {
+            "getc": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn getc: 3 bytes; clobbers: r0; slots: -\ngetc:\n    ld r0, [0x30]\n    ret\n"
+      },
+      "add16": {
+        "unsupported": "add16: ABI has no argument location for width 16"
+      },
+      "lo_plus": {
+        "unsupported": "lo_plus: ABI has no argument location for width 16"
+      },
+      "hi_of": {
+        "unsupported": "hi_of: ABI has no argument location for width 16"
+      },
+      "widen": {
+        "unsupported": "widen: ABI has no return location for width 16"
+      },
+      "cmp16": {
+        "unsupported": "cmp16: ABI has no argument location for width 16"
+      },
+      "level_scan": {
+        "unsupported": "level_scan:7: (load, 8) has no ideal expansion; missing form/register class"
+      },
+      "lt16": {
+        "unsupported": "lt16: ABI has no argument location for width 16"
+      },
+      "lt_zext": {
+        "unsupported": "lt_zext:6: (br, 16) has no ideal expansion; missing form/register class"
+      },
+      "ge8": {
+        "asm": "ge8:\n    cmp r0, r1\n    jc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "ge8": {
+              "bytes": 9,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn ge8: 9 bytes; clobbers: r0 r1; slots: -\nge8:\n    cmp r0, r1\n    jc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n"
+      }
+    },
+    "t2-8": {
+      "add2": {
+        "asm": "add2:\n    add r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "add2": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add2: 2 bytes; clobbers: r0 r1; slots: -\nadd2:\n    add r0, r1\n    ret\n"
+      },
+      "inc": {
+        "asm": "inc:\n    add r0, #1\n    ret\n",
+        "report": {
+          "functions": {
+            "inc": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn inc: 3 bytes; clobbers: r0; slots: -\ninc:\n    add r0, #1\n    ret\n"
+      },
+      "rsub": {
+        "asm": "rsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "rsub": {
+              "bytes": 4,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn rsub: 4 bytes; clobbers: r0 r1; slots: -\nrsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n"
+      },
+      "three": {
+        "asm": "three:\n    add r0, r4\n    ret\n",
+        "report": {
+          "functions": {
+            "three": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn three: 2 bytes; clobbers: r0 r1 r4; slots: -\nthree:\n    add r0, r4\n    ret\n"
+      },
+      "fold": {
+        "asm": "fold:\n    add r0, #7\n    ret\n",
+        "report": {
+          "functions": {
+            "fold": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn fold: 3 bytes; clobbers: r0; slots: -\nfold:\n    add r0, #7\n    ret\n"
+      },
+      "mix": {
+        "asm": "mix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "mix": {
+              "bytes": 7,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mix: 7 bytes; clobbers: r0 r1; slots: -\nmix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n"
+      },
+      "maxu": {
+        "asm": "maxu:\n    cmp r0, r1\n    jc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "maxu": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn maxu: 6 bytes; clobbers: r0 r1; slots: -\nmaxu:\n    cmp r0, r1\n    jc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n"
+      },
+      "clamp": {
+        "asm": "clamp:\n    cmp r1, r0\n    jc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "clamp": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn clamp: 6 bytes; clobbers: r0 r1; slots: -\nclamp:\n    cmp r1, r0\n    jc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n"
+      },
+      "abs_diff": {
+        "asm": "abs_diff:\n    cmp r0, r1\n    jc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "abs_diff": {
+              "bytes": 11,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn abs_diff: 11 bytes; clobbers: r0 r1; slots: -\nabs_diff:\n    cmp r0, r1\n    jc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n"
+      },
+      "count_down": {
+        "asm": "count_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "count_down": {
+              "bytes": 13,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn count_down: 13 bytes; clobbers: r0 r1; slots: -\ncount_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n"
+      },
+      "shifty": {
+        "asm": "shifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "shifty": {
+              "bytes": 10,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn shifty: 10 bytes; clobbers: r0 r1; slots: -\nshifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n"
+      },
+      "bits": {
+        "asm": "bits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n",
+        "report": {
+          "functions": {
+            "bits": {
+              "bytes": 18,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn bits: 18 bytes; clobbers: r0 r1; slots: -\nbits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n"
+      },
+      "many": {
+        "asm": "many:\n    mov r2, r4\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n",
+        "report": {
+          "functions": {
+            "many": {
+              "bytes": 18,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn many: 18 bytes; clobbers: r0 r1 r2 r3 r4; slots: -\nmany:\n    mov r2, r4\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n"
+      },
+      "mem_inc": {
+        "asm": "mem_inc:\n    ld r0, [0x30]\n    add r0, #1\n    st [0x30], r0\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_inc": {
+              "bytes": 7,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mem_inc: 7 bytes; clobbers: r0; slots: -\nmem_inc:\n    ld r0, [0x30]\n    add r0, #1\n    st [0x30], r0\n    ret\n"
+      },
+      "mem_sum": {
+        "asm": "mem_sum:\n    mov r2, r0\n    ldi r0, #0\n    and r1, #7\n    mov r4, r1\n    mov r1, r0\n.Lmem_sum_1:\n    cmp r1, r4\n    jc .Lmem_sum_2\n    mov r3, r1\n    add r3, r2\n    ld r3, [r3]\n    add r0, r3\n    add r1, #1\n    jmp .Lmem_sum_1\n.Lmem_sum_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_sum": {
+              "bytes": 20,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: indirect memory is abstract"
+            }
+          }
+        },
+        "commented_asm": "; fn mem_sum: 20 bytes; clobbers: r0 r1 r2 r3 r4; slots: -\nmem_sum:\n    mov r2, r0\n    ldi r0, #0\n    and r1, #7\n    mov r4, r1\n    mov r1, r0\n.Lmem_sum_1:\n    cmp r1, r4\n    jc .Lmem_sum_2\n    mov r3, r1\n    add r3, r2\n    ld r3, [r3]\n    add r0, r3\n    add r1, #1\n    jmp .Lmem_sum_1\n.Lmem_sum_2:\n    ret\n"
+      },
+      "load": {
+        "asm": "load:\n    ld r0, [r0]\n    ret\n",
+        "report": {
+          "functions": {
+            "load": {
+              "bytes": 2,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: indirect memory is abstract"
+            }
+          }
+        },
+        "commented_asm": "; fn load: 2 bytes; clobbers: r0; slots: -\nload:\n    ld r0, [r0]\n    ret\n"
+      },
+      "getc": {
+        "asm": "getc:\n    ld r0, [0x30]\n    ret\n",
+        "report": {
+          "functions": {
+            "getc": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn getc: 3 bytes; clobbers: r0; slots: -\ngetc:\n    ld r0, [0x30]\n    ret\n"
+      },
+      "add16": {
+        "asm": "add16:\n    addw x0, x1\n    ret\n",
+        "report": {
+          "functions": {
+            "add16": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add16: 2 bytes; clobbers: r0 r1 r2 r3; slots: -\nadd16:\n    addw x0, x1\n    ret\n"
+      },
+      "lo_plus": {
+        "asm": "lo_plus:\n    add r0, r4\n    ret\n",
+        "report": {
+          "functions": {
+            "lo_plus": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn lo_plus: 2 bytes; clobbers: r0 r1 r4; slots: -\nlo_plus:\n    add r0, r4\n    ret\n"
+      },
+      "hi_of": {
+        "asm": "hi_of:\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "hi_of": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn hi_of: 2 bytes; clobbers: r0 r1; slots: -\nhi_of:\n    mov r0, r1\n    ret\n"
+      },
+      "widen": {
+        "asm": "widen:\n    mov r2, r1\n    mov r1, r0\n    mov r0, r2\n    ret\n",
+        "report": {
+          "functions": {
+            "widen": {
+              "bytes": 4,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn widen: 4 bytes; clobbers: r0 r1 r2; slots: -\nwiden:\n    mov r2, r1\n    mov r1, r0\n    mov r0, r2\n    ret\n"
+      },
+      "cmp16": {
+        "asm": "cmp16:\n    cmpw x0, x1\n    jc .Lcmp16_1\n    ldi r0, #1\n    ret\n.Lcmp16_1:\n    ldi r0, #0\n.Lcmp16_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "cmp16": {
+              "bytes": 9,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn cmp16: 9 bytes; clobbers: r0 r1 r2 r3; slots: -\ncmp16:\n    cmpw x0, x1\n    jc .Lcmp16_1\n    ldi r0, #1\n    ret\n.Lcmp16_1:\n    ldi r0, #0\n.Lcmp16_2:\n    ret\n"
+      },
+      "level_scan": {
+        "asm": "level_scan:\n    ldi r2, #0\n.Llevel_scan_1:\n    cmp r2, r1\n    jc .Llevel_scan_3\n    mov r3, r0\n    add r3, r2\n    ld r3, [r3]\n    cmp r4, r3\n    jnc .Llevel_scan_2\n    st [r5], r2\n.Llevel_scan_2:\n    add r2, #1\n    jmp .Llevel_scan_1\n.Llevel_scan_3:\n    ret\n",
+        "report": {
+          "functions": {
+            "level_scan": {
+              "bytes": 20,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4",
+                "r5"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: indirect memory is abstract"
+            }
+          }
+        },
+        "commented_asm": "; fn level_scan: 20 bytes; clobbers: r0 r1 r2 r3 r4 r5; slots: -\nlevel_scan:\n    ldi r2, #0\n.Llevel_scan_1:\n    cmp r2, r1\n    jc .Llevel_scan_3\n    mov r3, r0\n    add r3, r2\n    ld r3, [r3]\n    cmp r4, r3\n    jnc .Llevel_scan_2\n    st [r5], r2\n.Llevel_scan_2:\n    add r2, #1\n    jmp .Llevel_scan_1\n.Llevel_scan_3:\n    ret\n"
+      },
+      "lt16": {
+        "asm": "lt16:\n    cmpw x0, x1\n    jc .Llt16_1\n    ldi r0, #1\n    ret\n.Llt16_1:\n    ldi r0, #0\n.Llt16_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "lt16": {
+              "bytes": 9,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn lt16: 9 bytes; clobbers: r0 r1 r2 r3; slots: -\nlt16:\n    cmpw x0, x1\n    jc .Llt16_1\n    ldi r0, #1\n    ret\n.Llt16_1:\n    ldi r0, #0\n.Llt16_2:\n    ret\n"
+      },
+      "lt_zext": {
+        "asm": "lt_zext:\n    mov r2, r1\n    ldi r1, #0\n    ldi r3, #0\n    cmpw x0, x1\n    jc .Llt_zext_1\n    ldi r0, #1\n    ret\n.Llt_zext_1:\n    ldi r0, #0\n.Llt_zext_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "lt_zext": {
+              "bytes": 14,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn lt_zext: 14 bytes; clobbers: r0 r1 r2 r3; slots: -\nlt_zext:\n    mov r2, r1\n    ldi r1, #0\n    ldi r3, #0\n    cmpw x0, x1\n    jc .Llt_zext_1\n    ldi r0, #1\n    ret\n.Llt_zext_1:\n    ldi r0, #0\n.Llt_zext_2:\n    ret\n"
+      },
+      "ge8": {
+        "asm": "ge8:\n    cmp r0, r1\n    jnc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "ge8": {
+              "bytes": 10,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn ge8: 10 bytes; clobbers: r0 r1; slots: -\nge8:\n    cmp r0, r1\n    jnc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n"
+      }
+    },
+    "t2-16": {
+      "add2": {
+        "asm": "add2:\n    add r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "add2": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add2: 2 bytes; clobbers: r0 r1; slots: -\nadd2:\n    add r0, r1\n    ret\n"
+      },
+      "inc": {
+        "asm": "inc:\n    add r0, #1\n    ret\n",
+        "report": {
+          "functions": {
+            "inc": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn inc: 3 bytes; clobbers: r0; slots: -\ninc:\n    add r0, #1\n    ret\n"
+      },
+      "rsub": {
+        "asm": "rsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "rsub": {
+              "bytes": 4,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn rsub: 4 bytes; clobbers: r0 r1; slots: -\nrsub:\n    sub r1, r0\n    mov r0, r1\n    ret\n"
+      },
+      "three": {
+        "asm": "three:\n    add r0, r4\n    ret\n",
+        "report": {
+          "functions": {
+            "three": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn three: 2 bytes; clobbers: r0 r1 r4; slots: -\nthree:\n    add r0, r4\n    ret\n"
+      },
+      "fold": {
+        "asm": "fold:\n    add r0, #7\n    ret\n",
+        "report": {
+          "functions": {
+            "fold": {
+              "bytes": 3,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn fold: 3 bytes; clobbers: r0; slots: -\nfold:\n    add r0, #7\n    ret\n"
+      },
+      "mix": {
+        "asm": "mix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "mix": {
+              "bytes": 7,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mix: 7 bytes; clobbers: r0 r1; slots: -\nmix:\n    and r0, #0xf\n    xor r1, #0x30\n    or r0, r1\n    ret\n"
+      },
+      "maxu": {
+        "asm": "maxu:\n    cmp r0, r1\n    jc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "maxu": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn maxu: 6 bytes; clobbers: r0 r1; slots: -\nmaxu:\n    cmp r0, r1\n    jc .Lmaxu_1\n    mov r0, r1\n.Lmaxu_1:\n    ret\n"
+      },
+      "clamp": {
+        "asm": "clamp:\n    cmp r1, r0\n    jc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n",
+        "report": {
+          "functions": {
+            "clamp": {
+              "bytes": 6,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn clamp: 6 bytes; clobbers: r0 r1; slots: -\nclamp:\n    cmp r1, r0\n    jc .Lclamp_1\n    mov r0, r1\n.Lclamp_1:\n    ret\n"
+      },
+      "abs_diff": {
+        "asm": "abs_diff:\n    cmp r0, r1\n    jc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "abs_diff": {
+              "bytes": 11,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn abs_diff: 11 bytes; clobbers: r0 r1; slots: -\nabs_diff:\n    cmp r0, r1\n    jc .Labs_diff_1\n    sub r1, r0\n    mov r0, r1\n    ret\n.Labs_diff_1:\n    sub r0, r1\n.Labs_diff_2:\n    ret\n"
+      },
+      "count_down": {
+        "asm": "count_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "count_down": {
+              "bytes": 13,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn count_down: 13 bytes; clobbers: r0 r1; slots: -\ncount_down:\n    ldi r1, #0\n.Lcount_down_1:\n    cmp r0, #0\n    jz .Lcount_down_2\n    add r1, r0\n    sub r0, #1\n    jmp .Lcount_down_1\n.Lcount_down_2:\n    mov r0, r1\n    ret\n"
+      },
+      "shifty": {
+        "asm": "shifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "shifty": {
+              "bytes": 10,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn shifty: 10 bytes; clobbers: r0 r1; slots: -\nshifty:\n    mov r1, r0\n    shl r1\n    shl r1\n    shr r0\n    xor r0, r1\n    ret\n"
+      },
+      "bits": {
+        "asm": "bits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n",
+        "report": {
+          "functions": {
+            "bits": {
+              "bytes": 18,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn bits: 18 bytes; clobbers: r0 r1; slots: -\nbits:\n    cmp r0, r1\n    jnz .Lbits_2\n.Lbits_1:\n    and r0, r1\n    ret\n.Lbits_2:\n    cmp r0, #0x10\n    jc .Lbits_3\n    cmp r1, #0\n    jnz .Lbits_1\n.Lbits_3:\n    or r0, r1\n.Lbits_4:\n    ret\n"
+      },
+      "many": {
+        "asm": "many:\n    mov r2, r4\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n",
+        "report": {
+          "functions": {
+            "many": {
+              "bytes": 18,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn many: 18 bytes; clobbers: r0 r1 r2 r3 r4; slots: -\nmany:\n    mov r2, r4\n    mov r3, r0\n    add r3, r1\n    xor r1, r2\n    sub r2, r0\n    mov r0, r1\n    and r0, r3\n    or r1, r2\n    add r0, r1\n    sub r3, r2\n    xor r0, r3\n    ret\n"
+      },
+      "mem_inc": {
+        "asm": "mem_inc:\n    ld r0, [0x0030]\n    add r0, #1\n    st [0x0030], r0\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_inc": {
+              "bytes": 9,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn mem_inc: 9 bytes; clobbers: r0; slots: -\nmem_inc:\n    ld r0, [0x0030]\n    add r0, #1\n    st [0x0030], r0\n    ret\n"
+      },
+      "mem_sum": {
+        "asm": "mem_sum:\n    mov r2, r4\n    ldi r4, #0\n    and r2, #7\n    st [0x0060], r2\n    mov r5, r4\n.Lmem_sum_1:\n    ld r2, [0x0060]\n    cmp r5, r2\n    jc .Lmem_sum_2\n    mov r2, r5\n    ldi r3, #0\n    addw x1, x0\n    ld r2, [x1]\n    add r2, r4\n    mov r4, r2\n    mov r2, r5\n    add r2, #1\n    mov r5, r2\n    jmp .Lmem_sum_1\n.Lmem_sum_2:\n    mov r0, r4\n    ret\n",
+        "report": {
+          "functions": {
+            "mem_sum": {
+              "bytes": 31,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4",
+                "r5"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  96,
+                  1
+                ]
+              ],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views; indirect memory is abstract"
+            }
+          }
+        },
+        "commented_asm": "; fn mem_sum: 31 bytes; clobbers: r0 r1 r2 r3 r4 r5; slots: sram:0x60+1\nmem_sum:\n    mov r2, r4\n    ldi r4, #0\n    and r2, #7\n    st [0x0060], r2\n    mov r5, r4\n.Lmem_sum_1:\n    ld r2, [0x0060]\n    cmp r5, r2\n    jc .Lmem_sum_2\n    mov r2, r5\n    ldi r3, #0\n    addw x1, x0\n    ld r2, [x1]\n    add r2, r4\n    mov r4, r2\n    mov r2, r5\n    add r2, #1\n    mov r5, r2\n    jmp .Lmem_sum_1\n.Lmem_sum_2:\n    mov r0, r4\n    ret\n"
+      },
+      "load": {
+        "asm": "load:\n    ld r0, [x0]\n    ret\n",
+        "report": {
+          "functions": {
+            "load": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: indirect memory is abstract"
+            }
+          }
+        },
+        "commented_asm": "; fn load: 2 bytes; clobbers: r0 r1; slots: -\nload:\n    ld r0, [x0]\n    ret\n"
+      },
+      "getc": {
+        "asm": "getc:\n    ld r0, [0x0030]\n    ret\n",
+        "report": {
+          "functions": {
+            "getc": {
+              "bytes": 4,
+              "clobbers": [
+                "r0"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn getc: 4 bytes; clobbers: r0; slots: -\ngetc:\n    ld r0, [0x0030]\n    ret\n"
+      },
+      "add16": {
+        "asm": "add16:\n    addw x0, x1\n    ret\n",
+        "report": {
+          "functions": {
+            "add16": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn add16: 2 bytes; clobbers: r0 r1 r2 r3; slots: -\nadd16:\n    addw x0, x1\n    ret\n"
+      },
+      "lo_plus": {
+        "asm": "lo_plus:\n    add r0, r4\n    ret\n",
+        "report": {
+          "functions": {
+            "lo_plus": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r4"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn lo_plus: 2 bytes; clobbers: r0 r1 r4; slots: -\nlo_plus:\n    add r0, r4\n    ret\n"
+      },
+      "hi_of": {
+        "asm": "hi_of:\n    mov r0, r1\n    ret\n",
+        "report": {
+          "functions": {
+            "hi_of": {
+              "bytes": 2,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn hi_of: 2 bytes; clobbers: r0 r1; slots: -\nhi_of:\n    mov r0, r1\n    ret\n"
+      },
+      "widen": {
+        "asm": "widen:\n    mov r2, r1\n    mov r1, r0\n    mov r0, r2\n    ret\n",
+        "report": {
+          "functions": {
+            "widen": {
+              "bytes": 4,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn widen: 4 bytes; clobbers: r0 r1 r2; slots: -\nwiden:\n    mov r2, r1\n    mov r1, r0\n    mov r0, r2\n    ret\n"
+      },
+      "cmp16": {
+        "asm": "cmp16:\n    cmpw x0, x1\n    jc .Lcmp16_1\n    ldi r0, #1\n    ret\n.Lcmp16_1:\n    ldi r0, #0\n.Lcmp16_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "cmp16": {
+              "bytes": 9,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn cmp16: 9 bytes; clobbers: r0 r1 r2 r3; slots: -\ncmp16:\n    cmpw x0, x1\n    jc .Lcmp16_1\n    ldi r0, #1\n    ret\n.Lcmp16_1:\n    ldi r0, #0\n.Lcmp16_2:\n    ret\n"
+      },
+      "level_scan": {
+        "asm": "level_scan:\n    st [0x0060], r5\n    st [0x0061], r2\n    st [0x0062], r3\n    ldi r5, #0\n.Llevel_scan_1:\n    cmp r5, r4\n    jc .Llevel_scan_3\n    mov r2, r5\n    ldi r3, #0\n    addw x1, x0\n    ld r2, [x1]\n    ld r3, [0x0060]\n    cmp r3, r2\n    jnc .Llevel_scan_2\n    ld r2, [0x0061]\n    ld r3, [0x0062]\n    st [x1], r5\n.Llevel_scan_2:\n    mov r2, r5\n    add r2, #1\n    mov r5, r2\n    jmp .Llevel_scan_1\n.Llevel_scan_3:\n    ret\n",
+        "report": {
+          "functions": {
+            "level_scan": {
+              "bytes": 42,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3",
+                "r4",
+                "r5"
+              ],
+              "slots": [
+                [
+                  "sram",
+                  96,
+                  1
+                ],
+                [
+                  "sram",
+                  97,
+                  2
+                ]
+              ],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views; indirect memory is abstract",
+              "pool_contract": "private"
+            }
+          }
+        },
+        "commented_asm": "; fn level_scan: 42 bytes; clobbers: r0 r1 r2 r3 r4 r5; slots: sram:0x60+1 sram:0x61+2\nlevel_scan:\n    st [0x0060], r5\n    st [0x0061], r2\n    st [0x0062], r3\n    ldi r5, #0\n.Llevel_scan_1:\n    cmp r5, r4\n    jc .Llevel_scan_3\n    mov r2, r5\n    ldi r3, #0\n    addw x1, x0\n    ld r2, [x1]\n    ld r3, [0x0060]\n    cmp r3, r2\n    jnc .Llevel_scan_2\n    ld r2, [0x0061]\n    ld r3, [0x0062]\n    st [x1], r5\n.Llevel_scan_2:\n    mov r2, r5\n    add r2, #1\n    mov r5, r2\n    jmp .Llevel_scan_1\n.Llevel_scan_3:\n    ret\n"
+      },
+      "lt16": {
+        "asm": "lt16:\n    cmpw x0, x1\n    jc .Llt16_1\n    ldi r0, #1\n    ret\n.Llt16_1:\n    ldi r0, #0\n.Llt16_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "lt16": {
+              "bytes": 9,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn lt16: 9 bytes; clobbers: r0 r1 r2 r3; slots: -\nlt16:\n    cmpw x0, x1\n    jc .Llt16_1\n    ldi r0, #1\n    ret\n.Llt16_1:\n    ldi r0, #0\n.Llt16_2:\n    ret\n"
+      },
+      "lt_zext": {
+        "asm": "lt_zext:\n    mov r2, r1\n    ldi r1, #0\n    ldi r3, #0\n    cmpw x0, x1\n    jc .Llt_zext_1\n    ldi r0, #1\n    ret\n.Llt_zext_1:\n    ldi r0, #0\n.Llt_zext_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "lt_zext": {
+              "bytes": 14,
+              "clobbers": [
+                "r0",
+                "r1",
+                "r2",
+                "r3"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": "partial: alias parts use symbolic cell views"
+            }
+          }
+        },
+        "commented_asm": "; fn lt_zext: 14 bytes; clobbers: r0 r1 r2 r3; slots: -\nlt_zext:\n    mov r2, r1\n    ldi r1, #0\n    ldi r3, #0\n    cmpw x0, x1\n    jc .Llt_zext_1\n    ldi r0, #1\n    ret\n.Llt_zext_1:\n    ldi r0, #0\n.Llt_zext_2:\n    ret\n"
+      },
+      "ge8": {
+        "asm": "ge8:\n    cmp r0, r1\n    jnc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n",
+        "report": {
+          "functions": {
+            "ge8": {
+              "bytes": 10,
+              "clobbers": [
+                "r0",
+                "r1"
+              ],
+              "slots": [],
+              "findings": [],
+              "verified": true
+            }
+          }
+        },
+        "commented_asm": "; fn ge8: 10 bytes; clobbers: r0 r1; slots: -\nge8:\n    cmp r0, r1\n    jnc .Lge8_1\n    ldi r0, #1\n    ret\n.Lge8_1:\n    ldi r0, #0\n.Lge8_2:\n    ret\n"
+      }
+    }
+  }
+}

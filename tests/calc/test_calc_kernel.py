@@ -17,8 +17,8 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFontMetricsF
 from PySide6.QtTest import QTest
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.ui.app import CalcMainWindow
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.ui.studio_window import CalcMainWindow
 
 
 def wait_for(app, predicate, timeout=20):
@@ -126,7 +126,7 @@ def test_kernel_native_apy_namespace_and_gui_conversion_boundary(app, gui):
 assert APyFixedArray is apy.APyFixedArray
 assert APyFloat is apy.APyFloat
 assert APyFloatArray is apy.APyFloatArray
-assert 'fxp' not in globals() and 'fxpi' not in globals()
+assert callable(fxp) and callable(fxpi)
 raw = APyFixed(7, bits=6, frac_bits=2)
 real = APyFixed.from_float(7, bits=6, frac_bits=2)
 array = APyFixedArray.from_float([[0.25, 0.5]], bits=6, frac_bits=2)
@@ -153,8 +153,8 @@ assert APyFixed.from_float(3, bits=4, frac_bits=2).to_bits() == 12""")
 
 
 def test_late_iopub_execute_input_cannot_reopen_completed_execution(app):
-    from rpkbin.calc.core.config import CalcConfig
-    from rpkbin.calc.kernel_client import KernelTransport
+    from rpkbin.app.calc.core.config import CalcConfig
+    from rpkbin.app.calc.kernel_client import KernelTransport
     transport = KernelTransport(CalcConfig())
     transport.note_user_execution()
     transport._handle_reply({"msg_type": "execute_reply", "parent_header": {"msg_id": "cell1"},
@@ -324,7 +324,7 @@ def test_preview_statistics_native_bits_and_session_history(app, gui, monkeypatc
     assert window.inspector_widget.card_hex.edit.isReadOnly()
     previews = []
     controller.preview_ready.connect(previews.append)
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", lambda *a, **k: QMessageBox.StandardButton.Cancel)
     controller.select_variable("x")
     settled(app, controller)
     revision = controller.revision
@@ -385,7 +385,7 @@ def test_format_preview_focus_change_is_read_only_and_apply_is_explicit(app, gui
     page = window._matrix_tabs["A"]
     previews = []
     controller.preview_ready.connect(previews.append)
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", lambda *a, **k: QMessageBox.StandardButton.Cancel)
     revision = controller.revision
     page.fmt_edit.setText("Q4.8")
     page.fmt_edit.editingFinished.emit()
@@ -394,7 +394,7 @@ def test_format_preview_focus_change_is_read_only_and_apply_is_explicit(app, gui
     settled(app, controller)
     assert controller.revision == revision
     assert page._last_snapshot.format_str == "Q4.4"
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
     page.fmt_edit.setText("Q4.8")
     page.preview_btn.click()
     wait_for(app, lambda: controller.revision > revision)
@@ -460,7 +460,7 @@ def test_fxp_pin_bit_edits_share_ipython_namespace(app, gui):
 
 def test_conversion_diagnostics_reach_gui_without_false_exactness(app, gui):
     window, controller, errors = gui
-    run(app, controller, 'from rpkbin.calc.core.fxp_model import make_fxp as _make_fxp\nx=_make_fxp(0.1,"Q4.50")\ny=x+1\nz=_make_fxp("0x20","Q4.4")\nA=_make_fxp([0.125],"Q4.4")+1')
+    run(app, controller, 'from rpkbin.app.calc.core.fxp_model import make_fxp as _make_fxp\nx=_make_fxp(0.1,"Q4.50")\ny=x+1\nz=_make_fxp("0x20","Q4.4")\nA=_make_fxp([0.125],"Q4.4")+1')
     inspector = window.inspector_widget
     controller.select_variable("x")
     settled(app, controller)
@@ -502,7 +502,7 @@ def test_complex_matrix_native_edit_and_saturation_view(app, gui):
     assert complex(next(row.value_str for row in controller.rows if row.name == "ans")) == 5-6j
     assert window.inspector_widget.card_hex.isHidden()
     assert not window.inspector_widget.fmt_edit.isEnabled()
-    run(app, controller, 'from rpkbin.calc.core.fxp_model import make_fxp as _make_fxp\nA = _make_fxp([[0.25, 0.1]], "Q-2.12")')
+    run(app, controller, 'from rpkbin.app.calc.core.fxp_model import make_fxp as _make_fxp\nA = _make_fxp([[0.25, 0.1]], "Q-2.12")')
     controller.open_matrix_editor("A")
     settled(app, controller)
     assert "SATURATED" in window.inspector_widget.status_badge.text()
@@ -535,7 +535,7 @@ def test_large_matrix_is_virtual_and_requests_bounded_pages(app, gui):
 
 def test_workspace_saturation_badges_use_current_bounded_diagnostics(app, gui):
     from PySide6.QtGui import QColor
-    from rpkbin.calc.core.config import ALL_WORKSPACE_COLUMNS
+    from rpkbin.app.calc.core.config import ALL_WORKSPACE_COLUMNS
     window, controller, errors = gui
     workspace = window.workspace_widget
     value_col = ALL_WORKSPACE_COLUMNS.index("value")
@@ -544,7 +544,7 @@ def test_workspace_saturation_badges_use_current_bounded_diagnostics(app, gui):
         index = next(i for i, row in enumerate(workspace._rows) if row.name == name)
         return workspace.table.item(index, value_col)
 
-    run(app, controller, 'from rpkbin.calc.core.fxp_model import make_fxp as _make_fxp\nA=_make_fxp([99.0]+[0.0]*4096,"Q4.4")\nB=_make_fxp([99,0],"Q4.4")')
+    run(app, controller, 'from rpkbin.app.calc.core.fxp_model import make_fxp as _make_fxp\nA=_make_fxp([99.0]+[0.0]*4096,"Q4.4")\nB=_make_fxp([99,0],"Q4.4")')
     controller.select_variable("A")
     settled(app, controller)
     assert "SATURATED" in window.inspector_widget.status_badge.text()
@@ -553,7 +553,7 @@ def test_workspace_saturation_badges_use_current_bounded_diagnostics(app, gui):
     assert "4096" in value_item("A").toolTip()
     assert value_item("B").text().startswith("[SAT]")
     assert value_item("B").foreground().color() == QColor(workspace.palette.danger)
-    run(app, controller, 'from rpkbin.calc.core.fxp_model import make_fxp as _make_fxp\nA[0]=_make_fxp(0,"Q4.4")\nB[0]=B[1]')
+    run(app, controller, 'from rpkbin.app.calc.core.fxp_model import make_fxp as _make_fxp\nA[0]=_make_fxp(0,"Q4.4")\nB[0]=B[1]')
     controller.select_variable("A")
     settled(app, controller)
     assert "unknown" in window.inspector_widget.status_badge.text()
@@ -808,7 +808,8 @@ def test_custom_import_apply_reports_errors_recovers_and_does_not_run_startup(ap
     mutate(app, controller, controller.reload_startup)
     run(app, controller, "keep = 17")
     config = copy.deepcopy(controller.config)
-    config.custom_imports = "from math import prod as product\nimport rpk_calc_nonexistent_package"
+    config.custom_import_groups = [{"id": "test", "name": "Test", "enabled": True,
+                                    "code": "from math import prod as product\nimport rpk_calc_nonexistent_package"}]
     mutate(app, controller, lambda: controller.update_config(config))
     assert "rpk_calc_nonexistent_package" in controller.import_error
     assert any("ModuleNotFoundError" in error for error in errors)
@@ -824,7 +825,7 @@ def test_custom_import_apply_reports_errors_recovers_and_does_not_run_startup(ap
     assert edits == [""]
     assert run(app, controller, "assert float(x) == 0.5")["content"]["status"] == "ok"
     config = copy.deepcopy(controller.config)
-    config.custom_imports = "from math import prod as product"
+    config.custom_import_groups[0]["code"] = "from math import prod as product"
     mutate(app, controller, lambda: controller.update_config(config))
     assert controller.import_error == ""
     assert counter.read_text() == "x"
@@ -919,7 +920,7 @@ def test_inspector_collapse_hints_and_layout_persistence(app, gui):
     window.v_splitter.setSizes([300, 500])
     app.processEvents()
     window.close()
-    from rpkbin.calc.core.config import CalcConfig
+    from rpkbin.app.calc.core.config import CalcConfig
     saved = CalcConfig.load(controller._config_path)
     assert saved.window_geometry
     assert saved.horizontal_sizes[0] > saved.horizontal_sizes[1]
@@ -928,7 +929,7 @@ def test_inspector_collapse_hints_and_layout_persistence(app, gui):
 
 
 def test_appearance_dialog_cancel_and_save_are_isolated(app, gui):
-    from rpkbin.calc.ui.settings_dialog import SettingsDialog
+    from rpkbin.app.calc.ui.settings_dialog import SettingsDialog
     window, controller, errors = gui
     before = copy.deepcopy(controller.config)
     dialog = SettingsDialog(controller.config, window)
@@ -979,7 +980,7 @@ def test_matplotlib_inline_image_reaches_rich_console(app, gui):
 
 def test_inspector_conversion_navigation_uses_native_numbers_and_whole_arrays(app, gui, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
-    from rpkbin.calc.core.config import ALL_WORKSPACE_COLUMNS
+    from rpkbin.app.calc.core.config import ALL_WORKSPACE_COLUMNS
 
     window, controller, errors = gui
     run(app, controller, "a = 0.25\nA = np.full((2, 3, 4), 0.25)")
@@ -1001,7 +1002,7 @@ def test_inspector_conversion_navigation_uses_native_numbers_and_whole_arrays(ap
     dialog.fmt_edit.setText("Q4.4")
     previews = []
     controller.preview_ready.connect(previews.append)
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
     dialog.preview_btn.click()
     wait_for(app, lambda: bool(previews))
     settled(app, controller)
@@ -1024,7 +1025,7 @@ def test_inspector_conversion_navigation_uses_native_numbers_and_whole_arrays(ap
     apply_conversion()
     settled(app, controller)
     assert controller.revision == revision and controller.undo_state == undo
-    monkeypatch.setattr("rpkbin.calc.ui.inspector_widget.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
+    monkeypatch.setattr("rpkbin.app.calc.ui.inspector_widget.ask", lambda *a, **k: QMessageBox.StandardButton.Apply)
     wait_for(app, inspector.convert_btn.isEnabled)
     mutate(app, controller, inspector.convert_btn.click)
     assert inspector._last_snapshot.can_convert_to_fxp
@@ -1052,7 +1053,7 @@ def test_reversible_custom_template_conversion_uses_existing_kernel_contract(app
     dialog.fmt_edit.setText("S6|10")
     previews=[]
     controller.preview_ready.connect(previews.append)
-    monkeypatch.setattr("rpkbin.calc.ui.app.ask",lambda *args,**kw:QMessageBox.StandardButton.Cancel)
+    monkeypatch.setattr("rpkbin.app.calc.ui.studio_window.ask",lambda *args,**kw:QMessageBox.StandardButton.Cancel)
     revision=controller.revision
     dialog.preview_btn.click()
     wait_for(app,lambda:bool(previews))
@@ -1178,3 +1179,60 @@ def test_workspace_selection_coalesces_paint_without_accepting_stale_edits(app, 
     result = run(app, controller, "assert float(a) == 1.25\nassert float(b) == 2.5\nassert plain == 2")
     assert result["content"]["status"] == "ok"
     assert not errors
+
+
+def test_session_public_alias_observes_applied_config(app, gui):
+    from dataclasses import replace
+
+    _, controller, errors = gui
+    code = "from rpkbin.app.calc import fxp as manual_fxp\nf = fxp\nassert f is manual_fxp"
+    assert run(app, controller, code)["content"]["status"] == "ok"
+    for quant, bits in (("TRN", 0), ("RND", 1)):
+        mutate(app, controller, lambda: controller.update_config(replace(controller.config, default_quant=quant)))
+        assert run(app, controller, f"assert f('0.75', 'Q8.0').to_bits() == {bits}")["content"]["status"] == "ok"
+    assert not errors
+
+
+def test_mode_switch_keeps_real_studio_session_and_independent_geometry(app, tmp_path):
+    from PySide6.QtCore import QSize
+
+    from rpkbin.app.calc.ui.app import CalculatorWindow
+
+    window = CalculatorWindow("simple", config_path=tmp_path / "settings.json")
+    window.show()
+    try:
+        app.processEvents()
+        assert window.studio is None
+        window.resize(790, 610)
+        simple_size = window.size()
+        window.simple.paste("7")
+        window.simple.engine.store("M")
+        window.switch_mode("python")
+        app.processEvents()
+        studio = window.studio
+        controller = studio.controller
+        wait_for(app, lambda: controller.transport.ready)
+        settled(app, controller)
+        assert window.minimumWidth() >= 920
+        window.resize(950, 660)
+        studio_size = window.size()
+        client = controller.transport.client
+        assert run(app, controller, "only_studio = 42")["content"]["status"] == "ok"
+        window.switch_mode("simple")
+        app.processEvents()
+        assert not studio.isEnabled()
+        assert window.minimumWidth() < 920
+        assert window.size() == simple_size
+        assert window.simple.engine.variables["M"].exact_fraction == 7
+        assert "only_studio" not in window.simple.engine.variables
+        window.switch_mode("python")
+        app.processEvents()
+        available = window.screen().availableGeometry().size()
+        expected = QSize(min(studio_size.width(), available.width()),
+                         min(studio_size.height(), available.height()))
+        assert window.size() == expected.expandedTo(window.minimumSize())
+        assert window.studio is studio and controller.transport.client is client
+        assert run(app, controller, "assert only_studio == 42")["content"]["status"] == "ok"
+    finally:
+        window.close()
+        app.processEvents()

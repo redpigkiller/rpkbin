@@ -1,98 +1,156 @@
-# rpk-calc 架構與資料邊界
+# `rpk-calc` 架構與資料邊界
 
-GUI 將互動 Python 執行與 Qt 顯示分在不同程序。IPython kernel 是數值物件的唯一擁有者；Qt 主程序負責命令視窗、Workspace、Inspector、矩陣表格與使用者操作。既有 `core` 層提供 `WorkspaceSession`、FXP/一般數值檢視與編輯，不直接把完整 Python namespace 複製到 GUI。
+[快速入門與參考](README.md) · [文件導覽](../README.md) · [English](../../en/calc/architecture.md)
 
+`rpk-calc` 依模式區分執行邊界：簡易模式透過 `SimpleCalcEngine` 在 Qt 程序內直接運算，不啟動 Python／APyTypes 或 IPython 子程序；Python Studio 由 Qt 前端對接專用的本機 IPython kernel，由 kernel 擁有所有工作區物件；`rpk-calc --eval` 則直接建立無介面 `WorkspaceSession`，不啟動 Qt 與 kernel 子程序。
 
-原生數值的 **Convert to FXP…** 對話框產生轉換請求，由 kernel 消費；請求沿用既有的 `expected_revision` 防護。FXP 格式列與 **Convert to float…** 也沿用既有 kernel 轉換流程。此 UI 不新增 config 欄位或 schema，Inspector 仍遵循已儲存的 list/grid 版面偏好。
+---
 
-## 責任與不變條件
+## 執行模式與架構邊界
 
-- `kernel_client.py` 啟動並管理一個由應用程式擁有的 IPython 子程序，透過 `127.0.0.1` 的 Jupyter 通道送出請求；Qt 事件迴圈非阻塞地接收回覆。Kernel 不自動重啟。應用程式關閉時停止這個程序。
-- `kernel_runtime.py` 在 kernel 內執行使用者程式，維護 `WorkspaceSession`，並執行檢視、分頁、編輯等請求。GUI 只收到格式化後的 snapshot，不收到 Python 物件或完整陣列。
-- `controller.py` 序列化 GUI 請求、追蹤 `view_id` 與 workspace `revision`，並協調忙碌狀態。執行期間 GUI 保持回應，但數值編輯會停用。Workspace scalar 的 Value/Format 操作會導向 Inspector 的 Value 卡或共用轉換控制項；array Value 仍開啟矩陣編輯器。Help 是三個精簡查表分頁，預設顯示 FXP。
-- `CalcMainWindow` 使用 Qt 內建 Fusion style，由 style 正常繪製 checkbox indicator，並可搭配既有應用程式 QSS；Windows 11 上的勾選狀態仍可見。
-- `SettingsDialog` 收集偏好並顯示唯讀 startup 預覽；`CalcController` 分辨 Qt 外觀、kernel 數值預設、內建函數群組、自訂 import 與啟動檔操作。內建群組內容固定，checkbox 只控制啟用或停用。外觀及 `keep_english_terms` 只更新 Qt；數值預設更新既有 session。套用變更後的群組或自訂 import，會在既有 kernel 重新載入設定的匯入項目，不執行 `startup.py` 或清空 namespace；使用者變數和快取 startup binding 保留既有綁定。啟動程式在 kernel 啟動/重啟或明確選擇 Reload and run 時執行。Apply 不重啟 kernel，因此保留 console 輸入/歷史與矩陣分頁。
-- Settings 對話框將 Cancel/Apply footer 放在可伸展的分頁區下方；設定頁捲動或內容延伸時，footer 仍維持在底部。
-- Workspace 陣列按鈕與雙擊操作都開啟既有矩陣分頁；Inspector 收合只隱藏內容，標題列上的箭頭/標題仍可展開。開啟陣列時會展開 Inspector。關閉時保存視窗 geometry、splitter 尺寸與 Inspector 收合偏好。
-- `protocol.py` 與 `MatrixTableModel` 定義 JSON DTO 和有界矩陣分頁。一般矩陣每頁最多 32 × 16 個值，表格最多保留 8 頁快取；矩陣分頁的 shape/slice metadata 查詢不讀取整張 array。Workspace 的 Min/Max 欄位在顯示時才掃描數值；FXP 陣列的飽和摘要最多檢查 4,096 格，超過上限不掃描整張陣列並回報未知。複製整張矩陣上限為 100,000 cells，超過時請由 Python 匯出。
+```text
+rpk-calc (cli.py)
+ ├── -e / --eval ──> WorkspaceSession（無介面；讀取 CalcConfig 與同目錄 startup.py；無 Qt、無 kernel）
+ └── GUI (ui/app.py: CalculatorWindow)
+      ├── 簡易頁面 ──> SimpleCalcWidget -> SimpleCalcEngine (local_engine.py，同程序執行)
+      │                                    （使用 Fraction / Decimal + scalar_fxp；無 kernel、無 apytypes）
+      └── Python 頁面 ──> CalcMainWindow -> CalcController (controller.py)
+                                              │ 127.0.0.1 Jupyter 通道（僅傳遞 JSON DTO）
+                                              ▼
+                                         KernelTransport (kernel_client.py)
+                                              │
+                                              ▼
+                                         CalcKernelRuntime (kernel_runtime.py) -> WorkspaceSession
+```
+
+| 檔案 | 職責 |
+|---|---|
+| `cli.py` | 解析引數（`-V`/`--version`、`-c`/`--config`、`-e`/`--eval`、`--simple`、`--python`/`--studio`、`--mode`）、分派無介面 `--eval`，以及檢查選配套件錯誤。 |
+| `local_engine.py` | 實作 `SimpleCalcEngine` 狀態、運算式解析與求值器、4 種移位模式、`NAND`/`NOR`、`DEC` 未縮放整數語意與 `display_fraction`。 |
+| `ui/app.py` | `CalculatorWindow` 外殼管理 `SimpleCalcWidget` 與延遲建立的 `CalcMainWindow` 切換，同步共用 `CalcConfig` 與視窗幾何狀態。 |
+| `controller.py` | `CalcController` 序列化 Studio GUI 請求、追蹤 `view_id` 與 `revision`、協調忙碌與不同步狀態，並同步 `CalcConfig`。 |
+| `kernel_client.py` | `KernelTransport` 管理單一由應用程式擁有的 IPython 子程序生命週期，透過 `127.0.0.1` Jupyter 通道通訊並處理逾時與資源清理。 |
+| `kernel_runtime.py` | `CalcKernelRuntime` 在 kernel 內執行命令視窗程式碼、維護 `WorkspaceSession` 與 `EditJournal`，並處理快照、分頁與編輯請求。 |
+| `protocol.py` | JSON-only DTO 轉換、`PROTOCOL_VERSION = 1`、16 進位 `build_id()`、`PAGE_ROWS = 32`、`PAGE_COLS = 16`、`MAX_COPY_CELLS = 100_000` 與 `CONTROL_MIME`。 |
+| `core/session.py` | `WorkspaceSession` 命名空間、`whos`/`clc`/`clear`、`WorkspaceRowSnapshot`/`MatrixSnapshot` 及稀疏陣列來源追蹤 sidecar。 |
+| `core/config.py` | `CalcConfig` 讀寫（`~/.rpkbin/calc_settings.json` 或 `--config`）、`KERNEL_CONFIG_FIELDS` 與 `ALL_WORKSPACE_COLUMNS`。 |
+| `core/public_fxp.py` | 公開建構函式 `fxp` 與 `fxpi`（`RpkFixed`／`RpkFixedArray`），繫結目前工作階段的設定提供者。 |
+| `core/editing.py` | `EditJournal`（100 筆／8 MiB）、原子性 TSV `paste_rectangle`、`conversion_preview` 與 `selection_statistics`。 |
+| `core/representations.py` | 唯讀 `native_bits` 描述子與 `APyFloat` 位元欄位中繼資料（含 4,096 位元 `int` 顯示上限）。 |
+| `core/startup.py`、`core/auto_imports.py` | `StartupFile` 修訂版本檢查與舊版遷移，以及驗證後的絕對路徑自訂匯入載入。 |
+
+---
+
+## `SimpleCalcEngine`（`local_engine.py`）架構邊界
+
+`SimpleCalcEngine` 負責簡易模式的獨立定點數與程式設計師計算機核心：
+
+- **同程序執行且無選配套件依賴**：`SimpleCalcEngine` 在 Qt 程序內同步執行，只使用 Python 標準函式庫 `fractions.Fraction`、`decimal.Decimal`，以及 `core/format_engine.py` 和 `core/scalar_fxp.py`。它不啟動 IPython 子程序，也不匯入 `apytypes` 或 `numpy`。
+- **擁有的本機狀態**：每個 `SimpleCalcEngine(config: CalcConfig)` 實例擁有：
+  - `primary_spec: FxpSpec | None`（未設定時 `.spec` 回退至 `INT32 = FxpSpec(wl=32, fwl=0, signed=True)`）與 `compare_specs: list[FxpSpec]`。
+  - 目前純量狀態：`exact: Fraction`、`raw_uint: int`、`status_kind: str`（`"exact"`、`"quantized"`、`"saturated"` 或 `"wrapped"`）。
+  - 移位狀態：`shift_mode: str`（`SHIFT_MODES`：`"arithmetic"`、`"logical"`、`"rotate"`、`"rotate_carry"`）與 `carry_bit: int`（`0` 或 `1`）。
+  - 本機變數表 `variables: dict[str, VariableSnapshot | None]`，預設鍵為 `"M"`、`"A"`、`"B"`、`"C"`、`"D"`、`"E"`、`"F"`（加上 `SimpleCalcWidget` 新增的自訂識別字槽位），以及最多保留最近 100 筆的 `history: list[tuple[str, VariableSnapshot]]`。
+- **模式隔離與共用設定**：
+  - `SimpleCalcEngine.variables` 與 `SimpleCalcEngine.history` 不會進入 `WorkspaceSession.user_ns`、`EditJournal` 或 `CommandWindowWidget` 歷史。
+  - 在 `CalculatorWindow` 中切換簡易與 Python 模式時，未啟用頁面在 `ActivePageStack` 上會設為停用並隱藏。Python Studio（`CalcMainWindow` 與 `CalcController`）於首次切換至 `"python"` 時才延遲建立，切回 `"simple"` 後仍保持執行。
+  - 兩個模式共用 `CalcConfig`。簡易模式中的本機設定變更（主要 FXP 格式、格式歷史、量化／溢位抽屜、位元順序）會發出 `local_state_changed`，更新 `CalculatorWindow.config`；若 Studio 已建立則同步呼叫 `CalcController.update_config(cfg)`，否則直接寫回設定檔。
+- **有界精確求值與不變條件**：
+  - 輸入與格式字串上限為 `_MAX_INPUT = 512` 字元；括號巢狀上限為 `_MAX_DEPTH = 64` 層，一元運算子（`+`、`-`、`~`）採迴圈迭代解析以避免 `RecursionError`。
+  - 字長 `wl` 限制在 `[1, 256]`（UI 格式抽屜微調框限制 `WL` 為 `1..128`、`FWL` 為 `-128..128`），`parse_format()` 要求 `abs(fwl) <= 256`，移位次數限制為 `[0, 256]` 的整數且以 `unscaled=True` 解析，不受 `2^-fwl` 縮放影響。
+  - `evaluate()` 具交易性：解析前先保留 `carry_bit`，若求值失敗便還原 `carry_bit`，且不改動 `exact`、`raw_uint` 與 `status_kind`。
+  - `set_primary()` 從 `self.exact` 而非 `self.real` 重新量化，在切換主要格式時保留精確的 `REAL` 數值。
+  - `parse_operand()` 拒絕緊接在 `0x`、`0o`、`0b` 前綴後的 `+` 或 `-`，對非 `DEC` 進位字面值檢查 `0 <= value < 2^wl`，對 `DEC` 整數字面值則乘以 `2^-fwl`。
+  - `display_fraction()` 在分母為 `2^a * 5^b` 且位數不超過 `_MAX_EXACT_BITS = 3322`、冪次不超過 `_MAX_EXACT_POWER = 1000` 時輸出精確有限小數（避開 Python 4,300 位數整數轉字串上限），其餘情況改用 16 位有效數字的 `Decimal` 表示。
+- **範圍邊界**：`SimpleCalcEngine` 僅支援純量定點數與整數位元運算；陣列、NumPy／SciPy、`APyFloat`、`RpkFixed`／`RpkFixedArray`、`EditJournal` 與 `startup.py` 皆僅屬於 `WorkspaceSession`（Python Studio 與 `--eval`）。
+
+---
+
+## Python Studio 職責與不變條件
+
+- `kernel_client.py` 透過綁定 `127.0.0.1` 的 Jupyter 通道啟動並管理單一由應用程式擁有的 IPython 子程序，將 `Path(__file__).resolve().parents[3]` 置於 `PYTHONPATH` 前端，並以非阻塞方式處理回覆。`_idle_clock()` 在計算內部請求 15 秒逾時時會扣除使用者 Cell 執行時間；`_timed_out_ids` 忽略逾期內部請求的遲到回覆，避免誤清正在執行的使用者狀態；`_cleanup_resources()` 會在正常關閉、啟動逾時（25 秒）或健康檢查失敗時統一清理通道、kernel、Log 檔案與暫存執行目錄。Kernel 不會自動重啟，關閉視窗時由應用程式終止。
+- `kernel_runtime.py` 在 kernel 內執行使用者程式碼、擁有 `WorkspaceSession` 與 `EditJournal`，並處理檢視、分頁、複製、預覽、統計與修改請求。GUI 僅接收格式化後的快照，不接收 Python 物件或完整陣列。
+- `controller.py` 序列化 GUI 請求（佇列上限 32 筆）、追蹤 `view_id` 與工作區 `revision`，並透過 `interaction_enabled` 協調忙碌狀態。`restart_kernel()` 會將 `self.revision` 重設為 `-1`，確保重啟後從 `revision = 0` 開始的回覆不會被誤丟棄。當符合目前 `revision` 的矩陣分頁請求失敗或回傳空頁時，發出 `matrix_page_failed` 以清除未決圖磚狀態。`update_config()` 透過 `op: "config"` 同步 `KERNEL_CONFIG_FIELDS`（`format_preset`、`custom_signed_tpl`、`custom_unsigned_tpl`、`custom_int_tpl`、`default_quant`、`default_overflow`、`auto_import_groups`、`custom_import_groups`、`startup_file`、`visible_columns`），並在 `transport.ready` 為否或 `_out_of_sync` 時略過無效排隊。`inspector_pin_mode` 不在 `KERNEL_CONFIG_FIELDS` 內，由 `CalcController` 在 `preview`／`reformat` 請求中明確傳遞 `pin_mode`。
+- `CalcMainWindow` 採用 Qt Fusion 樣式，確保搭配既有 QSS 在 Windows 11 上正常繪製核取方塊勾選狀態。Workspace 的純量 Value／Format 操作導向 Inspector 控制項，陣列 Value 則開啟矩陣編輯器；**命令提示**（或 **說明 → 命令提示**）開啟包含 **FXP**、**Python / NumPy** 與 **Workspace** 的三分頁非模態參考視窗，預設顯示 **FXP**。
+- `SettingsDialog` 收集偏好並提供唯讀啟動檔預覽。外觀設定與 `keep_english_terms` 僅更新 Qt；數值預設則更新執行中的 session。套用內建函式群組或自訂匯入變更時，只會在既有 kernel 重新載入設定的匯入項目，不執行 `startup.py`、不清除命名空間、也不重啟 kernel。啟動程式只在 kernel 啟動／重啟或明確執行 **重新載入並執行** 時執行。
+- 設定對話框將取消／套用頁尾置於可伸展的分頁區下方，捲動設定頁時頁尾維持對齊。
+- 收合 Inspector 僅隱藏主體並保留標題列箭頭，開啟陣列時會重新展開 Inspector；關閉視窗時保存幾何位置、分隔線尺寸與 Inspector 收合狀態。
+- `protocol.py` 與 `MatrixTableModel` 定義 JSON DTO 與有界矩陣分頁（`PAGE_ROWS = 32`、`PAGE_COLS = 16`，`MatrixTableModel` 最多快取 `MAX_CACHED_PAGES = 8` 頁）。形狀與切片中繼資料查詢不讀取完整陣列；Workspace Min/Max 僅在該欄顯示時掃描；FXP 陣列飽和摘要最多檢查 4,096 格（`MAX_SATURATION_CHECK_CELLS`）；複製整張矩陣上限為 100,000 格（`MAX_COPY_CELLS`）。
+- 原生數值的 **轉為 FXP…** 對話框送出帶有 `expected_revision` 防護的轉換請求；FXP 行內格式控制與 **轉為浮點數…** 共用同一轉換路徑。
+
+---
 
 ## FXP 轉換來源與狀態
 
-APyTypes constructors 建立的原生值沒有 calculator conversion-reference metadata，因此會顯示 `No conversion reference (error unknown)`，即使 bits 精確表示輸入值也一樣。Python `float` 是 binary64，例如 `0.1` 已是近似十進位值。GUI Real 數值編輯或 Real pin 重新格式化會建立新的比較來源；raw-bit 編輯與 Hex pin 重解讀不會。Inspector 的精確轉換狀態只比較有追蹤的 GUI 操作結果與該次實際輸入，不代表原始十進位意圖或此前算術沒有誤差。
+原生 APyTypes 建構式建立的數值沒有計算機轉換來源中繼資料，即使其位元完全符合輸入，仍會顯示 `No conversion reference (error unknown)`。Python `float` 採用 binary64（例如 `0.1` 本身已是十進位 0.1 的二進位近似值）。唯有 GUI Real 編輯、`fxp(...)` 或 Real 釘選重設格式會記錄比較來源；原始位元編輯與 Hex 釘選重解讀不會記錄。
 
-原生 constructor 起始沒有 GUI conversion-reference 資料；APyFixed scalar 會顯示 `No conversion reference (error unknown)`，直到追蹤到 GUI Real 編輯或 Real pin 重新格式化。原生 APyFixedArray 的 GUI 編輯會由 session sidecar 依原 owner 稀疏記錄 provenance，不替換陣列，也不破壞 aliases。讀取時檢查 owner、shape、FXP spec 與目前 raw bits；不相符時診斷為 unknown。這是有界診斷 metadata，不是追蹤任意 Python 編輯的歷史；Python 寫入相同 bits 後無法分辨是來源未變或重新寫回。
+對於原生 `APyFixedArray` 的 GUI 編輯，`WorkspaceSession` 會在有界 sidecar（`_native_sources`）依原擁有者物件稀疏保存來源資料，不替換原陣列也不破壞別名參考。讀取時驗證擁有者身分、shape、FXP 規格與目前原始位元，任一不符便回報未知。Sidecar 最多保留 32 個擁有者與 100,000 筆儲存格紀錄並採 LRU 淘汰（僅移除診斷資料，不改動數值）。重設會清空 sidecar，重新整理會移除已不存在命名空間的擁有者，複製變數會一併複製有效紀錄，復原／重做則還原來源中繼資料。
 
-APyFixedArray constructor 不會建立 GUI provenance。GUI 編輯將變更格子的來源稀疏記在 session sidecar，避免複製整個 array。sidecar 最多保留 32 個 owner、100,000 筆 cell records；LRU 淘汰只移除診斷資料，不改數值。Reset 清除 sidecar；refresh 會移除 namespace 已不存在的 owner。Duplicate 會複製有效紀錄，Undo/Redo 會還原來源 metadata。Settings 的 `default_quant` / `default_overflow`（預設 RND/SAT）套用於 GUI 實數值編輯、native-to-FXP 轉換與 Real pin 的 FXP 格式變更；不會覆蓋 APyTypes constructor 行為，也不是一般 Python/NumPy/APyTypes 算術的全域設定。原生 APyTypes constructors 使用自己的量化和溢位預設（通常 nearest ties away 與 WRAP）。`protocol.py` 的 build id 涵蓋 FXP/session/protocol 核心來源；不相容的 GUI/kernel build 會拒絕請求並要求重啟。
+設定中的 `default_quant` 與 `default_overflow`（預設 `"RND"` 與 `"SAT"`）套用於 GUI 實數編輯、原生轉 FXP、Real 釘選格式變更，以及 `fxp(...)` 預設參數；它們不覆蓋原生 APyTypes 建構式（`APyFixed.from_float(...)` 預設為 nearest ties away 與 `WRAP`）或主控台算術。
 
-`RpkFixed` 與 `RpkFixedArray` 保留 GUI metadata 與 `copy()` 行為。算術運算子直接繼承 APyTypes，不由計算機額外擴寬、轉換操作數或包裝結果。結果 bits、格式與例外依安裝的 APyTypes 版本決定；Python 混合操作數在原生轉換時可能溢位。結果型別依原生分派決定（包含適用時的 NumPy 分派），計算機不額外包裝或替新結果建立 GUI 轉換來源；明確的 GUI 編輯仍採所選 Pin／量化／溢位策略。
+`RpkFixed` 與 `RpkFixedArray` 保留 GUI 中繼資料與 `copy()` 行為，算術運算子直接繼承 APyTypes，不額外擴寬運算元或包裝結果。運算結果型別遵循原生 APyTypes／NumPy 分派，且不附帶 GUI 轉換來源。
+
+---
 
 ## Workspace 陣列飽和標記
 
-Kernel 產生 `WorkspaceRowSnapshot.is_saturated: bool | null`，Qt 消費此 DTO。`true` 表示至少一格目前 bits 仍對應已追蹤的 GUI 飽和編輯；`false` 表示每格都有符合目前 bits 的來源且均未飽和；`null` 表示來源不完整、bits 與來源不符，或陣列超過 4,096 格。超過上限的整體摘要保守維持 unknown 且不掃描全陣列；所選格仍可顯示 `SATURATED`。小型陣列以 sparse GUI `cell_sources` 確認來源。單格 Inspector 不受 array size 限制，仍依所選 cell 的來源精確判斷。
+Kernel 產生 `WorkspaceRowSnapshot.is_saturated: bool | None` 供 Qt 顯示：
 
-Qt 只在 FXP array 的 Workspace Value 欄加 `[SAT]` 或 `[SAT?]` 前綴；`true` 的 `[SAT]` 用紅色，`null` 的 `[SAT?]` 為中性色並帶有解釋來源未完整驗證的 tooltip；`false` 不加標記。`[SAT?]` 代表未知，不代表已飽和或安全。標記是顯示層文字，不改 `value_str` 或複製的數值。4,097 格的 `APyFixedArray` 超過掃描上限，因此 Workspace 顯示 `[SAT?]`。若使用者在 8-bit、4 個 fractional bits 的 Inspector Real 欄輸入 `99`，該格會飽和為 7.9375，Inspector 顯示 `SATURATED`；超過 4,096 格時整體摘要保守維持 unknown。
+- `True`：至少一格目前的位元仍符合追蹤到的飽和 GUI 編輯。
+- `False`：每格皆有符合的已驗證來源且均未飽和。
+- `None`：來源不完整、位元與紀錄來源不符，或陣列超過 4,096 格（`MAX_SATURATION_CHECK_CELLS`）。
 
-DTO 例：`{"is_saturated":null}`。此欄位由 kernel 計算並經 JSON 傳給 Qt；build id 不一致時沿用既有拒絕請求與要求重啟的檢查。單格 array 編輯只更新該格的 saturation metadata，不再對整個 saturation mask 執行 `np.any` 全陣列掃描。
+Qt 在 FXP 陣列的 Workspace Value 欄加上前綴：紅色 `[SAT]` 代表 `True`，中性 `[SAT?]`（附帶說明來源不完整的 tooltip）代表 `None`，`False` 不加標記。標記僅屬於顯示文字，不影響 `value_str` 或複製內容。單格編輯僅更新該格的飽和中繼資料，不執行全陣列掃描；單格 Inspector 檢查亦不受陣列大小上限影響。
 
-## Native 值與 FXP 邊界
+---
 
-Python `int` 保有任意精度；在 console 執行 `a = 2` 會依 Python 語意將 `a` 重新綁定為 int。Inspector 以 `PlainValueSnapshot` 表示一般數值；進位與 bits 按原型別解讀，不套用隱含 FXP word length 或 pin；Workspace 以原生型別/dtype 顯示，不假定 native 是 FXP 或帶有 LSB。Inspector 轉換控制項可將原生實數 scalar/array 轉成 FXP，也可將 FXP 轉成 Python `float` 或 NumPy `float64`；陣列轉換保留 shape。APyFloat 與不支援型別的轉換或格式操作使用 console。Native ndarray 的矩陣 Format 欄仍顯示 dtype。FXP 格式變更作用於整個變數/陣列，並依 Inspector Real/Hex pin 決定保值方式；矩陣編輯器既有的 Format/Preview 控制也使用同一轉換流程。Native↔FXP 與 FXP→float 是數值轉換，不受 pin 影響。
+## 原生數值與 FXP 邊界
 
-Inspector 的 `native_bits` 由 kernel 內的 `representations.py` 產生，Qt 依 descriptor 顯示原生表示。NumPy 固定寬度整數 scalar：Inspector 可帶有唯讀 `native_bits` 摘要（dtype、位寬、signedness、Hex 與 binary），不提供 FXP bit 編輯。Python `int` 的 HEX/BIN 使用負號與 magnitude，不指定儲存字長。Python float 與 NumPy float16/32/64 依儲存 bits 顯示浮點欄位與特殊值分類，維持唯讀；longdouble、complex 與 APyFloatArray 不猜測格式。
+Python `int` 保有任意精度，主控台中的 `a = 2` 依 Python 語意重新繫結變數。Inspector 以 `PlainValueSnapshot` 呈現原生數值，不推測隱含的 FXP 字長或釘選語意。Inspector 可將原生實數純量／陣列轉成 FXP，或將 FXP 轉為 Python `float`／NumPy `float64`（保留陣列 shape）；`APyFloat` 與其餘型別請於主控台轉換。
 
-Kernel 預載 `apy`、`APyFixed`、`APyFixedArray`、`APyFloat` 與 `APyFloatArray`，它們是原生 APyTypes module/class objects，不是 wrapper。直接使用 constructor：`APyFixed.from_float(0.25, bits=16, frac_bits=12)` 轉換數值；`APyFixed(0x400, bits=16, frac_bits=12)` 將第一個參數當 raw bits；`APyFixedArray.from_float([0.25, -0.125], bits=16, frac_bits=12)` 建立陣列；`APyFloat.from_float(0.25, exp_bits=8, man_bits=23)` 建立 APyFloat。`APyFixed(7, 4, 2)` 的 raw bits 是 7、`int_bits=4`、`frac_bits=2`，值為 1.75；若要編碼數值 7，使用 `APyFixed.from_float(7, int_bits=4, frac_bits=2)`。APyTypes constructors 使用自己的預設（通常 nearest ties away 與 WRAP），不套用 GUI RND/SAT，也不建立 conversion-reference metadata。單一 APyFloat 支援數值預覽、浮點 bits 檢視與 bit 切換；格式與 bias 固定，數值/格式欄唯讀。
+Kernel 的 `core/representations.py` 產生唯讀 `native_bits` 描述子：
+- NumPy 固定寬度整數純量回報 dtype、位寬、有號性、十六進位與二進位，不開放 FXP 位元編輯。
+- Python `int` 的 Hex／Binary 採有號絕對值表示；超過 4,096 個 magnitude bits（`MAX_INTEGER_DISPLAY_BITS`）時改為有界預覽並停用截短複製。
+- Python `float` 與 NumPy `float16`／`float32`／`float64` 依儲存位元顯示 sign、exponent、fraction 與特殊值分類（不推測 `longdouble`、`complex` 與 `APyFloatArray` 佈局）。
 
-GUI 格式輸入由 `FormatEngine.parse_input` 依標準語法與目前啟用的自訂模板解析。只有能唯一還原 signedness、WL、FWL 的簡單 placeholder 才支援；重複欄位必須一致，相鄰數字欄位與進階格式規格不做逆解析。包含與標準語法衝突的歧義一律拒絕。`CalcController` 將解析後的 `FxpSpec` 正規化為 canonical Q 字串，再產生既有 JSON 請求，kernel 仍消費相同的標準格式契約；不新增 config 欄位或 transport schema，也不改 APyTypes 原生建構方式。本工具的 `Qm.n` 中 `m` 包含 sign bit，總寬度為 `m+n`；`UQm.n` 為 unsigned。其他工具可能使用不同慣例，因此 constructor 位元數是最清楚的硬體宣告。
+GUI 格式輸入由 `FormatEngine.parse_input()` 依 `Q`、`MATLAB` 與目前啟用的自訂範本解析。僅有能唯一還原正負號、`wl` 與 `fwl` 的簡單佔位符可逆向解析；衝突輸入會被拒絕，`CalcController` 在送出請求前會將 `FxpSpec` 正規化為標準 `Qm.n`／`UQm.n` 字串。
 
-若需要重複使用簡寫，可在 **設定 → 自動載入** 定義，例如 `def fxp(value, bits=16, frac_bits=12): return APyFixed.from_float(value, bits=bits, frac_bits=frac_bits)`。這是使用者自行定義的 startup script，不是預載的 calculator constructor。GUI 轉換由 Inspector 的轉換控制項執行；Workspace 只負責導向該區，不直接編輯數值。
+FXP Inspector 的 Real 數值欄使用受限 AST 求值器，接受數值字面值、`pi`/`e`、四則與整數位元運算，拒絕函式呼叫、屬性存取、容器與一般語句。輸入上限為 4,096 字元、512 個 AST 節點、16,384 位元整數結果、絕對值不超過 4,096 的指數與移位量，且須為有限實數。Python REPL 不受此欄位解析器限制。
 
-矩陣標籤依型別顯示 **Array format:**（FXP）或 **Dtype:**（native）；Inspector 對 native 顯示 **Type:**，FXP 格式列明示 **Whole variable**。
+---
 
-Kernel DTO 回報整個變數可用的轉換能力，不依目前選取的陣列格判斷。Inspector Value 編輯只作用於選取元素；轉換操作則作用於整個變數或陣列。轉換請求會在 envelope 帶上 `expected_revision`，kernel 在修改前檢查版本。Preview DTO 回傳 pin、quantization、overflow 與 revision；若預覽後策略已變更，UI 會拒絕 Apply。可寫入的 NumPy 陣列編輯會保留 dtype；整數值有小數或超出範圍時拒絕。Native-to-FXP 轉換與 Real pin 的 FXP 格式變更採用 GUI 量化/溢位設定；這些設定不會改變 APyTypes constructors 或 Python console 算術。FXP Inspector 的 Real 數值欄使用受限 AST evaluator：接受數值字面值、`pi`/`e`、算術與整數 bitwise 運算，拒絕函式呼叫、屬性存取、容器和一般 Python 語句。輸入上限為 4,096 字元與 512 AST 節點，整數結果上限 16,384 bits；指數絕對值及移位量最多 4,096，且結果須為有限實數。一般 Python REPL 不受此欄位解析器限制；此限制也不是 kernel sandbox。Native bit operations 由 Python/NumPy REPL 執行；GUI 的 FXP raw-bit 操作不套用到原生值。
+## 數值表示 DTO 與 `APyFloat` 編輯
 
-Inspector 的一般數值 HEX/BIN 欄位唯讀。Python int 超過 4,096 個 magnitude bits 時回傳有標記的有界預覽，並停用截短內容的 Copy；原值不變。Workspace 名稱/type 篩選只改變列表呈現，若目前 Inspector 目標被篩掉，目標和表格捲動位置仍保留。
-
-## 數值表示 DTO 與 APyFloat 編輯
-
-`PlainValueSnapshot.native_bits` 是內部 JSON DTO，producer 是 kernel 的 session，consumer
-是 Qt Inspector。例如單一 APyFloat 的表示（其餘 snapshot 欄位省略）：
+`PlainValueSnapshot.native_bits` 是 kernel session 產生給 Qt 的 JSON DTO，單一 `APyFloat` 的描述子範例如下：
 
 ```json
 {"kind":"float","dtype":"APyFloat","width":8,"hex":"0x1E","binary":"00011110","exp_bits":5,"man_bits":2,"bias":7,"classification":"Normal","editable":true}
 ```
 
-descriptor 的 `editable` 只控制 bit 按鈕，與數值輸入欄的 `PlainValueSnapshot.editable`
-分開。只有單一 APyFloat 開放 bit 編輯；一般浮點數與選取的原生陣列元素保持唯讀 bits。
-Qt 不接收 APyFloat 物件或以 Python float 重建；kernel 以 `to_bits`／`from_bits` 保留
-格式、bias 與 NaN payload。journal 的指紋使用 raw bits 與完整格式，包含正負零，
-不用浮點數相等判定 Undo/Redo。REPL 仍依既有規則清除 GUI 編輯歷史。
+`native_bits["editable"]` 獨立於 `PlainValueSnapshot.editable` 控制位元切換按鈕。只有純量 `APyFloat` 支援位元切換（kernel 以 `to_bits`／`from_bits` 保留格式、bias 與 NaN payload，不經由 Python `float` 重建）；一般浮點數與選取的陣列元素保持唯讀。`EditJournal` 指紋比較原始位元與完整格式（區分 `+0.0` 與 `-0.0`）。
 
-build id 包含 `representations.py`；GUI/kernel 來源不一致時，既有 envelope 驗證拒絕
-回覆並要求重啟。這是內部傳輸 metadata，使用者不需要製作設定或 sidecar。
+---
 
 ## GUI 編輯、矩陣操作與命令歷史
 
-`EditJournal` 由 `CalcKernelRuntime` 擁有，只追蹤 GUI 對 scalar、單格及矩形貼上的數值/位元編輯；最多 100 筆或 8 MiB。它不複製大型陣列，而記錄編輯目標、原 owner、位置、值指紋和結構簽章；Undo/Redo 前會驗證變數綁定、slice/cell、shape、dtype、strides、FXP 格式及當前值。若執行期間有 REPL cell、array 結構操作、整體 array reformat 或 slice 改變，journal 清空；檢查不符也會清空並拒絕 replay。這不是任意 Python 程式的通用復原機制，console 的 Ctrl+Z 仍是文字編輯。
+- **`EditJournal`**（`core/editing.py`）：由 `CalcKernelRuntime` 擁有，追蹤 GUI 對純量、單格與矩形貼上的數值／位元編輯，上限為 100 筆或 8 MiB，不複製大型陣列。復原／重做前會驗證變數繫結、切片／儲存格座標、shape、dtype、strides、FXP 格式與目前數值指紋。執行 REPL cell、陣列結構操作、整體重新格式化或變更切片皆會清空日誌。
+- **TSV 貼上**：`paste_rectangle()` 先解析並驗證整塊矩形、邊界、dtype／範圍與可編輯性（上限為 100,000 格 `MAX_EDIT_CELLS` 與 8 MiB），驗證通過後才寫入，發生未預期錯誤時自動回復。
+- **矩陣快照與統計**：`MatrixSnapshot` 攜帶 `full_shape` 與 `slice_indices`，超過二維時後續軸預設為 `0`。`selection_statistics()` 最多對 100,000 格轉換為 `float64`／`complex128` 計算有限值摘要（`count`、`finite_count`、`sum`、`mean`、`min_abs`、`max_abs`，實數資料另含 `min`／`max`）。
+- **命令歷史**：`CommandWindowWidget` 在 Qt 端保存已送出的命令文字（獨立於 IPython 歷史），上限為 1,000 筆或 1 MiB（單筆超過 1 MiB 會略過）。匯出的 UTF-8 `.py` 檔會註明其中 IPython magic 可能需要 IPython 才能執行。
 
-Paste TSV 先解析並驗證完整矩形、目標邊界、dtype/範圍與可編輯性，之後才寫入；上限為 100,000 cells 與 8 MiB。驗證失敗不會部分套用，非預期寫入錯誤會回復已修改格。單格輸入失敗則保留被拒的字串、顯示錯誤原因，讓使用者修正後重試。
-
-Matrix snapshot 帶有 `full_shape` 和 `slice_indices`；GUI 固定顯示前兩軸，後續軸預設索引 0，並可由切片欄調整；列/欄跳轉採零起始索引。選取矩形統計最多 100,000 cells，只摘要有限值；資料先轉成 float64/complex128，FXP 與大型整數結果是近似值。結果包含 count、finite_count、sum、mean、min_abs、max_abs；實數資料也提供 min/max。整個陣列的轉換及 FXP 格式 Preview/Apply 都由 Inspector 的轉換控制項處理；矩陣編輯器保留給逐格檢視與編輯。
-
-History 由 Qt `CommandWindowWidget` 在前端保存使用者提交的 source，不是 kernel 的 IPython history。每次新 kernel client 建立時清除；最多 1,000 筆/1 MiB，過大的單筆命令整筆省略。搜尋與預覽不執行程式；Use as input 只還原至輸入區，匯出需使用者明確選擇 UTF-8 `.py` 檔。匯出檔註明其中 IPython magic 可能需要 IPython 才能執行。
+---
 
 ## 顯示與 DTO 範圍
 
-`native_bits` 是 Inspector snapshot 中的唯讀 NumPy 整數檢視資料，不建立 FXP 格式。Undo state、矩陣 `full_shape`/`slice_indices`、格式 Preview 與選區 Statistics 都由 kernel 計算後經 JSON DTO 傳給 Qt；例如 Undo 狀態為 `{"can_undo":true,"can_redo":false,"undo_count":1,"redo_count":0}`。Workspace `numeric_display`/`numeric_precision` 只在 Qt 的 Workspace Value 與 Matrix `DisplayRole` 對有限實數顯示字串套用 Full/automatic、Scientific 或 Fixed，小數位數為 1–17；不改 Inspector、Matrix `EditRole`、複製內容或 raw bits。Fixed 預估超過 256 字元時回退為 scientific。View 的 Reset layout 只還原視窗尺寸、splitter 與展開 Inspector，不重建 kernel、不更改外觀偏好。DTO 不包含可由 Qt 獨立修改的數值物件或 namespace。`protocol.py` build id 涵蓋 `core/editing.py`，GUI/kernel build 不一致時拒絕不相容訊息。
+Workspace `numeric_display`（`"auto"`、`"scientific"`、`"fixed"`）與 `numeric_precision`（`1` 至 `17` 位小數）僅作用於 Workspace Value 與 Matrix `DisplayRole` 的有限實數顯示文字；Inspector、Matrix `EditRole`、複製內容與原始位元保留原精確度。Fixed 輸出預估超過 256 字元時會回退為科學記號。**檢視 → 重設版面** 只還原視窗尺寸、分隔線與 Inspector 收合狀態。
 
-## 延後項目
+目前單一命令視窗對應單一 IPython kernel；未來若支援多命令視窗，須先釐清 kernel／命名空間共用策略、輸出串流歸屬與中斷目標。
 
-目前只有一個命令視窗與一個由應用程式擁有的 kernel。增加多個命令視窗前，需先決定它們共用或各自擁有 kernel/namespace、輸出由哪個視窗接收，以及 Stop/interrupt 如何作用；此功能尚未實作。
+---
 
-矩陣維度超過 2 時，顯示其前兩個維度，後續維度索引預設為 0（例如 `A[:, :, 0]`），也可在切片欄設定其他索引，並在頁面提示目前切片。Inspector 和矩陣編輯仍操作 kernel 中原始值；顯示用 snapshot 不是另一份可獨立修改的工作區。
+## Kernel 協定封包
 
-## Kernel 協定範例
-
-控制操作透過 Jupyter `user_expressions` 要求 `application/json` 結果，使用 JSON-only 資料，不使用 pickle。`clc` 會另外以 Jupyter `display_data` 發送 `application/vnd.rpk.calc.control+json` 控制訊息，內容含 `protocol`、`build` 與 `action: "clear_console"`；這只通知前端清畫面，不承載數值資料。簡化的請求與回覆如下：
+控制請求透過 Jupyter `user_expressions` 傳回 `application/json`（不使用 pickle）；`clc` 則透過 IOPub `display_data` 發送 `CONTROL_MIME`（`"application/vnd.rpk.calc.control+json"`）並附帶 `action: "clear_console"`。
 
 ```json
 {
@@ -121,27 +179,26 @@ History 由 Qt `CommandWindowWidget` 在前端保存使用者提交的 source，
 }
 ```
 
-欄位為示意，實際 DTO 由 `protocol.py` 與 `core` snapshot dataclass 定義。每個請求帶 protocol 版本及由協定和執行核心來源計算的 build id；兩者任一不相符即拒收並要求重新啟動，避免 GUI 與 kernel 使用不同資料結構或語意。`view_id` 用來忽略已過期的 UI 選取結果；`revision` 用來拒絕舊矩陣頁面。
+`validate_envelope()` 檢查 `type(payload.get("protocol")) is int` 與 `protocol == 1`，並核對由 `protocol.py`、`kernel_runtime.py` 及 11 個 `core/*.py` 檔案計算出的 `build`；任一不符皆會拒收並要求重啟 kernel。
 
-設定寫入 `~/.rpkbin/calc_settings.json`。connection file、IPython history 和 kernel log 放在 kernel runtime 暫存目錄，關閉時清除；互動歷史不跨 session 保存。`rpk-calc --eval` 是另一條路徑，直接建立 headless `WorkspaceSession`，不啟動或連接 IPython kernel。
+---
 
+## 偏好轉移與啟動檔擁有權
 
-## 設定、語言與偏好轉移
-
-`SettingsDialog` 管理四個設定頁：外觀、FXP 格式、自動載入、偏好管理。`CalcConfig` 是記憶體與設定檔使用的設定模型；`core/settings_transfer.py` 定義可攜出的欄位，並在匯入前驗證，再合併到設定草稿。設定管理產生與讀取的 JSON 例如：
+`SettingsDialog` 提供四個頁面：外觀、FXP 格式、自動載入與偏好管理。`core/settings_transfer.py` 匯出與驗證可攜式 JSON 封包：
 
 ```json
 {"kind":"rpk-calc-preferences","version":1,"preferences":{"language":"zh_TW","theme":"light"}}
 ```
 
-必須符合指定 kind 與版本；未知欄位、不支援的版本、無效型別或值都會遭拒。執行期 `startup_file`、視窗幾何、分隔器/收合狀態、工作區變數與命令歷史不會匯出；可攜用的 `startup_script` 與 `custom_imports` 以原始碼保存在 envelope。匯入先預覽變更；啟動原始碼預設不匯入，除非使用者勾選 **Replace startup.py after Apply (does not run code)**；自訂 import 也預設不匯入，須另外勾選 **Include custom imports (runs after Apply)**。Apply 寫入同意匯入的 startup 原始碼但不執行，並在目前 kernel 載入同意匯入的自訂 import。startup revision 不符即拒絕寫入，取代前備份為 `startup.before-import-HASH.py`。還原預設會保留 startup 檔。Cancel 會捨棄設定草稿，但不會撤銷外部編輯器已儲存的變更。
+執行期 `startup_file`、視窗幾何、分隔線／收合狀態、工作區變數與命令歷史均不匯出。匯入時須明確勾選 **套用後取代 startup.py（不執行程式碼）**（具備 SHA-256 修訂版本檢查與 `startup.before-import-HASH.py` 備份）與 **匯入自訂 import（套用後會載入）** 才會套用對應內容。
 
-語言切換與 `keep_english_terms` 都是 Qt 顯示設定。`keep_english_terms` 預設 `false`，不傳入 kernel 設定；繁體中文介面可用它保留 Command Window、Workspace、Name、Format 等指定應用程式標籤為英文，說明文字仍採所選語言。送出的 Python、變數名稱、數值及使用者啟動程式碼不變。既有 widget tree 就地重新翻譯，不重建 kernel，也不清除 namespace、歷史、待送出的命令輸入或選取狀態。翻譯範圍限於應用程式介面字串。
+`StartupFile`（`core/startup.py`）管理位於目前設定 JSON 檔同目錄下的 `startup.py`（GUI 與 `rpk-calc --eval` 皆同，依 `--config` 或預設 `~/.rpkbin/calc_settings.json` 決定路徑）。舊版 JSON `startup_script` 僅在初始化遷移時寫入一次，若同目錄已存在不同內容的 `startup.py` 則保留現檔並將舊碼備份為 `startup.legacy-HASH.py`。載入順序為內建函式群組、自訂匯入（由 `parse_imports()` 驗證僅允許明確絕對匯入與註解，禁止 `_` 開頭綁定）、最後執行 `startup.py`。每條自訂匯入語句各自獨立嘗試，單一失敗不影響其餘有效匯入。
 
-## 啟動檔的擁有權與執行
+---
 
-GUI 的 `StartupFile` 會在目前設定檔所在資料夾建立 `startup.py`；CLI headless `--eval` 使用預設設定資料夾。初始化後，GUI 以 `startup.py` 為單一來源。`CalcConfig.startup_file` 只在執行期攜帶解析後路徑，不寫入設定檔。舊版 JSON 的 `startup_script` 僅供遷移讀取，並保留為偏好匯出 envelope 中的可攜原始碼。首次建立的 `startup.py` 只有註解範例，包括 SciPy imports、明確覆寫 FFT helper、`db20` 與 `fxp`。
+## 延伸閱讀
 
-遷移時若尚無 `startup.py`，舊 JSON 程式碼會寫入新檔；若同資料夾已有不同的 `startup.py`，程式保留現有檔案，將舊程式另存 `startup.legacy-HASH.py` 並顯示通知。Settings 的 Auto-import 頁只讀取並預覽檔案，不提供內嵌編輯器。**Open text editor** 在 Windows 開啟 Notepad、macOS 開啟 TextEdit；Linux 會要求指定文字編輯器執行檔。**Refresh preview** 重新讀取外部儲存內容；Cancel 不會回復外部儲存。Kernel 讀取檔案後以實際路徑編譯，並在目前 session namespace 執行；錯誤 traceback 包含檔案路徑與行號。啟動檔定義的函數可讀取之後在命令視窗設定的變數。
-
-Apply 儲存偏好，並立即在目前 kernel 載入變更的內建函數群組/自訂 import；使用者變數及快取 startup binding 保留，且不執行 `startup.py`。啟動檔只在 kernel 啟動/重啟或使用者選 **Reload and run** 時執行。自訂 import 僅接受明確的絕對 Python import 語句與註解；萬用字元、相對 import、其他程式碼，以及以 `_` 開頭的匯入名稱或別名都會遭拒。套件須已安裝，Calc 不會安裝套件。載入順序為內建函數群組 → 自訂 import → `startup.py`。各 import 語句分別嘗試；失敗會顯示於 Auto-import 狀態與應用程式錯誤，其餘成功項目仍會載入。失敗語句不發布部分 binding，但 Python module 副作用無法回滾。Startup reload 就是一般 Python 執行：不會回滾先前副作用、不保證移除舊腳本產生的名稱，也不會自動重新載入已匯入的 module。只有仍由 calculator 擁有的舊 binding 才會更新；使用者重新綁定的名稱會保留，腳本明確賦值則依 Python 規則覆寫。`clear` 會恢復快取 helper，但不重跑腳本。匯入的啟動原始碼須明確同意並按 Apply 才會取代檔案；revision 檢查會拒絕與外部編輯衝突的覆寫，並先建立 `startup.before-import-HASH.py` 備份。
+- [rpk-calc 快速入門與參考](README.md)
+- [文件導覽](../README.md)
+- [rpk-calc Architecture and Data Boundaries (English)](../../en/calc/architecture.md)

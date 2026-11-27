@@ -12,11 +12,11 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
 
-from rpkbin.calc.core.config import CalcConfig, KERNEL_CONFIG_FIELDS
-from rpkbin.calc.core.settings_transfer import (
+from rpkbin.app.calc.core.config import CalcConfig, KERNEL_CONFIG_FIELDS
+from rpkbin.app.calc.core.settings_transfer import (
     KIND, VERSION, export_preferences, merge_preferences, parse_preferences,
 )
-from rpkbin.calc.ui.settings_dialog import SettingsDialog
+from rpkbin.app.calc.ui.settings_dialog import SettingsDialog
 
 
 @pytest.fixture(scope='module')
@@ -47,14 +47,14 @@ def test_language_and_blank_startup_defaults_preserve_saved_code(tmp_path):
 
 
 @pytest.mark.parametrize('click_label', [False, True])
-@pytest.mark.parametrize('pack', ['basic_math', 'linalg', 'fitting_comm', 'fft'])
+@pytest.mark.parametrize('pack', ['fxp_core', 'numpy', 'math'])
 def test_pack_indicator_and_label_click_save_identity(dialog, app, pack, click_label):
     dialog.tabs.setCurrentIndex(2)
     app.processEvents()
     checkbox = dialog._group_checks[pack]
     before = checkbox.isChecked()
     # Text follows the indicator; choose a point inside its actual label.
-    point = QPoint(32 if click_label else 7, checkbox.height() // 2)
+    point = QPoint(17 if click_label else 7, checkbox.height() // 2)
     QTest.mouseClick(checkbox, Qt.MouseButton.LeftButton, pos=point)
     assert checkbox.isChecked() != before
     dialog._on_save()
@@ -239,7 +239,9 @@ def test_open_settings_folder_uses_actual_config_path(dialog, monkeypatch):
 def test_imported_script_apply_saves_without_execution_and_cancel_keeps_file(dialog, tmp_path):
     marker = tmp_path / 'ran.txt'
     script = f'from pathlib import Path\nPath({str(marker)!r}).write_text("ran")'
-    original = dialog.startup_store.read()
+    original = dialog._startup_source()
+    dialog.startup_store.initialize(original)
+    dialog._startup_revision = dialog.startup_store.revision()
     dialog._apply_import({'startup_script': script}, include_startup=True)
     assert dialog.startup_store.read() == original
     assert not marker.exists()
@@ -262,7 +264,7 @@ def test_import_conflict_never_overwrites_external_editor(dialog, monkeypatch):
 
 
 def test_editor_opens_text_editor_instead_of_script_association(dialog, monkeypatch):
-    import rpkbin.calc.ui.settings_dialog as module
+    import rpkbin.app.calc.ui.settings_dialog as module
     if module.sys.platform != 'win32':
         pytest.skip('Windows text editor launch contract')
     commands = []
@@ -292,7 +294,7 @@ def test_bad_external_encoding_keeps_settings_and_repair_controls_available(app,
 
 
 def test_legacy_conflict_notice_remains_available_in_settings(app, tmp_path):
-    from rpkbin.calc.controller import CalcController
+    from rpkbin.app.calc.controller import CalcController
     path = tmp_path / 'settings.json'
     CalcConfig(startup_script='legacy = 1').save(path)
     (tmp_path / 'startup.py').write_text('existing = 2', encoding='utf-8')

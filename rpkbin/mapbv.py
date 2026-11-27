@@ -1,4 +1,4 @@
-﻿"""
+"""
 MapBitVector (MapBV) — A lightweight BitVector library for IC design & verification.
 
 Classes:
@@ -17,6 +17,15 @@ import numbers
 import operator
 import warnings
 from abc import ABC, abstractmethod
+
+__all__ = ["MapBV", "MapBVExpr", "const", "var", "concat"]
+
+
+def _as_index(val: object, what: str = "index") -> int:
+    """Convert integer-like *val* to built-in ``int``, rejecting ``bool``."""
+    if isinstance(val, bool):
+        raise TypeError(f"{what} must be an int, not bool")
+    return operator.index(val)
 
 
 # ---------------------------------------------------------------------------
@@ -68,11 +77,15 @@ class _BVBase(ABC):
     def __hash__(self) -> int:
         return id(self)
 
-    def value_eq(self, other: "MapBV | int") -> bool:
+    def value_eq(self, other: _BVBase | int) -> bool:
         """Compare values, not identity."""
-        if isinstance(other, int):
-            return self.value == other
-        return self.value == other.value
+        if isinstance(other, _BVBase):
+            return self.value == other.value
+        try:
+            idx = operator.index(other)
+        except TypeError:
+            return False
+        return self.value == idx
 
     # -- operators ---------------------------------------------------------
 
@@ -208,6 +221,23 @@ class MapBVExpr(_BVBase):
             return (a >> b) & self._mask
         raise ValueError(f"Unknown operator: {self._op}")
 
+    def _format_expr(self) -> str:
+        def fmt(op: MapBV | MapBVExpr | int) -> str:
+            if isinstance(op, MapBVExpr):
+                return op._format_expr()
+            if isinstance(op, MapBV):
+                if op._kind == "CONST":
+                    return f"const({op.to_hex()}, {op._width})"
+                return op._name
+            return str(op) if self._op in ("<<", ">>") else f"0x{op:X}"
+
+        if self._op == "~":
+            return f"~{fmt(self._operands[0])}"
+        return f"({fmt(self._operands[0])} {self._op} {fmt(self._operands[1])})"
+
+    def __repr__(self) -> str:
+        return f"<MapBVExpr {self._format_expr()} width={self._width} value={self.to_hex()}>"
+
 # ---------------------------------------------------------------------------
 # MapBV  — the main BitVector class
 # ---------------------------------------------------------------------------
@@ -229,6 +259,8 @@ class MapBV(_BVBase):
         low: int,
         value: int = 0,
     ) -> None:
+        high = _as_index(high, "high")
+        low = _as_index(low, "low")
         value = operator.index(value)
         if parent is None or isinstance(parent, str):
             # New instance
@@ -345,9 +377,9 @@ class MapBV(_BVBase):
         (like reserved/read-only bits); a ``UserWarning`` is emitted only if the
         written bits differ from the constant.
         """
-        if self._kind == "CONST":
+        if self._is_const_backed():
             raise TypeError(
-                f"Cannot write 0x{val:X} to a constant MapBV (width={self._width})."
+                f"Cannot write {val!r} to a constant MapBV (width={self._width})."
             )
 
         val = operator.index(val)
@@ -433,17 +465,23 @@ class MapBV(_BVBase):
 
     def __getitem__(self, key: int | slice) -> MapBV:
         """``bv[high:low]`` or ``bv[bit]`` → child MapBV (inclusive both ends)."""
-        if isinstance(key, int):
-            high = low = key
-        elif isinstance(key, slice):
+        if isinstance(key, slice):
             if key.step is not None:
                 raise ValueError("MapBV slices do not support a step: use bv[high:low]")
-            high, low = key.start, key.stop
+            if key.start is None or key.stop is None:
+                raise ValueError("Both high and low must be specified in slice: bv[high:low]")
+            high = _as_index(key.start, "slice bound")
+            low = _as_index(key.stop, "slice bound")
         else:
-            raise TypeError("MapBV indexing requires int or slice, e.g. bv[7:0] or bv[3]")
-        
-        if high is None or low is None:
-            raise ValueError("Both high and low must be specified in slice: bv[high:low]")
+            if isinstance(key, bool):
+                raise TypeError("MapBV indexing requires int or slice, not bool")
+            try:
+                high = low = operator.index(key)
+            except TypeError:
+                raise TypeError(
+                    "MapBV indexing requires int or slice, e.g. bv[7:0] or bv[3]"
+                ) from None
+
         if high < low:
             raise IndexError(
                 f"Slice [{high}:{low}] is reversed: write bv[high:low] with high >= low"
@@ -518,7 +556,9 @@ class MapBV(_BVBase):
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return f"MapBV(\"{self._name}\", {self._width})"
+        label = self._name if self._kind == "SLICE" else f"{self._name}[{self._high}:{self._low}]"
+        linked = " linked" if self._link_bv_list else ""
+        return f"<MapBV {self._kind}{linked} {label} value={self.to_hex()}>"
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +584,7 @@ def const(value: int, width: int) -> MapBV:
     Returns:
         A ``MapBV`` with ``kind == "CONST"``.
     """
+    width = _as_index(width, "width")
     if width <= 0:
         raise ValueError(f"width must be > 0, got {width}")
     value = operator.index(value)
@@ -569,6 +610,7 @@ def var(name: str, width: int, value: int = 0) -> MapBV:
     Returns:
         A ``MapBV`` with ``kind == "VAR"``.
     """
+    width = _as_index(width, "width")
     if width <= 0:
         raise ValueError(f"width must be > 0, got {width}")
     return MapBV(name, width - 1, 0, value)

@@ -2,9 +2,9 @@ name: Cross-platform regression
 
 on:
   push:
-    paths: ['rpkbin/**', 'tests/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
+    paths: ['rpkbin/**', 'tests/**', 'docs/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
   pull_request:
-    paths: ['rpkbin/**', 'tests/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
+    paths: ['rpkbin/**', 'tests/**', 'docs/**', 'tools/ci/**', 'scripts/**', 'sync_to_public.py', '.github/**', 'pyproject.toml', 'README.md', 'README_zh.md', 'LICENSE']
   workflow_dispatch:
 
 permissions:
@@ -46,8 +46,8 @@ jobs:
           package-manager-cache: false
       - name: Install core and test dependencies
         run: python -m pip install -e "${{ matrix.package }}" pytest
-      - name: Test Wave, JobManager, MapBV and TablePack
-        run: python -m pytest tests/job_manager tests/wave tests/mapbv tests/tablepack -q -ra --basetemp="${{ runner.temp }}/core-tests" --junitxml="${{ runner.temp }}/core-results.xml"
+      - name: Test Wave, JobCore, Flow, MapBV and TablePack
+        run: python -m pytest tests/jobcore tests/flow tests/wave tests/mapbv tests/tablepack -q -ra --basetemp="${{ runner.temp }}/core-tests" --junitxml="${{ runner.temp }}/core-results.xml"
       - name: Test internal public-sync safeguards when available
         if: hashFiles('scripts/test_sync_to_public.py') != ''
         run: python -m unittest discover -s scripts -p test_sync_to_public.py
@@ -57,6 +57,62 @@ jobs:
         with:
           name: core-${{ matrix.os }}-py${{ matrix.python }}
           path: ${{ runner.temp }}/core-results.xml
+          retention-days: 7
+
+  isasim:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package and test dependencies
+        run: python -m pip install -e . pytest
+      - name: Test simulator, GUI, and executable documentation
+        run: python -m pytest tests/isasim tests/isasim_gui -q -ra --basetemp="${{ runner.temp }}/isasim-tests" --junitxml="${{ runner.temp }}/isasim-results.xml"
+      - name: Save simulator test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: isasim-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/isasim-results.xml
+          retention-days: 7
+
+  mcucc:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package and test dependencies
+        run: python -m pip install -e . pytest
+      - name: Test compiler, CLI, and executable documentation
+        env:
+          PYTHONUTF8: ''
+        run: python -m pytest tests/mcucc -q -ra --basetemp="${{ runner.temp }}/mcucc-tests" --junitxml="${{ runner.temp }}/mcucc-results.xml"
+      - name: Save compiler test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcucc-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/mcucc-results.xml
           retention-days: 7
 
   calc:

@@ -9,11 +9,11 @@ from rpkbin.tablepack import Bool, Schema, Uint, infer, pack
 def _compressors():
     values = [None, "zlib"]
     try:
-        import brotli  # noqa: F401
+        import brotli
+        if hasattr(getattr(brotli, "Decompressor", None), "can_accept_more_data"):
+            values.append("brotli")
     except ImportError:
         pass
-    else:
-        values.append("brotli")
     return values
 
 
@@ -104,3 +104,36 @@ def test_str_enum_subclass_is_inferred_without_closed_value_assumptions():
     schema = infer({"kind": [Kind.READ, Kind.WRITE, Kind.READ]}, optimize=False)
     assert schema["kind"].TYPE in ("str", "category")
     assert schema["kind"].TYPE != "enum"
+
+
+def test_explain_empty_tables_match_infer_and_pack():
+    from rpkbin.tablepack import explain
+
+    for empty in ([], [{}], {}, {"a": []}):
+        with pytest.raises(ValueError, match="Can't infer a schema from an empty table"):
+            explain(empty)
+
+    with pytest.raises(ValueError, match="Can't infer a schema from an empty table"):
+        pack([{}])
+
+    text = explain([], Schema(Uint("a")))
+    assert "total: 0 rows" in text
+
+
+def test_pack_without_schema_reuses_optimized_payload(monkeypatch):
+    from rpkbin.tablepack import codec, unpack
+
+    rows = [{"mod": f"m{i % 4}", "val": i * 3} for i in range(120)]
+    expected_schema = infer(rows, compress="zlib", embed_schema=True)
+    expected_blob = pack(rows, expected_schema, compress="zlib", embed_schema=True)
+
+    fallback_calls = []
+    monkeypatch.setattr(codec, "_encode_payload", lambda *a, **kw: fallback_calls.append(a))
+    monkeypatch.setattr(codec, "_wrap", lambda *a, **kw: fallback_calls.append(a))
+
+    actual_blob = pack(rows, compress="zlib", verify=True)
+    assert fallback_calls == []
+    assert actual_blob == expected_blob
+    assert unpack(actual_blob) == rows
+
+

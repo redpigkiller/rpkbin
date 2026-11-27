@@ -10,10 +10,10 @@ import pytest
 from PySide6.QtCore import QItemSelection, QItemSelectionModel, QObject, Signal, Qt
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession, make_fxp
-from rpkbin.calc.ui.inspector_widget import VariableInspectorWidget
-from rpkbin.calc.ui.matrix_editor import MatrixEditorPage
-from rpkbin.calc.ui.theme import build_stylesheet, get_palette
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession, make_fxp
+from rpkbin.app.calc.ui.inspector_widget import VariableInspectorWidget
+from rpkbin.app.calc.ui.matrix_editor import MatrixEditorPage
+from rpkbin.app.calc.ui.theme import build_stylesheet, get_palette
 
 
 class Controller(QObject):

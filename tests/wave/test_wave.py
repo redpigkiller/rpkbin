@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rpkbin.wave import WaveWorkspace
+
 import json
 import sys
 import threading
@@ -13,17 +15,34 @@ from contextlib import contextmanager
 
 import pytest
 
-from rpkbin.job_manager import Event, Expect, Job, JobManager
+from rpkbin.flow import Analyzer, Binding, Flow, Parser
+from rpkbin.jobcore import Job, JobManager
 from rpkbin.wave.web import WaveServer
 
 PY = sys.executable
 
+def value_flow():
+    return Flow("values", parsers=[Parser("sample", lambda line, ctx: {"value": int(line[6:])} if line.startswith("VALUE=") else None, outputs={"value": {}})])
+
+
+def result_flow():
+    parser = Parser("source", lambda line, ctx: {"line": line})
+    def analyze(record, ctx):
+        if record["line"] == "BAD":
+            ctx.summary.result("FAIL", reason="BAD output")
+            ctx.summary.issue("bad", level="error", message="BAD output")
+        if record["line"] == "NOTICE":
+            ctx.summary.issue("notice", level="warning", message="Review notice")
+    return Flow("result", parsers=[parser], analyzers=[Analyzer("evaluate", records=[Binding(parser, analyze)])])
+
+
 
 def request(base, path, body=None, *, headers=None):
+    token = urllib.parse.parse_qs(urllib.parse.urlsplit(base).query).get("token", [""])[0]
     req = urllib.request.Request(
-        base + path,
+        urllib.parse.urljoin(base, path),
         data=None if body is None else json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", **(headers or {})},
+        headers={"Content-Type": "application/json", "X-Wave-Token": token, **(headers or {})},
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -39,7 +58,7 @@ def running_server(manager=None):
     try:
         yield server, server.url.rstrip("/")
     finally:
-        server.manager.close()
+        server.workspace.close()
         server.stop()
 
 
@@ -50,6 +69,32 @@ def state(base, job=None, attempt=None):
     status, data = request(base, "/api/state?" + query)
     assert status == 200, data
     return data
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError])
+@pytest.mark.parametrize("phase", ["headers", "body"])
+def test_cancelled_json_response_does_not_retry_or_hide_serialization_errors(error, phase):
+    from types import SimpleNamespace
+
+    with running_server() as (server, _):
+        handler = object.__new__(server._httpd.RequestHandlerClass)
+        writes = []
+
+        def headers(*args):
+            writes.append("headers")
+            if phase == "headers":
+                raise error("client disconnected")
+
+        def body(raw):
+            writes.append("body")
+            raise error("client disconnected")
+
+        handler._headers = headers
+        handler.wfile = SimpleNamespace(write=body)
+        handler._json({"ok": True})
+        assert writes == (["headers"] if phase == "headers" else ["headers", "body"])
+        with pytest.raises(TypeError):
+            handler._json({"invalid": object()})
 
 
 def post(base, path, payload):
@@ -75,26 +120,42 @@ def until(predicate):
         time.sleep(0.02)
 
 
+def test_public_launch_validates_demo_without_dispatching():
+    from rpkbin.wave.cli import build_demo_workspace
+    from rpkbin.wave.web import launch
+
+    manager = build_demo_workspace()
+    assert not manager.ready
+    server = launch(manager, open_browser=False, block=False)
+    try:
+        preview = state(server.url.rstrip("/"))
+        assert preview["ready"] and not preview["started"]
+        assert all(
+            job["status"] == "PENDING" and job["pid"] is None for job in preview["jobs"]
+        )
+    finally:
+        manager.close()
+        server.stop()
+
+
 def test_preview_browse_partial_settings_and_queued_control(tmp_path):
-    mgr = JobManager(resources={"slot": 2})
-    job = mgr.add(
-        Job("queued", [PY, "-c", "print('VALUE=1')"], resources={"slot": 1}, pty=False)
-    )
-    job.track("value", r"VALUE=(\d+)", cast=int)
+    mgr = WaveWorkspace(JobManager(resources={"slot": 2}))
+    job = Job("queued", [PY, "-c", "print('VALUE=1')"], resources={"slot": 1}, pty=False)
+    mgr.add(job, flow=value_flow())
     mgr.validate()
     with running_server(mgr) as (_, base):
         initial = state(base, job.id)
         assert not initial["started"]
         assert initial["detail"]["status"] == "PENDING"
         assert initial["detail"]["log_records"] == []
-        assert "track value: regex" in initial["detail"]["monitor_definitions"][0]
-        assert initial["available_columns"] == ["value"]
+        assert initial["detail"]["flow"]["parsers"][0]["name"] == "sample"
+        assert "value" in initial["available_columns"]
         # Independent panels never reset omitted settings or resurrect columns.
         assert post(base, "/api/settings/save", {"max_workers": 7})[0] == 200
         assert state(base)["resources"] == {"slot": 2}
         assert post(base, "/api/settings/save", {"columns": []})[0] == 200
         assert state(base)["columns"] == []
-        assert state(base)["available_columns"] == ["value"]
+        assert "value" in state(base)["available_columns"]
         assert post(base, "/api/settings/save", {"resources": {"slot": 1}})[0] == 200
         assert state(base)["max_workers"] == 7
         for bad in ({"max_workers": True}, {"macros": []}, {"resources": None}):
@@ -104,7 +165,7 @@ def test_preview_browse_partial_settings_and_queued_control(tmp_path):
         snapshot = state(base, job.id)["detail"]
         assert (
             post(
-                base, "/api/job/priority", {"target": target(snapshot), "priority": 11}
+                base, "/api/job/priority", {"targets": [target(snapshot)], "priority": 11}
             )[0]
             == 200
         )
@@ -129,7 +190,7 @@ def test_work_load_atomic_preview_and_workspace_guard(tmp_path):
     marker, work, bad = tmp_path / "executed", tmp_path / "work.py", tmp_path / "bad.py"
     command = f"from pathlib import Path; Path({str(marker)!r}).touch()"
     work.write_text(
-        "import sys\nfrom rpkbin.job_manager import Job, JobManager\n"
+        "import sys\nfrom rpkbin.jobcore import Job, JobManager\n"
         "mgr=JobManager()\n"
         f"mgr.add(Job('preview',[sys.executable,'-c',{command!r}],pty=False))\n",
         encoding="utf-8",
@@ -151,13 +212,60 @@ def test_work_load_atomic_preview_and_workspace_guard(tmp_path):
             )[0]
             == 400
         )
-        current = server.manager
+        current = server.workspace
         code, res = post(base, "/api/work/load", {"path": str(bad)})
         assert code == 400 and "broken definition" in res["error"]
-        assert server.manager is current
+        assert server.workspace is current
         assert state(base)["workspace_id"] == preview["workspace_id"]
         assert post(base, "/api/work/load", {"path": str(work)})[0] == 200
         assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        ("x =\n", "SyntaxError"),
+        ("missing_function()\n", "NameError"),
+        ("import wave_review_missing_module\n", "ModuleNotFoundError"),
+    ],
+)
+def test_work_author_errors_return_json_and_preserve_workspace(tmp_path, body, kind):
+    path = tmp_path / "bad.py"
+    path.write_text("# work definition\n" + body, encoding="utf-8")
+    with running_server() as (server, base):
+        previous = server.workspace
+        workspace = state(base)["workspace_id"]
+        status, error = post(base, "/api/work/load", {"path": str(path)})
+        assert status == 400
+        assert kind in error["error"] and f"{path}:2" in error["error"]
+        assert server.workspace is previous
+        assert state(base)["workspace_id"] == workspace
+        path.write_text(
+            "import sys\nfrom rpkbin.jobcore import Job, JobManager\n"
+            "mgr = JobManager()\nmgr.add(Job('fixed', [sys.executable, '-c', 'pass']))\n",
+            encoding="utf-8",
+        )
+        assert post(base, "/api/work/load", {"path": str(path)})[0] == 200
+        loaded = state(base)
+        assert loaded["workspace_id"] != workspace and not loaded["started"]
+
+
+def test_http_flow_integers_are_exact_without_changing_python_data():
+    values = [2**53 - 1, 2**53, 2**53 + 1, -(2**53 + 1)]
+    mgr = WaveWorkspace(JobManager())
+    job = Job("exact", [PY, "-c", f"print({values!r})"], pty=False)
+    mgr.add(job, flow=Flow("exact", parsers=[Parser("sample", lambda line, ctx: {"values": json.loads(line)} if line.startswith("[") else None)]))
+    mgr.start()
+    finish(mgr)
+    with running_server(mgr) as (_, base):
+        data = state(base, job.id)
+        expected = [values[0], *map(str, values[1:])]
+        assert data["jobs"][0]["data"]["values"] == expected
+        assert data["detail"]["data"]["values"] == expected
+        assert list(job.data["values"]) == values
+        assert (
+            mgr.snapshot(selected_job_id=job.id)["detail"]["data"]["values"] == values
+        )
 
 
 def test_local_request_validation_and_removed_endpoints():
@@ -167,6 +275,12 @@ def test_local_request_validation_and_removed_endpoints():
             request(base, "/api/state", headers={"Origin": "https://evil.example"})[0]
             == 403
         )
+        for asset in ("/", "/app.css", "/app.js"):
+            assert request(base, asset, headers={"Host": "evil.example"})[0] == 403
+            assert request(base, asset, headers={"Origin": "https://evil.example"})[0] == 403
+            with urllib.request.urlopen(base if asset == "/" else urllib.parse.urljoin(base, asset), timeout=8) as resp:
+                assert resp.status == 200
+                assert len(resp.read()) > 0
         assert request(base, "/api/config/export")[0] == 404
         for path in (
             "/api/regex/test",
@@ -181,17 +295,13 @@ def test_local_request_validation_and_removed_endpoints():
 
 
 def test_api_result_evidence_history_and_stale_attempt():
-    mgr = JobManager()
-    job = mgr.add(
-        Job(
+    mgr = WaveWorkspace(JobManager())
+    job = Job(
             "example",
             [PY, "-u", "-c", "print('VALUE=3'); print('BAD'); print('NOTICE')"],
             pty=False,
         )
-    )
-    job.track("value", r"VALUE=(\d+)", cast=int)
-    job.check("no_bad", match="BAD", expect=Expect.ABSENT)
-    job.on(Event.LOG, match="NOTICE", warn=True, name="notice")
+    mgr.add(job, flow=result_flow())
     mgr.validate()
     with running_server(mgr) as (_, base):
         assert post(base, "/api/manager/action", {"action": "start"})[0] == 200
@@ -199,8 +309,8 @@ def test_api_result_evidence_history_and_stale_attempt():
         first = state(base, job.id)["detail"]
         assert first["returncode"] == 0 and first["result"] == "FAIL"
         assert first["warning_count"] == 1
-        assert first["checks"][0]["state"] == "FAIL"
-        assert first["checks"][0]["evidence"]["line"] == "BAD"
+        assert first["flow"]["analyzers"][0]["result"] == "FAIL"
+        assert first["flow"]["analyzers"][0]["issues"][0]["evidence"]["line_no"] > 0
         code, res = post(
             base, "/api/job/action", {"action": "rerun", "targets": [target(first)]}
         )
@@ -226,7 +336,7 @@ def test_api_result_evidence_history_and_stale_attempt():
 
 
 def test_literal_control_token_and_http_lifetime():
-    mgr = JobManager()
+    mgr = WaveWorkspace(JobManager())
     job = mgr.add(
         Job(
             "echo",
@@ -262,7 +372,7 @@ def test_literal_control_token_and_http_lifetime():
 
 
 def test_mixed_batch_no_selected_fallback():
-    mgr = JobManager()
+    mgr = WaveWorkspace(JobManager())
     mgr.add(Job("cancel_me", [PY, "-c", "pass"], pty=False))
     second = mgr.add(Job("keep_queued", [PY, "-c", "pass"], pty=False))
     mgr.validate()
@@ -295,16 +405,14 @@ def test_mixed_batch_no_selected_fallback():
 
 
 def test_retention_endpoints_mixed_batch_and_history_eviction():
-    mgr = JobManager()
-    j1 = mgr.add(
-        Job(
+    mgr = WaveWorkspace(JobManager())
+    j1 = Job(
             "j1",
             [PY, "-u", "-c", "for i in range(6): print(f'L{i}')"],
             pty=False,
         )
-    )
+    mgr.add(j1, flow=Flow("retained", parsers=[Parser("sample", lambda line, ctx: {"seen": True} if line == "L0" else None)]))
     mgr.add(Job("j2", [PY, "-u", "-c", "print('OK')"], pty=False))
-    j1.check("seen_l0", match="L0", expect=Expect.PRESENT)
     mgr.validate()
     with running_server(mgr) as (_, base):
         initial = state(base, j1.id)
@@ -320,21 +428,23 @@ def test_retention_endpoints_mixed_batch_and_history_eviction():
         assert [r["text"] for r in s1["log_records"] if r["text"].startswith("L")] == [
             f"L{i}" for i in range(6)
         ]
-        evidence = s1["checks"][0]["evidence"]
+        evidence = s1["flow"]["parsers"][0]["latest"]
         code, res = post(
             base,
             "/api/job/retention",
             {"targets": [target(s1)], "max_log_lines": 3},
         )
         assert code == 200 and res["affected"] == 1
-        assert res["evicted_lines"] == s1["log_count"] - 3
+        assert res["evicted_lines"] == 0
         after_s1 = state(base, j1.id)
         assert after_s1["jobs"][0]["max_log_lines"] == 3
         assert after_s1["jobs"][1]["max_log_lines"] == 10000
-        assert after_s1["detail"]["log_records"] == s1["log_records"][-3:]
+        # Settings apply to the next attempt. A sealed attempt retains its Log.
+        assert after_s1["detail"]["log_records"] == s1["log_records"]
+        assert after_s1["detail"]["attempt_max_log_lines"] == s1["attempt_max_log_lines"]
         assert after_s1["detail"]["total_lines"] == s1["total_lines"]
-        assert after_s1["detail"]["checks"][0]["evidence"] == evidence
-        assert after_s1["detail"]["result"] == "PASS"
+        assert after_s1["detail"]["flow"]["parsers"][0]["latest"] == evidence
+        assert after_s1["detail"]["result"] == "N/A"
 
         # Invalid max_log_lines rejected
         for bad in (0, -5, True, "3"):
@@ -401,7 +511,7 @@ def stream_state(base, job_id, after=0, cursor_attempt=None, attempt=None):
 
 
 def test_log_stream_deltas_retention_and_cursor_recovery():
-    mgr = JobManager()
+    mgr = WaveWorkspace(JobManager())
     job = mgr.add(Job("log-stream", [PY, "-c", "pass"], max_log_lines=5, pty=False))
     mgr.validate()
     for i in range(5):
@@ -415,7 +525,7 @@ def test_log_stream_deltas_retention_and_cursor_recovery():
         assert "log_records" not in initial["detail"]
         assert "logs" not in initial["detail"]
         assert all("log_records" not in j and "logs" not in j for j in initial["jobs"])
-        assert "monitor_definitions" in initial["detail"]
+        assert initial["detail"].get("flow") is None
 
         job.log("new output")
         delta = stream_state(base, job.id, 5, attempt)["detail"]["log_chunk"]
@@ -441,9 +551,9 @@ def test_log_stream_deltas_retention_and_cursor_recovery():
         # Existing Python APIs and non-incremental HTTP readers retain full logs.
         python_snapshot = mgr.snapshot(selected_job_id=job.id)["detail"]
         assert len(python_snapshot["logs"]) == 2
-        legacy = state(base, job.id)
-        assert legacy["detail"]["log_records"] == python_snapshot["log_records"]
-        assert "logs" not in legacy["detail"]
+        full_state = state(base, job.id)
+        assert full_state["detail"]["log_records"] == python_snapshot["log_records"]
+        assert "logs" not in full_state["detail"]
         status, logs = request(base, "/api/logs?job_id=" + job.id)
         assert status == 200 and logs["records"] == python_snapshot["log_records"]
         for bad in ("-1", "true", "1.5", "9" * 19):
@@ -453,7 +563,7 @@ def test_log_stream_deltas_retention_and_cursor_recovery():
 
 
 def test_log_stream_rerun_and_evicted_history_never_fall_back_to_current():
-    mgr = JobManager(max_history=1)
+    mgr = WaveWorkspace(JobManager(max_history=1))
     job = mgr.add(Job("rerun-stream", [PY, "-c", "pass"], pty=False))
     mgr.validate()
     job.log("first attempt")
@@ -495,7 +605,7 @@ def test_log_stream_rerun_and_evicted_history_never_fall_back_to_current():
 
 
 def test_unchanged_log_poll_is_small_after_a_large_retained_window():
-    mgr = JobManager()
+    mgr = WaveWorkspace(JobManager())
     job = mgr.add(Job("large-window", [PY, "-c", "pass"], pty=False))
     mgr.validate()
     for i in range(512):
@@ -521,7 +631,7 @@ def test_rerun_readiness_waits_for_worker_cleanup(monkeypatch):
         release_cleanup.wait(5)
 
     monkeypatch.setattr(Job, "_execute", pause_before_cleanup)
-    mgr = JobManager()
+    mgr = WaveWorkspace(JobManager())
     job = mgr.add(Job("cleanup-window", [PY, "-c", "pass"], pty=False))
     with running_server(mgr) as (_, base):
         try:
@@ -553,3 +663,114 @@ def test_rerun_readiness_waits_for_worker_cleanup(monkeypatch):
             == 1
         )
         finish(mgr)
+
+
+def test_state_projects_browser_data_after_releasing_locks(monkeypatch, tmp_path):
+    from rpkbin.wave import _web_state as web
+
+    manager = WaveWorkspace(JobManager(), archive_dir=tmp_path)
+    job = manager.add(Job("snapshot", [PY, "-c", "pass"]))
+    server = WaveServer(manager)
+    original = web._browser_data
+    checked = []
+
+    def project(value):
+        assert not server._action_lock._is_owned()
+        assert not job._events_lock._is_owned()
+        checked.append(True)
+        return original(value)
+
+    monkeypatch.setattr(web, "_browser_data", project)
+    try:
+        state = server._state(job.id)
+        assert checked and state["detail"]["attempt_id"] == job.attempt_id
+    finally:
+        manager.close()
+
+
+def test_slow_parser_leaves_peer_output_and_wave_state_available(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    manager = WaveWorkspace(JobManager(max_workers=2), archive_dir=tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    slow_ready, peer_ready, peer_output = (threading.Event() for _ in range(3))
+
+    def parse(line, ctx):
+        if line == "slow":
+            entered.set()
+            assert release.wait(10)
+
+    code = "print('READY', flush=True); input(); print({name!r}, flush=True)"
+    slow = manager.add(Job("slow", [PY, "-u", "-c", code.format(name="slow")],
+                           pty=False), flow=Flow("slow", parsers=[Parser("hold", parse)]))
+    peer = manager.add(Job("peer", [PY, "-u", "-c", code.format(name="peer")], pty=False))
+
+    def observe(record):
+        if record["text"] == "READY":
+            (slow_ready if record["job_id"] == slow.id else peer_ready).set()
+        elif record["job_id"] == peer.id and record["text"] == "peer":
+            peer_output.set()
+
+    manager.add_log_listener(observe)
+    server = WaveServer(manager)
+
+    def peer_and_snapshot():
+        assert peer.send("go")
+        assert peer_output.wait(2)
+        return server._state(slow.id, log_after=0, log_attempt=slow.attempt_id)
+
+    try:
+        manager.start()
+        assert slow_ready.wait(6) and peer_ready.wait(6)
+        assert slow.send("go")
+        assert entered.wait(6)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                state = pool.submit(peer_and_snapshot).result(timeout=2)
+                assert not release.is_set()
+                detail = state["detail"]
+                assert detail["attempt_id"] == detail["log_chunk"]["attempt_id"] == slow.attempt_id
+                assert "slow" not in [row["text"] for row in detail["log_chunk"]["records"]]
+            finally:
+                release.set()
+        assert manager._drain(6)
+        assert "slow" in slow.logs()
+        assert not slow._attempt.sink.flow_session.snapshot()["error_count"]
+    finally:
+        release.set()
+        manager.close()
+
+
+def test_b13_skips_redundant_full_projection_on_unmatched_stdout_lines(monkeypatch):
+    manager = WaveWorkspace(JobManager())
+    flow = Flow(
+        "perf",
+        parsers=[Parser("p", lambda line, ctx: {"v": int(line[2:])} if line.startswith("v=") else None)],
+    )
+    job = manager.add(Job("worker", [PY, "-c", "pass"]), flow=flow)
+    sink = job._attempt.sink
+    session = sink.flow_session
+    calls = 0
+    original = session._projection
+
+    def counted_projection():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(session, "_projection", counted_projection)
+    try:
+        for i in range(20):
+            job._line(job._attempt, f"noise {i}")
+        assert calls == 0
+        assert sink.flow_snapshot["parsers"][0]["processed"] == 20
+        assert sink.flow_snapshot == original()
+
+        job._line(job._attempt, "v=42")
+        assert calls == 1
+        assert sink.flow_snapshot["parsers"][0]["processed"] == 21
+        assert sink.flow_snapshot["parsers"][0]["latest"] == {"v": 42}
+        assert job.data["v"] == 42 and job.data["p.v"] == 42
+        assert sink.flow_snapshot == original()
+    finally:
+        manager.close()

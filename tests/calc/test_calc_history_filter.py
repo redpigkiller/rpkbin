@@ -8,9 +8,9 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.ui.console_widget import CommandHistoryDialog, CommandWindowWidget, SessionCommandHistory
-from rpkbin.calc.ui.workspace_widget import WorkspaceWidget
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.ui.console_widget import CommandHistoryDialog, CommandWindowWidget, SessionCommandHistory
+from rpkbin.app.calc.ui.workspace_widget import WorkspaceWidget
 
 
 class FakeTransport(QObject):

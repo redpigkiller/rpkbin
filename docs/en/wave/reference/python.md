@@ -1,308 +1,380 @@
-# Wave Python API Reference
+# rpkbin.wave Python API Reference
 
-[繁體中文](../../../zh/wave/reference/python.md) · [Documentation Index](../../README.md) · [Usage Scenarios](../scenarios.md)
+Python classes, functions, job controls, flow definitions, and local HTTP endpoints exported by `rpkbin.wave`, `rpkbin.flow`, and `rpkbin.jobcore`.
 
-This document provides technical specifications for Wave classes, methods, parameters, types, enums, and return structures.
+## Syntax
 
-Import statement:
 ```python
 from rpkbin.wave import (
-    Job,
-    JobManager,
-    JobStatus,
-    Result,
-    CheckState,
-    Expect,
-    StopPolicy,
-    Event,
-    Report,
+    ArchivePolicy,
+    FileSource,
+    ReanalysisSource,
+    RunArchive,
+    SourceResult,
+    TailSource,
+    WaveServer,
+    WaveWorkspace,
+    build_demo_workspace,
+    launch,
+    load_work_file,
+    main,
+    prune_archives,
+    run_headless,
 )
+from rpkbin.wave.columns import configure_columns
 ```
+
+## Description
+
+`rpkbin.wave` coordinates job scheduling, streaming log analysis, waveform/chart projection, and SQLite run persistence. Work files build a `WaveWorkspace`, register `Job` objects or log sources paired with `Flow` objects, and optionally pass custom `ArchivePolicy` or column definitions before returning the workspace to `launch` or `run_headless`.
 
 ---
 
-## Core Scheduler: `JobManager`
+## `WaveWorkspace`
 
-`JobManager` manages command queuing, concurrency limits, resource quotas, streaming log observers, and system snapshots.
+Container binding a `JobManager`, per-job `Flow` specifications, background log sources, and run archive configuration.
 
-### Constructor
+### Creation
+
 ```python
-JobManager(
+ws = WaveWorkspace(
+    manager=None,
     *,
-    max_workers: int = 4,
-    resources: dict[str, int] | None = None,
-    log_dir: str | Path | None = None,
-    columns: list[str] | tuple[str, ...] | None = None,
-    max_history: int = 20,
+    columns=None,
+    archive_dir=None,
+    archive_mode=None,
+    temp_dir=None,
+    retention_days=None,
+    pass_retention_days=None,
+    fail_retention_days=None,
+    stage_on_network_fs=True,
 )
 ```
 
-- **`max_workers`** (`int`, default 4): Maximum simultaneous active worker slots. Must be $\ge 1$.
-- **`resources`** (`dict[str, int] | None`, default None): Capacities of named resources (e.g., `{"gpu": 2}`). Values must be non-negative integers.
-- **`log_dir`** (`str | Path | None`, default None): Directory where `{job.id}.log` files are automatically written.
-- **`columns`** (`list[str] | None`, default None): List of custom metric column names enabled by default.
-- **`max_history`** (`int`, default 20): Capacity limit of completed attempts preserved in memory per job. Must be $\ge 1$.
+#### Input Arguments and Name-Value Arguments
 
-### Methods
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `manager` | `None` | Optional existing `JobManager`. When omitted, creates `JobManager()`. |
+| `columns` | `None` | Optional UI column specifications passed to `configure_columns(manager, columns)`. |
+| `archive_dir` | `None` | Target `.sqlite3` archive directory. Passing a non-`None` path immediately opens the archive via `enable_archive`. |
+| `archive_mode` | `None` | Retention mode (`"persist"`, `"keep_on_fail"`, `"ephemeral"`). Falls back to `RPK_WAVE_ARCHIVE_MODE`, then `"persist"`. |
+| `temp_dir` | `None` | Scratch directory for `ephemeral`/`keep_on_fail` runs and NFS staging. Falls back to `RPK_WAVE_TEMP_DIR` or per-user system temp dir. |
+| `retention_days` | `None` | Days to keep closed archives (`float >= 0`). Falls back to `RPK_WAVE_RETENTION_DAYS`. |
+| `pass_retention_days` | `None` | Days to keep closed `PASS` archives. Overrides `retention_days`. Falls back to `RPK_WAVE_PASS_RETENTION_DAYS`. |
+| `fail_retention_days` | `None` | Days to keep closed `FAIL`/incomplete archives. Overrides `retention_days`. Falls back to `RPK_WAVE_FAIL_RETENTION_DAYS`. |
+| `stage_on_network_fs` | `True` | When `True`, POSIX writes on network filesystems (`nfs`, `cifs`, `smb3`, etc.) stage SQLite WAL files in `temp_dir` and copy atomically on clean close. |
 
-#### `add(job: Job) -> Job`
-Registers a job with the manager.
-- **Restrictions**: Cannot register the same job twice; cannot register a job belonging to another manager.
-- **Returns**: The registered `Job` instance.
+### Properties
 
-#### `add_many(jobs: Sequence[Job]) -> list[Job]`
-Batch registration of multiple jobs.
+| Property | Type | Description |
+| --- | --- | --- |
+| `started` | `bool` | Whether workspace execution has started (`False` during Preview). |
+| `archive_catalog_dir` | `Path` | Resolved target archive directory for listing saved runs. |
+| `archive_health` | `dict[str, Any]` | Archive status dictionary containing `enabled`, `error`, `mode`, `target_dir`, `temp_dir`, `staged`, `disposition` (`"saved"`, `"saved_on_failure"`, `"discarded_ephemeral"`, `"discarded_pass"`, `"discarded_unstarted"`, `"move_failed"`, or `None`), `pruned_count`, plus `run_id`, `path`, `closed_cleanly`, `status`, and `complete` when an archive is open. |
+| `watcher_error` | `str \| None` | First background log-source watcher exception message, if any. |
+| `jobs` | `tuple[Job, ...]` | Registered active jobs (delegated from `JobManager`). |
+| `removed_jobs` | `tuple[Job, ...]` | Soft-removed jobs available for `restore_job` (delegated from `JobManager`). |
+| `paused`, `ready`, `max_workers`, `max_history`, `scheduling_mode` | Various | Queue configuration and runtime state delegated from `JobManager`. |
 
-#### `get_job(job_id_or_name: str | Job) -> Job | None`
-Looks up a job by ID or name. Raises `ValueError` if a name is ambiguous.
+### Object Functions
 
-#### `validate() -> None`
-Validates job definitions and freezes configuration; dispatch begins only after successful validation. Raises an exception if any definition is invalid.
-
-#### `start() -> None`
-Begins job scheduling and process dispatch. Raises `ValueError` if called inside `definition_scope`.
-
-#### `pause() -> None`
-Pauses dispatch. Active jobs continue; pending jobs remain queued.
-
-#### `resume() -> None`
-Resumes dispatch (equivalent to `start()`).
-
-#### `stop_all(*, force: bool = False, source: str = "user", reason: str | None = None) -> int`
-Cancels all pending jobs and initiates stopping of active jobs. Returns the count of jobs stopped.
-
-#### `rerun(job_id: str | Job, *, expected_attempt: str | None = None, expected_submission: str | None = None) -> Job`
-Schedules a new execution attempt for a finished job. The prior attempt is archived into history (bounded by `max_history`), and a fresh Attempt enters the dispatch queue.
-
-#### `set_priority(job_id: str | Job, priority: int, *, expected_attempt: str | None = None, expected_submission: str | None = None) -> None`
-Dynamically adjusts the dispatch priority of a job while it is in `PENDING` state. Raises `ValueError` if the job has already reserved a worker or begun execution.
-
-#### `set_max_history(max_history: int) -> int`
-Dynamically updates the attempt history retention capacity across all jobs. If current history exceeds the new limit, older attempts are evicted immediately. Returns the count of evicted attempts.
-
-#### `set_max_log_lines(max_log_lines: int, job_id: str | None = None, *, expected_attempt: str | None = None, expected_submission: str | None = None) -> int`
-Updates in-memory log ring buffer capacity for a specific job or all jobs. Returns the total count of evicted lines.
-
-#### `update_settings(*, max_workers: int | None = None, resources: dict[str, int] | None = None, columns: list[str] | None = None, max_history: int | None = None) -> dict`
-Dynamically updates worker concurrency, resource capacities, visible columns, or history limits.
-
-#### `snapshot(*, selected_job_id: str | None = None, attempt_id: str | None = None) -> dict`
-Returns a complete system snapshot dictionary containing operational flags, worker load, resource allocations, and structured details for all jobs (including logs and history for a selected job).
-
-#### `explain_pending(job: str | Job) -> str`
-Returns a human-readable explanation of why a job is currently in `PENDING` status (e.g. waiting for worker slot, waiting for a resource, or scheduler paused).
-
-#### `add_log_listener(callback: Callable[[dict], None]) -> None`
-Registers a global log listener callback. Invoked with a log record dictionary every time any job emits an output line.
-
-#### `close() -> None`
-Gracefully shuts down the manager, stops all child processes, and drains execution threads.
+| Method | Description |
+| --- | --- |
+| `add(job, *, flow=None)` | Register a single `Job` and optional `Flow`. |
+| `add_many(jobs, *, flow=None)` | Register multiple jobs sharing the same optional `Flow`. |
+| `add_source(source, *, flow=None, name=None)` | Attach a `FileSource`, `TailSource`, or `ReanalysisSource`. |
+| `add_paths(paths, *, once=False, globs=("*.log",), recursive=False, flow=None, **source_options)` | Convenience wrapper attaching file/directory sources. |
+| `configure_archive(*, archive_dir=..., archive_mode=..., temp_dir=..., retention_days=..., pass_retention_days=..., fail_retention_days=..., stage_on_network_fs=..., override=False) -> ArchivePolicy` | Update archive policy before `start()`. Pass `override=True` when applying CLI/environment overrides over work-file defaults. |
+| `enable_archive(directory=None, *, source_path=None)` | Initialize SQLite archive opening and startup retention pruning. |
+| `flow_for(job)` | Return the bound `Flow` for a `Job` or `None`. |
+| `start()`, `resume()`, `validate()` | Start execution, release queue pause, or validate work definitions. |
+| `snapshot(*, selected_job_id=None, attempt_id=None, include_logs=True)` | Return JSON-serializable state snapshot of queue, jobs, flows, and archive health. |
+| `stop_sources(job_id=None)` | Signal background source threads to stop. |
+| `close()` | Close sources, drain `JobManager`, flush/finalize SQLite archive, and apply retention disposition (`keep_on_fail` / `ephemeral` / staging move). |
+| `remove_job(job_id, *, expected_attempt=None, expected_submission=None)` | Remove an unstarted or finalized job from the active list and move its unstarted Preview attempt out of the archive (`_removed_flows`). |
+| `restore_job(job_id, *, expected_attempt=None, expected_submission=None)` | Restore a previously removed job from `removed_jobs`, reattach its `Flow`, and recreate its Preview attempt row. |
+| `control(...)`, `pause()`, `stop_all(...)`, `rerun(...)`, `set_priority(...)`, `set_held(...)`, `reorder_queue(...)`, `set_max_log_lines(...)`, `set_max_history(...)`, `update_settings(...)`, `explain_pending(...)`, `add_log_listener(...)`, `get_job(...)` | Core `JobManager` control operations forwarded through `WaveWorkspace`. |
 
 ---
 
-## Command Definition and Instance: `Job`
+## `WaveServer` and `launch`
 
-`Job` represents a single command definition and its execution attempts. Definitions are frozen once dispatch commences.
+Local HTTP/UI server hosting the static GUI and REST/SSE endpoints.
 
-### Constructor
+### Syntax
+
 ```python
-Job(
-    name: str,
-    cmd: str | Sequence[str],
+srv = WaveServer(
+    workspace=None,
     *,
-    cwd: str | Path | None = None,
-    env: dict[str, str] | None = None,
-    pty: bool | None = None,
-    prompts: Sequence[str] = (),
-    pty_rows: int | None = None,
-    pty_cols: int | None = None,
-    resources: dict[str, int] | None = None,
-    priority: int = 0,
-    timeout: float | None = None,
-    max_retries: int = 0,
-    stop_policy: StopPolicy = StopPolicy.GRACEFUL_THEN_FORCE,
-    stop_ctrl_c: bool = False,
-    stop_cmd: str | None = None,
-    stop_timeout: float = 3.0,
-    max_log_lines: int = 10000,
-    log_file: str | Path | None = None,
+    host="127.0.0.1",
+    port=0,
+    source_path=None,
+    archive_path=None,
+    archive_policy=None,
+)
+
+srv = launch(
+    workspace=None,
+    *,
+    host="127.0.0.1",
+    port=0,
+    open_browser=False,
+    block=True,
+    source_path=None,
+    archive_path=None,
+    archive_policy=None,
 )
 ```
 
-- **`name`** (`str`): Non-empty job name.
-- **`cmd`** (`str | Sequence[str]`): Command string or argument list.
-- **`cwd`** (`str | Path | None`): Working directory for the process.
-- **`env`** (`dict[str, str] | None`): Custom environment variables.
-- **`pty`** (`bool | None`): Enables PTY on POSIX (default `True`). Windows uses pipes.
-- **`prompts`** (`Sequence[str]`): Literal prompt tokens indicating `WAITING_INPUT`.
-- **`pty_rows`, `pty_cols`** (`int | None`): PTY terminal dimensions (POSIX only, $\le 65535$).
-- **`resources`** (`dict[str, int] | None`): Named resource units required by this job.
-- **`priority`** (`int`, default 0): Integer priority (higher values dispatch first).
-- **`timeout`** (`float | None`): Maximum runtime in seconds before stopping is triggered.
-- **`max_retries`** (`int`, default 0): Maximum additional retries after a non-zero exit without a stop request. A check FAIL alone does not trigger retry; timeout-induced stopping does not retry automatically.
-- **`stop_policy`** (`StopPolicy`, default `GRACEFUL_THEN_FORCE`): Termination policy.
-- **`stop_ctrl_c`** (`bool`, default False): Transmit interrupt signal during graceful stop.
-- **`stop_cmd`** (`str | None`): Command text sent to stdin during graceful stop.
-- **`stop_timeout`** (`float`, default 3.0): Graceful timeout in seconds before force kill.
-- **`max_log_lines`** (`int`, default 10000): In-memory ring buffer capacity.
-- **`log_file`** (`str | Path | None`): Dedicated disk log file path.
+### Properties and Object Functions
 
-### Observable Properties
-
-- **`job.status`** (`JobStatus`): Lifecycle state of the active attempt (e.g., `PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELLED`).
-- **`job.returncode`** (`int | None`): OS exit code of the process; `None` while running.
-- **`job.pid`** (`int | None`): OS Process ID; `None` before launch.
-- **`job.elapsed`** (`float | None`): Cumulative runtime of the active attempt in seconds.
-- **`job.elapsed_str`** (`str`): Formatted elapsed runtime string (`MM:SS` or `HH:MM:SS`).
-- **`job.priority`** (`int`): Scheduling priority integer.
-- **`job.cmd_str`** (`str`): Shell-escaped command representation string.
-- **`job.attempt_id`** (`str`): Unique hexadecimal identifier for the current attempt.
-- **`job.submission_id`** (`str`): Identifier of the parent submission.
-- **`job.attempt_number`** (`int`): Sequential attempt index starting from 1.
-- **`job.data`** (`MappingProxyType`): Read-only mapping of metric values captured by `Track` rules for the active attempt.
-- **`job.context`** (`dict`): Mutable per-attempt user dictionary accessible to callbacks.
-- **`job.result`** (`Report`): Detailed verdict and evidence report for the active attempt:
-  - **`job.result.verdict`** (`Result | None`): Current aggregate verdict: confirmed FAIL/ERROR is visible during execution; otherwise it remains `None` until completion. PASS/N/A requires normal complete execution.
-  - **`job.result.checks`** (`tuple`): Immutable snapshots of current check states, finalized when the attempt ends.
-  - **`job.result.warnings`** (`tuple`): Tuple of recorded warning structures and evidence lines.
-  - **`job.result.errors`** (`tuple`): Tuple of caught exception records.
-- **`job.history`** (`tuple[dict, ...]`): Tuple of immutable snapshot dictionaries of completed past attempts (bounded by `max_history`).
-
-### Monitoring Methods
-
-#### `track(name: str, pattern: str | re.Pattern, *, cast: Callable = str) -> Track`
-Declares metric extraction rules. Regex must have exactly one capture group `()`.
-- **Returns**: `Track` object exposing `.events.changed` and `.events.error`.
-
-#### `check(name: str, *, match: str | re.Pattern | Callable, expect: Expect = Expect.PRESENT, on: Event | EventRef = Event.LOG, every: float | None = None) -> Check`
-Declares verification checks against output lines, ticks, or tracked metrics.
-- **Returns**: `Check` object exposing `.events.failed`, `.events.satisfied`, and `.events.error`.
-
-#### `on(event: Event | EventRef = Event.LOG, *, match: str | re.Pattern | Callable | None = None, warn: bool = False, stop: bool = False, callback: Callable | None = None, name: str | None = None, message: str | None = None, once: bool = True, every: float | None = None) -> Subscription`
-Subscribes actions or warnings to events.
-- **Action params**: `callback` and `warn`/`stop` are mutually exclusive.
-- **`warn=True`**: Records a warning without stopping execution or disqualifying `PASS`.
-- **`stop=True`**: Requests termination according to `stop_policy`.
-- **`callback`**: Function with signature `callback(bound_job, *args)`.
-- **`once`** (`bool`, default True): Set to `False` to trigger repeatedly on every match.
-
-### Interactive Controls, Logging & Snapshots
-
-- **`send(text: str, *, newline: bool = True, expected_attempt: str | None = None) -> bool`**: Transmits text to stdin.
-- **`send_ctrl_c(*, expected_attempt: str | None = None) -> bool`**: Sends an interrupt signal.
-- **`send_signal(sig: int, *, expected_attempt: str | None = None) -> bool`**: Sends a specific OS signal.
-- **`stop(*, source: str = "user", reason: str | None = None, force: bool = False, expected_attempt: str | None = None) -> bool`**: Requests job termination.
-- **`kill(*, expected_attempt: str | None = None) -> bool`**: Forcefully terminates the process tree.
-- **`log(message: Any) -> None`**: Emits a text entry with `[Wave]` source into this job's live record stream.
-- **`logs(tail: int | None = None) -> list[str]`**: Retrieves the list of log line strings preserved in memory. Pass `tail=N` to fetch only the last $N$ lines.
-- **`set_max_log_lines(max_log_lines: int, *, expected_attempt: str | None = None, expected_submission: str | None = None) -> int`**: Dynamically adjusts ring buffer capacity. Returns count of evicted lines.
-- **`to_snapshot_dict(*, include_logs: bool = False, attempt_id: str | None = None) -> dict`**: Serializes full job state into a structured dictionary.
-
-> [!NOTE]
-> **Regarding `expected_attempt`**:
-> The `expected_attempt` and `expected_submission` parameters in control methods are internal safeguards against rerun race conditions. User code in scripts and callbacks should call `job.send("cmd")` or `job.stop()` directly without passing these parameters.
+- `srv.port`: Bound TCP port (`int`).
+- `srv.url`: Base `http://<host>:<port>/` string.
+- `srv.start(*, open_browser=False) -> str`: Start background HTTP server and return `url`.
+- `srv.stop() -> None`: Stop HTTP server and close any bound workspace resources.
+- `archive_policy`: Optional `dict` (or policy fields) merged into workspace configuration before opening the workspace archive. Only loopback hosts (`127.0.0.1`, `localhost`, `::1`) are accepted. Note CLI `--version` (`-V`) prints the package version (`rpk-wave 0.3.0`) from the command line.
 
 ---
 
-## Event System & Callback Signatures
+## `ArchivePolicy` and `prune_archives`
 
-Wave provides a structured event pub/sub mechanism. Event kinds, triggers, and callback signatures are defined as follows:
+Frozen dataclass describing SQLite archive lifecycle rules, plus offline metadata-based archive pruning.
 
-| Event Reference | Trigger Condition | Callback Signature | Parameters |
-| :--- | :--- | :--- | :--- |
-| **`Event.LOG`** | Output line decoded | `callback(bound_job, line: str)` | `line`: Decoded line text stripped of ANSI codes. |
-| **`Event.TICK`** | Periodic timer triggered | `callback(bound_job, elapsed: float)` | `elapsed`: Cumulative attempt runtime in seconds (use with `every=1.0`). |
-| **`track.events.changed`** | Extracted metric appeared or changed | `callback(bound_job, old_value: Any, new_value: Any)` | `old_value`: Previous value (initially `None`); `new_value`: Parsed and cast value. |
-| **`track.events.error`** | Cast function threw error | `callback(bound_job, error: dict)` | `error`: Contains `source`, `message`, `evidence`. |
-| **`check.events.satisfied`** | Check condition met (`OK`) | `callback(bound_job, check_state: dict)` | `check_state`: Contains `name`, `state`, `hits`, `evidence`. |
-| **`check.events.failed`** | Check condition failed (`FAIL`) | `callback(bound_job, check_state: dict)` | Same as above. |
-| **`check.events.error`** | Check matcher threw error | `callback(bound_job, error: dict)` | Same as track.events.error. |
-| **`job.events.status_changed`** | Status transitioned | `callback(bound_job, prev_status: JobStatus, new_status: JobStatus)` | Previous and new states. |
-| **`job.events.attempt_finished`** | Attempt finalized | `callback(bound_job, attempt_snapshot: dict)` | Immutable snapshot dictionary of attempt. |
-| **`job.events.error`** | Reportable monitoring, control, or execution error | `callback(bound_job, error: dict)` | Internal error structure. |
+### Syntax
 
-### Event Callback Example
+```python
+policy = ArchivePolicy(
+    mode="persist",
+    archive_dir=None,
+    temp_dir=None,
+    retention_days=None,
+    pass_retention_days=None,
+    fail_retention_days=None,
+    stage_on_network_fs=True,
+)
+
+summary = prune_archives(
+    directory,
+    *,
+    pass_retention_days=None,
+    fail_retention_days=None,
+    retention_days=None,
+    exclude_run_id=None,
+    now=None,
+)
+```
+
+### Object Functions and Output
+
+- `policy.resolved_archive_dir() -> Path`: Returns explicit `archive_dir`, else `RPK_WAVE_ARCHIVE_DIR`, else OS user state dir.
+- `policy.resolved_temp_dir() -> Path`: Returns explicit `temp_dir`, else `RPK_WAVE_TEMP_DIR`, else private per-user system temp dir.
+- `policy.effective_pass_retention_days() -> float | None`: Returns `pass_retention_days` when set, otherwise `retention_days`.
+- `policy.effective_fail_retention_days() -> float | None`: Returns `fail_retention_days` when set, otherwise `retention_days`.
+- `policy.with_overrides(**kwargs) -> ArchivePolicy`: Returns a copy updating specified fields. `mode` normalizes hyphens to underscores (`"keep-on-fail"` becomes `"keep_on_fail"`).
+- `prune_archives(...)` returns `{"deleted": list[str], "skipped": int, "errors": int}`. Age checks inspect SQLite `metadata` (`closed_at`, falling back to `created`) and `run_outcome` (`PASS` vs `FAIL`/incomplete) rather than filesystem `mtime`, skip unclosed or excluded runs and non-Wave `.sqlite3` files, and delete `-wal` and `-shm` sidecar files alongside expired archives.
+
+---
+
+## `RunArchive`
+
+SQLite reader/writer storing raw logs, flow publications, report names, automation history, chart series, and VCD exports.
+
+### Creation
+
+```python
+with RunArchive(path, *, create=False, run_id=None, source_path=None) as archive:
+    attempts = archive.attempts()
+```
+
+### Properties and Object Functions
+
+| Member | Signature Summary | Description |
+| --- | --- | --- |
+| `run_id`, `path`, `metadata`, `health` | Properties | Archive UUID, filesystem `Path`, JSON metadata dict, and health dict. |
+| `catalog` (classmethod) | `catalog(directory, *, source_path=None, cursor=None, limit=50, include_all=False, max_seconds=None)` | Discover valid Wave `.sqlite3` archives sorted newest first. Recognizes both `YYYYMMDD_HHMMSS_<label>_<run_id[:8]>.sqlite3` and legacy 32-hex filenames. |
+| `attempts` | `attempts(job_id=None, *, before=None, limit=100)` | Paginated list of saved attempts. |
+| `attempt` | `attempt(job_id, attempt_id, *, preview=False)` | Fetch full attempt metadata, counters, and summary. |
+| `page` | `page(job_id, attempt_id, *, limit=100, cursor=None, direction="forward", start=None, end=None, around=None)` | Paginated raw log rows (`text` truncated to preview cap if long). |
+| `reader` | `reader(job_id, attempt_id, *, limit=100, cursor=None, direction="forward", anchor=None, query="", regex=False, case_sensitive=False, whole_word=False, start=None, end=None)` | Search raw logs with regex/case/word/time-window filters and jump anchors. |
+| `read_text` | `read_text(job_id, attempt_id, seq, *, offset=0, limit=65536)` | Read chunked full raw line text by sequence number (`seq`). |
+| `flow_page`, `flow_text`, `flow_report_names` | `flow_page(..., stage=None, producer=None, kind=None, report_name=None, conditions=None, limit=100)` | Query paginated parsed records, analyzer reports, and full text payloads. |
+| `flow_latest`, `flow_latest_text` | `flow_latest(job_id, attempt_id, *, stage, producer=None, report_name=None, mode="record", ...)` | Inspect latest record or merged per-field summary (`mode="fields"` in `flow_latest_text`). |
+| `automation_history` | `automation_history(job_id, attempt_id, *, producer=None, after=None, before=None, limit=100)` | Paginated automation trigger and action receipts. |
+| `chart_meta`, `chart_series`, `chart_window`, `chart_find` | Indexed waveform & chart queries | Query declared `ViewSpec` charts or auto-chart numeric projections (`axis="time"`, `mode="raw"`/`"buckets"`). |
+| `export_vcd` | `export_vcd(job_id, attempt_id, *, view_id, as_of_seq=None, series=None, axis="time")` | Export a waveform view as VCD formatted text (`str`). |
+| `replay`, `save_attempt`, `delete_unstarted_attempt`, `set_outcome`, `record_batch`, `bind_source`, `flush`, `close` | Lifecycle & write helpers | Open replay context (`replay(attempt_id)`), manage Preview rows, update outcome, flush WAL, and close (`clean=True`). |
+
+---
+
+## Sources and Work File Utilities
+
+| Symbol | Signature | Description |
+| --- | --- | --- |
+| `FileSource` | `FileSource(path, *, encoding="utf-8", decode_errors="replace", chunk_size=65536, automation=None)` | Single-pass file reader; `.run(flow=None, *, archive_dir=None, stop_event=None)` returns `SourceResult`. |
+| `TailSource` | `TailSource(path, *, start="beginning", poll_interval=0.1, idle_timeout=None, completion_file=None, end_marker=None, final_offset=None, rotation_grace=3.0, commit_interval=1.0, **options)` | Live file tailer handling log rotation and optional completion triggers. |
+| `ReanalysisSource` | `ReanalysisSource(archive, run_id, *, flow_path=None)` | Replays saved attempt lines from an existing archive against a trusted `.py` `flow_path` exposing `flow`. |
+| `SourceResult` | `SourceResult(snapshot, archive_path, complete, reason, capabilities, archive_error=None)` | Result returned by standalone `.run(...)` calls on source objects. |
+| `load_work_file` | `load_work_file(target, *, reload_modules=False) -> WaveWorkspace` | Import a trusted `.py` work file and retrieve its `workspace`/`manager` object. |
+| `run_headless` | `run_headless(manager, *, timeout=None, source_mode=False) -> int` | Run a `WaveWorkspace` in terminal mode until completion or timeout; returns exit code `0` or `1`. |
+| `build_demo_workspace` | `build_demo_workspace() -> WaveWorkspace` | Construct the finite demonstration workspace used by `--demo`. |
+| `configure_columns` | `rpkbin.wave.columns.configure_columns(manager, columns)` | Attach custom table columns to the manager metadata shown in the web UI. |
+| `main` | `main(argv=None) -> int` | CLI entry point backing `rpk-wave`. |
+
+---
+
+## Job Definition and Queue Control (`rpkbin.jobcore`)
+
+Key `Job` and `JobManager` options relevant to interactive prompts, stopping, queue holding, and signal dispatch:
+
+- **`Job(name, cmd, *, cwd=None, env=None, encoding="utf-8", decode_errors="replace", pty=None, prompts=(), pty_rows=None, pty_cols=None, resources=None, priority=0, timeout=None, max_retries=0, stop_policy=StopPolicy.GRACEFUL_THEN_FORCE, stop_ctrl_c=False, stop_cmd=None, stop_timeout=3.0, output_drain_timeout=30.0, max_log_lines=10000, log_file=None)`**
+  - `prompts`: sequence of non-empty literal suffixes. Before a newline arrives, Wave checks whether the ANSI-stripped tail of the pending output buffer (`rstrip()`) ends with `p.rstrip()`. Matching flushes that prompt immediately as a log line so `Automation` or the UI can reply.
+  - `pty`: defaults to `True` on POSIX (allocating a PTY) and `False` on Windows (pipes).
+- **`JobManager.control(job_id, action, *, expected_attempt, expected_submission, text=None, secret=False, newline=True, sig=None) -> ControlReceipt`**
+  - `action` values: `"stop"`, `"force_stop"`, `"interrupt"`, `"signal"` (requires integer `sig >= 0`), and `"send"` (`text`, `secret`, and `newline=True`).
+- **Queue Hold and Soft Removal**:
+  - `set_held(job_id, held, *, expected_attempt=None, expected_submission=None)`: places pending jobs in the `HELD` state (`explain_pending` reports `"Held (excluded from queue)"`), excluding them from dispatch without changing priorities.
+  - `reorder_queue(targets)`: reassigns priorities according to ordered job sequence and returns `[(job_id, ControlReceipt, assigned_priority), ...]`.
+  - `remove_job` / `restore_job` / `removed_jobs`: remove finished or unstarted jobs from the active queue (and clean unstarted Preview archive attempts via `WaveWorkspace`) and restore them later with their `Flow`.
+
+---
+
+## Flow Pipeline and Chart Views (`rpkbin.flow`)
+
+- **`Flow(name, *, parsers=(), analyzers=(), automations=(), version="1", result=None, views=())`**
+  - Registers parsing (`Parser`), analysis (`Analyzer`), automation (`Automation`), result selector (`result`), and declarative chart specs (`views`).
+- **`Parser(name, parse, *, version="1", outputs=None, on_finish=None, state_factory=dict)`**
+  - `parse(line, ctx)` emits parsed record dicts (`Result(...)`) per line; `on_finish(end_info, ctx)` runs on completion.
+- **`Analyzer(name, *, records=(), reports=(), version="1", outputs=None, on_finish=None, on_tick=None, every=None, state_factory=dict)`**
+  - Subscriptions `Binding(source, handler)` invoke callbacks for matching `Parser` records, `Analyzer` reports, `Tick(elapsed)` timers (`every`), or `EndInfo(complete, execution)` finish hooks.
+- **`Automation(name, *, reports=(), on_event=None, enabled=True, state_factory=dict)`**
+  - Subscribes to analyzer `Binding` rules (`reports`) and/or `on_event` events (`FlowEvent`), dispatching `ctx.actions.send(...)`, `ctx.actions.stop()`, `ctx.actions.force_stop()`, `ctx.actions.interrupt()`, or `ctx.actions.signal(...)` with `ActionOutcome` receipts.
+- **`ViewSpec(id, kind, *, source, axis, series, title=None, options=None, report_name=None)`**
+  - `source` accepts a `Parser`/`Analyzer` definition object or a `{"stage": ..., "producer": ...}` mapping (`"report_name"` optional for analyzers); `series` takes a mapping with `"mode": "wide"` (`"items": [...]`) or `"mode": "long"` (`"id_field"`, `"value_field"`). Class constructors: `ViewSpec.waveform(...)`, `ViewSpec.xy_line(...)`, `ViewSpec.scatter(...)`, `ViewSpec.histogram(...)`, plus `.to_json()`.
+- **`FlowSession`**: runs a `Flow` in memory outside `WaveWorkspace` via `.start()`, `.feed(line)`, `.tick(elapsed)`, `.emit_event(name, data)`, `.wait_automation()`, `.finish()`, `.snapshot()`, and `.close()`.
+
+---
+
+## Local HTTP API Routes
+
+When `WaveServer` is active, the web UI communicates over these primary local endpoints:
+
+- **`GET /api/files?mode=<mode>&path=<dir>`**: directory browser supporting `mode` values `"work"` (`.py`), `"logs"` (non-archive log files), `"archive"` (`.sqlite3`), and `"rc"` (`.rc`, `.vcd`, `.json`), alongside shortcuts (`Launch Dir`, `Work File Dir`, `Archives`, `Home`).
+- **`GET /api/archive`**, **`POST /api/archive/open`**, **`POST /api/archive/delete`**: list recent archives in `archive_catalog_dir`, open an archive read-only in the workspace, or permanently delete a closed archive (and sidecars) from disk.
+- **`POST /api/jobs/hold`**, **`/api/jobs/reorder`**, **`/api/jobs/remove`**, **`/api/jobs/restore`**, **`/api/jobs/requeue`**: mutate queue holding, priority order, removal/restoration, and reruns.
+- **`POST /api/job/action`**: dispatch interactive controls including `action="send"` (with optional `newline` boolean and `secret`) and `action="signal"` (accepting signal integer or POSIX names `SIGINT`, `SIGTERM`, `SIGTSTP`, `SIGCONT`, `SIGUSR1`, `SIGUSR2`, `SIGHUP`, `SIGQUIT`).
+- **`POST /api/chart/file`**: load local `.rc`, `.vcd`, or `.json` waveform configuration data into the Charts viewer.
+
+---
+
+## Examples
+
+### 1. Minimal Example
+
+Run a finite job using `prompts`, configure a clean temporary archive directory, execute headlessly, and inspect `archive_health`:
 
 ```python
 import sys
-from rpkbin.wave import Job, JobManager, Event, Expect
+import tempfile
+from pathlib import Path
 
-mgr = JobManager()
-job = mgr.add(Job("event_demo", [sys.executable, "-u", "-c", "import time; print('PROGRESS=50'); time.sleep(0.1); print('PASS_TOKEN')"]))
+from rpkbin.jobcore import Job
+from rpkbin.wave import WaveWorkspace, run_headless
 
-# 1. Subscribe to log output
-job.on(Event.LOG, match=r"^PROGRESS=(\d+)$", callback=lambda bound, line: bound.log(f"Matched line: {line}"))
-
-# 2. Track metric change
-progress = job.track("progress", r"^PROGRESS=(\d+)$", cast=int)
-job.on(progress.events.changed, callback=lambda bound, old, new: bound.log(f"Progress changed: {old} -> {new}%"))
-
-# 3. Check satisfaction event
-chk = job.check("pass_check", match=r"^PASS_TOKEN$", expect=Expect.PRESENT)
-job.on(chk.events.satisfied, callback=lambda bound, state: bound.log(f"Check {state['name']} satisfied!"))
+with tempfile.TemporaryDirectory() as tmp:
+    archive_dir = Path(tmp) / "archives"
+    ws = WaveWorkspace(archive_mode="persist")
+    ws.enable_archive(archive_dir)
+    ws.add(
+        Job(
+            "hello",
+            [sys.executable, "-c", "print('boot ok')"],
+            prompts=("Password:",),
+        )
+    )
+    rc = run_headless(ws)
+    health = dict(ws.archive_health)
+    ws.close()
+    print("rc:", rc, "disposition:", health["disposition"])
 ```
 
-Callable matchers receive the same event arguments and return bool, for example `match=lambda bound, old, new: new >= 80`. Put all declarations before starting or validating work.
+Output (after the Wave summary banner):
 
-Append these declarations to the example to stop on forbidden output or a monitoring error:
+```text
+rc: 0 disposition: saved
+```
+
+### 2. Progressive Example
+
+Combine a `Flow` with `ViewSpec.waveform`, test `remove_job`/`restore_job` before start, query persisted chart series via `RunArchive`, and run `prune_archives`:
 
 ```python
-# Continues the job above: record FAIL first, then use the job's stop policy.
-no_fatal = job.check("no_fatal", match=r"^FATAL:", expect=Expect.ABSENT)
-job.on(no_fatal.events.failed, stop=True)
-job.on(job.events.error, stop=True)  # Without this, an isolated monitor error does not stop the process.
+import re
+import sys
+import tempfile
+from pathlib import Path
 
-# Report elapsed time for long work; a short job may finish before its first tick.
-job.on(Event.TICK, every=1.0, once=False,
-       callback=lambda bound, elapsed: bound.log(f"Elapsed: {elapsed:.1f}s"))
+from rpkbin.flow import Flow, Parser, ViewSpec
+from rpkbin.jobcore import Job
+from rpkbin.wave import RunArchive, WaveWorkspace, prune_archives, run_headless
+
+LINE_RE = re.compile(r"t=(\d+)\s+val=(\d+)")
+
+def parse_sig(line, ctx):
+    m = LINE_RE.search(line)
+    if m:
+        return {"t": int(m.group(1)), "val": int(m.group(2))}
+
+sig = Parser("sig", parse_sig)
+wave_view = ViewSpec.waveform(
+    "wave_main",
+    source=sig,
+    axis={"field": "t", "label": "Time", "unit": "ns"},
+    series={"mode": "wide", "items": [{"id": "val", "field": "val", "type": "number", "label": "Value"}]},
+    title="Value Trace",
+)
+flow = Flow("trace_flow", parsers=(sig,), views=(wave_view,))
+
+with tempfile.TemporaryDirectory() as tmp:
+    archive_dir = Path(tmp) / "archives"
+    ws = WaveWorkspace(archive_mode="persist")
+    ws.enable_archive(archive_dir)
+    job = Job("sim", [sys.executable, "-c", "print('t=10 val=3\\nt=20 val=7')"])
+    ws.add(job, flow=flow)
+
+    ws.remove_job(job.name)
+    assert len(ws.removed_jobs) == 1
+    ws.restore_job(job.name)
+
+    rc = run_headless(ws)
+    db_path = Path(ws.archive_health["path"])
+    run_id = ws.archive_health["run_id"]
+    ws.close()
+
+    with RunArchive(db_path) as ar:
+        att = ar.attempts()["rows"][0]
+        win = ar.chart_window(att["id"], att["attempt_id"], view_id="wave_main", series=["val"], lo=0, hi=50)
+        print("rc:", rc, "points:", len(win["points"]))
+        print("pruned:", prune_archives(archive_dir, retention_days=30, exclude_run_id=run_id))
 ```
 
----
+Output (after the Wave summary banner):
 
-## Monitor Fault Isolation and Callback Latency
+```text
+rc: 0 points: 2
+pruned: {'deleted': [], 'skipped': 1, 'errors': 0}
+```
 
-1. **Monitor Fault Isolation**:
-   - If a user-registered callback, cast function, or check matcher raises an unhandled exception, Wave records the exception to `job.result.errors`, increments `error_count`, and **disables the faulty monitor for that attempt**. Other monitors and the process continue by default. Retry/rerun attempts enable their monitors again. Subscribe to `job.events.error` explicitly if an error should stop execution.
-   - That attempt cannot achieve `Result.PASS`: it yields `Result.ERROR` unless a higher-priority FAIL exists. Exceptions in completion notifications after finalization become diagnostics without changing the completed Result.
-2. **Callback Latency Constraints**:
-   - Callbacks execute **synchronously** on the thread that triggers the event. Event handling shares a lock within one manager, so blocking can also delay other jobs' monitoring and controls.
-   - Callbacks **must not** perform long-running blocking operations (such as `time.sleep`, heavy disk writes, or synchronous HTTP requests), as this blocks child pipe draining and verdict progression.
+## Tips and Limitations
 
----
+- Call `configure_archive` before `ws.start()`. Calling it after execution begins raises `RuntimeError`.
+- On Windows, `Job(..., pty=None)` uses standard pipes (`pty=False`), and POSIX named signals (`SIGTSTP`, `SIGCONT`, `SIGUSR1`, `SIGUSR2`, `SIGHUP`, `SIGQUIT`) are only registered for dispatch on POSIX hosts.
+- Pass `close()` cleanly on `WaveWorkspace` or exit a `with RunArchive(...)` block so `keep_on_fail` / `ephemeral` disposition and NFS staging moves finalize properly.
 
-## Enumerations
+## See Also
 
-### `JobStatus`
-- `PENDING`: Queued, awaiting worker or resource slot.
-- `RUNNING`: Process is executing.
-- `WAITING_INPUT`: A configured prompt token was detected; input may be expected, but actual blocking is not established.
-- `STOPPING`: Shutdown sequence in progress.
-- `DONE`: Process terminated normally with returncode 0.
-- `FAILED`: Process exited non-zero or timed out.
-- `CANCELLED`: Process was stopped or cancelled.
-
-### `Result`
-- `PASS`: Completed normally with returncode 0, healthy monitoring, and all declared checks OK.
-- `FAIL`: A check failed, execution failed to start, a timeout occurred, or a non-zero exit occurred without a stop request.
-- `ERROR`: Unhandled exception in monitor rules or callbacks.
-- `INCOMPLETE`: Stopped or cancelled before complete execution, without confirmed FAIL/ERROR. This also applies when all checks were already OK.
-- `NA` (`"N/A"`): Finished normally with no checks declared.
-
-### `CheckState`
-- `UNDECIDED` (`"-"`): Not yet decided.
-- `OK`: Check passed.
-- `FAIL`: Check failed.
-- `ERROR`: Matcher or cast function failed with exception.
-- `INCOMPLETE`: Execution interrupted before resolution.
-
-### `Expect`
-- `PRESENT`: Condition must occur.
-- `ABSENT`: Condition must never occur.
-
-### `StopPolicy`
-- `GRACEFUL_THEN_FORCE`: Attempt graceful stop command/interrupt before falling back to kill.
-- `FORCE`: Immediate process tree termination.
-
-### `Event`
-- `LOG` (`"log"`): Subprocess output line.
-- `TICK` (`"tick"`): Periodic timer tick (requires `every` in seconds).
+- [Wave Overview](../README.md)
+- [rpk-wave CLI Reference](cli.md)
+- [Flow Pipelines](../flow.md)
+- [History and Archives](../history.md)

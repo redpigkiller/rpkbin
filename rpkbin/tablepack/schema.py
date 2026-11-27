@@ -72,7 +72,7 @@ class Column:
         pass
 
     def describe(self) -> str:
-        """Short human-readable encoding summary, e.g. ``uint16+delta``."""
+        """Short human-readable encoding summary, e.g. ``uint16+pack`` or ``uint+delta``."""
         parts = [self._describe_base()]
         for flag in ("delta", "pack", "repeat", "nullable"):
             if getattr(self, flag, False):
@@ -267,6 +267,13 @@ class Schema:
             if c.name == name:
                 return c
         raise KeyError(name)
+
+    def __contains__(self, item: object) -> bool:
+        if isinstance(item, str):
+            return any(c.name == item for c in self._columns)
+        if isinstance(item, Column):
+            return item in self._columns
+        return False
 
     def __eq__(self, other) -> bool:
         return isinstance(other, Schema) and self._columns == other._columns

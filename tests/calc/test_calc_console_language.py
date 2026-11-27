@@ -10,10 +10,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QApplication
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import WorkspaceSession
-from rpkbin.calc.ui.console_widget import CommandWindowWidget
-from rpkbin.calc.ui.workspace_widget import WorkspaceWidget
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import WorkspaceSession
+from rpkbin.app.calc.ui.console_widget import CommandWindowWidget
+from rpkbin.app.calc.ui.workspace_widget import WorkspaceWidget
 
 
 @pytest.fixture(scope="module")

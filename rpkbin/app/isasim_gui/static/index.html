@@ -1,0 +1,3915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="isasim-token" content="__ISASIM_TOKEN__">
+<title>isasim Web Debugger</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel-bg: #252526;
+    --header-bg: #2d2d2d;
+    --border: #3c3c3c;
+    --text: #cccccc;
+    --text-bright: #ffffff;
+    --muted: #9a9fa6;
+    --accent: #007acc;
+    --pc-bg: rgba(38, 79, 120, 0.65);
+    --bp: #e51400;
+    --bp-cond: #d7ba7d;
+    --changed: #4ec9b0;
+    --flag-off: #9da5b4;
+    --flag-on: #58a6ff;
+    --error-bg: #5a1d1d;
+    --error-text: #f48771;
+    --mono: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
+    --right-width: 480px;
+    --reg-height: 48%;
+    --ui-font-size: 12px;
+    --asm-font-size: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-size: 13px;
+    user-select: none;
+  }
+  [hidden] { display: none !important; }
+  header {
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .file-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #222;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-bright);
+    font-weight: 600;
+    cursor: default;
+    max-width: 100%;
+    min-width: 0;
+  }
+  #sourceSelect {
+    max-width: min(240px, 100%);
+    min-width: 0;
+    color: inherit;
+    font: inherit;
+    background: inherit;
+  }
+  .debug-hint {
+    padding: 4px 10px;
+    color: var(--text);
+  }
+  .muted { color: var(--muted); }
+  .reg-name { font-weight: 600; color: var(--text-bright); }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    background: #232426;
+    border: 1px solid #3c3e42;
+    border-radius: 6px;
+    padding: 3px 4px;
+    gap: 4px;
+    max-width: 100%;
+  }
+  .toolbar-sep {
+    width: 1px;
+    height: 22px;
+    background: #45474c;
+    margin: 0 3px;
+  }
+  .tool-btn {
+    background: #2d2f33;
+    color: #d8dade;
+    border: 1px solid #3c3e42;
+    width: auto;
+    min-width: 74px;
+    height: 30px;
+    padding: 1px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    white-space: nowrap;
+    position: relative;
+    transition: background 0.1s, border-color 0.1s, color 0.1s, opacity 0.1s;
+    user-select: none;
+  }
+  .tool-btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+  }
+  .tool-btn .btn-top {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.1;
+  }
+  .tool-btn .btn-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    line-height: 1;
+    color: #9da5b4;
+    font-weight: normal;
+  }
+  .tool-btn svg {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex-shrink: 0;
+  }
+  .tool-btn.ico-run svg { color: #89d185; }
+  .tool-btn.ico-step svg { color: #75beff; }
+  .tool-btn.ico-reset svg { color: #dcb46e; }
+  .tool-btn.ico-reload svg { color: #cccccc; }
+  .tool-btn.ico-clear svg { color: #f1786e; }
+  .tool-btn.ico-watch svg { color: #4ec9b0; }
+  .tool-btn.ico-run {
+    background: #253328;
+    border-color: #38523d;
+  }
+  .tool-btn:hover:not(:disabled) {
+    background: #383b40;
+    border-color: #52565e;
+    color: #ffffff;
+  }
+  .tool-btn.ico-run:hover:not(:disabled) {
+    background: #2d4232;
+    border-color: #4b7052;
+  }
+  .tool-btn.active {
+    background: rgba(0, 122, 204, 0.28);
+    border-color: var(--accent);
+    color: #ffffff;
+  }
+  .tool-btn.active:hover:not(:disabled) {
+    background: rgba(0, 122, 204, 0.38);
+    border-color: #3399ff;
+  }
+  .watch-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #c9342a;
+    color: #ffffff;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+    z-index: 3;
+  }
+  .toolbar.icon-only .tool-btn {
+    width: 32px;
+    min-width: 32px;
+    height: 28px;
+    padding: 0;
+  }
+  .toolbar.icon-only .tool-btn .btn-top span,
+  .toolbar.icon-only .tool-btn .btn-sub {
+    display: none;
+  }
+  .toolbar.icon-only .tool-btn svg {
+    width: 15px;
+    height: 15px;
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+  }
+  .zero-btn {
+    background: transparent;
+    border: none;
+    color: #9da5b4;
+    cursor: pointer;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 4px;
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .zero-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .zero-btn svg {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+  }
+  .gear-btn {
+    background: #232426;
+    border: 1px solid #3c3e42;
+    color: #b0b6be;
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .gear-btn:hover {
+    background: #323438;
+    color: #fff;
+  }
+  .gear-btn svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+  }
+  .settings-popover {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    background: #252526;
+    border: 1px solid #45474c;
+    border-radius: 6px;
+    padding: 10px 12px;
+    width: 256px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65);
+    z-index: 80;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .settings-popover.open {
+    display: flex;
+  }
+  .set-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #ccc;
+  }
+  .seg-ctrl {
+    display: inline-flex;
+    background: #1b1b1c;
+    border: 1px solid #3c3e42;
+    border-radius: 4px;
+  }
+  .seg-ctrl button {
+    background: transparent;
+    border: none;
+    color: #9da5b4;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .seg-ctrl button:first-child {
+    border-top-left-radius: 3px;
+    border-bottom-left-radius: 3px;
+  }
+  .seg-ctrl button:last-child {
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+  }
+  .seg-ctrl button:hover {
+    color: #fff;
+  }
+  .seg-ctrl button.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .font-stepper {
+    display: inline-flex;
+    align-items: center;
+    background: #1b1b1c;
+    border: 1px solid #3c3e42;
+    border-radius: 4px;
+  }
+  .font-stepper button {
+    background: transparent;
+    border: none;
+    color: #ccc;
+    width: 26px;
+    height: 24px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .font-stepper button:hover {
+    background: #323438;
+    color: #fff;
+  }
+  .font-stepper span {
+    font-family: var(--mono);
+    font-size: 11px;
+    min-width: 38px;
+    text-align: center;
+    color: #9cdcfe;
+    border-left: 1px solid #333;
+    border-right: 1px solid #333;
+  }
+  .mini-btn {
+    background: #333;
+    color: var(--text);
+    border: 1px solid #45474c;
+    height: 24px;
+    min-width: 24px;
+    padding: 0 7px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+  .mini-btn svg {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+  }
+  .mini-btn:hover:not(:disabled) { background: #3e4045; color: #fff; }
+  .mini-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    background: #232426;
+    border: 1px solid #3c3e42;
+    border-radius: 5px;
+    padding: 4px 10px;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    gap: 9px;
+    color: #b0b6be;
+  }
+  .status-pill .pill-sep {
+    width: 1px;
+    height: 13px;
+    background: #3e4046;
+  }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #89d185;
+    display: inline-block;
+  }
+  .status-dot.warn { background: #dcb46e; }
+  .status-dot.err { background: #f1786e; }
+  #badgeStatus {
+    font-weight: 600;
+    color: #e6edf3;
+  }
+  #errorBanner {
+    display: none;
+    background: var(--error-bg);
+    color: var(--error-text);
+    padding: 5px 12px;
+    border-bottom: 1px solid #7a2b2b;
+    font-family: var(--mono);
+    font-size: 12px;
+    user-select: text;
+  }
+  main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .pane-left {
+    flex: 1;
+    min-width: 240px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .resizer-v {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border);
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .resizer-v:hover, .resizer-v.dragging {
+    background: var(--accent);
+  }
+  .pane-right {
+    width: var(--right-width);
+    min-width: 280px;
+    max-width: 80vw;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pane-reg {
+    height: var(--reg-height);
+    min-height: 90px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .resizer-h {
+    height: 5px;
+    cursor: row-resize;
+    background: var(--border);
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .resizer-h:hover, .resizer-h.dragging {
+    background: var(--accent);
+  }
+  .pane-mem {
+    flex: 1;
+    min-height: 90px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pane-watch {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pane-header {
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 4px 10px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+  .tabs { display: flex; gap: 2px; flex-wrap: nowrap; }
+  .tab {
+    padding: 4px 9px;
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--text-bright);
+    border-bottom-color: var(--accent);
+    background: #2a2d2e;
+  }
+  .scroll-container {
+    flex: 1;
+    overflow-y: scroll;
+    overflow-x: auto;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #42454a #1e1e1e;
+    user-select: text;
+    position: relative;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #1e1e1e;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #42454a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #5a5e66;
+  }
+  ::-webkit-scrollbar-corner {
+    background: #1e1e1e;
+  }
+  #asmTable {
+    font-size: var(--asm-font-size);
+  }
+  #asmTable th, #asmTable td {
+    padding: 2px 4px;
+    line-height: 1.4;
+    vertical-align: middle;
+  }
+  #asmTable td {
+    border-bottom: none;
+  }
+  #asmTable th.source-col,
+  #asmTable td.source-col {
+    width: 100%;
+    padding-left: 8px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--ui-font-size);
+  }
+  table.fixed-table {
+    table-layout: fixed;
+  }
+  th {
+    background: #222;
+    text-align: left;
+    padding: 4px 8px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: 1px solid var(--border);
+    color: #999;
+    font-weight: 600;
+    user-select: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  th.draggable-col {
+    cursor: grab;
+  }
+  th.draggable-col:hover {
+    background: #2a2d30;
+    color: var(--text-bright);
+  }
+  th.drag-over-col {
+    border-left: 2px solid var(--accent);
+  }
+  .col-resizer {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: col-resize;
+    user-select: none;
+  }
+  .col-resizer:hover {
+    background: var(--accent);
+  }
+  td {
+    padding: 3px 8px;
+    border-bottom: 1px solid #282828;
+    white-space: nowrap;
+    position: relative;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .center-col {
+    text-align: center !important;
+  }
+  .empty-hint {
+    text-align: center;
+    color: #90969e;
+    font-style: italic;
+    padding: 14px 8px !important;
+  }
+  tr.pc-row {
+    background: var(--pc-bg) !important;
+    color: #fff;
+  }
+  tr:hover:not(.pc-row) {
+    background: #26292c;
+  }
+  tr.drag-over-row td {
+    border-top: 2px solid var(--accent);
+  }
+  @keyframes traceFlash {
+    0% { background: rgba(79, 193, 255, 0.38); }
+    100% { background: transparent; }
+  }
+  tr.trace-flash-row td {
+    animation: traceFlash 1.2s ease-out;
+  }
+  .trace-row-clickable {
+    cursor: pointer;
+  }
+  .trace-row-clickable:hover {
+    background: rgba(79, 193, 255, 0.12) !important;
+  }
+  .gutter-cell {
+    width: 56px;
+    min-width: 56px;
+    text-align: center;
+    user-select: none;
+    overflow: visible;
+  }
+  .gutter-box {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    vertical-align: middle;
+  }
+  .bp-btn, .icon-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 3px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .bp-btn:hover, .icon-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text-bright);
+  }
+  .bp-circle {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid #767c85;
+    display: inline-block;
+  }
+  tr.pc-row .bp-circle {
+    border-color: #8c95a3;
+  }
+  .bp-btn:hover .bp-circle {
+    border-color: #aaa;
+  }
+  .bp-circle.active {
+    background: var(--bp);
+    border-color: var(--bp);
+  }
+  .bp-circle.cond {
+    background: var(--bp-cond);
+    border-color: var(--bp-cond);
+  }
+  .icon-btn svg {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .icon-btn.has-cond {
+    color: var(--bp-cond);
+  }
+  .line-num {
+    width: 3.8ch;
+    min-width: 3.8ch;
+    text-align: center;
+    color: #8b949e;
+    user-select: none;
+  }
+  tr.pc-row .line-num {
+    color: #a8b3c2;
+  }
+  .pc-addr {
+    width: 10ch;
+    min-width: 10ch;
+    text-align: center;
+    color: #9cdcfe;
+    font-weight: 500;
+    user-select: none;
+    overflow: visible;
+  }
+  .pc-addr-wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    vertical-align: middle;
+  }
+  .pc-slot {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .pc-marker {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    border: none;
+    background: transparent;
+    padding: 0;
+    position: relative;
+  }
+  .pc-marker svg {
+    width: 12px;
+    height: 12px;
+  }
+  .pc-marker.current {
+    color: #f2cc60;
+    cursor: default;
+  }
+  .pc-marker.current svg {
+    fill: currentColor;
+    stroke: none;
+  }
+  .pc-marker.set-btn {
+    opacity: 0;
+    color: #9da5b4;
+    cursor: pointer;
+  }
+  .pc-marker.set-btn svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+  }
+  tr:hover .pc-marker.set-btn,
+  tr:focus-within .pc-marker.set-btn,
+  .pc-marker.set-btn:focus-visible {
+    opacity: 1;
+  }
+  .pc-marker.set-btn:hover {
+    color: #4fc1ff;
+    background: rgba(79, 193, 255, 0.18);
+  }
+  .pc-marker[data-tip]:hover::after,
+  .pc-marker[data-tip]:focus-visible::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + 6px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: #1f2428;
+    color: #e1e4e8;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: normal;
+    white-space: nowrap;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+    z-index: 40;
+  }
+  .cells-hex {
+    width: 1%;
+    min-width: 6ch;
+    padding: 2px 8px !important;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--muted);
+  }
+  /* Sticky ASM Columns (Freeze Cols: PC or Code) */
+  #asmTable.freeze-pc th.gutter-cell,
+  #asmTable.freeze-pc th.line-num,
+  #asmTable.freeze-pc th.pc-addr,
+  #asmTable.freeze-code th.gutter-cell,
+  #asmTable.freeze-code th.line-num,
+  #asmTable.freeze-code th.pc-addr,
+  #asmTable.freeze-code th.cells-hex {
+    position: sticky;
+    z-index: 5;
+    background: #222;
+  }
+  #asmTable.freeze-pc td.gutter-cell,
+  #asmTable.freeze-pc td.line-num,
+  #asmTable.freeze-pc td.pc-addr,
+  #asmTable.freeze-code td.gutter-cell,
+  #asmTable.freeze-code td.line-num,
+  #asmTable.freeze-code td.pc-addr,
+  #asmTable.freeze-code td.cells-hex {
+    position: sticky;
+    z-index: 1;
+    background: var(--bg);
+  }
+  #asmTable.freeze-pc tr:hover:not(.pc-row) td.gutter-cell,
+  #asmTable.freeze-pc tr:hover:not(.pc-row) td.line-num,
+  #asmTable.freeze-pc tr:hover:not(.pc-row) td.pc-addr,
+  #asmTable.freeze-code tr:hover:not(.pc-row) td.gutter-cell,
+  #asmTable.freeze-code tr:hover:not(.pc-row) td.line-num,
+  #asmTable.freeze-code tr:hover:not(.pc-row) td.pc-addr,
+  #asmTable.freeze-code tr:hover:not(.pc-row) td.cells-hex {
+    background: #26292c;
+  }
+  #asmTable.freeze-pc tr.pc-row td.gutter-cell,
+  #asmTable.freeze-pc tr.pc-row td.line-num,
+  #asmTable.freeze-pc tr.pc-row td.pc-addr,
+  #asmTable.freeze-code tr.pc-row td.gutter-cell,
+  #asmTable.freeze-code tr.pc-row td.line-num,
+  #asmTable.freeze-code tr.pc-row td.pc-addr,
+  #asmTable.freeze-code tr.pc-row td.cells-hex {
+    background: #223b54;
+  }
+  #asmTable.freeze-pc tr:hover td.pc-addr,
+  #asmTable.freeze-code tr:hover td.pc-addr {
+    z-index: 3;
+  }
+  #asmTable.freeze-pc .gutter-cell,
+  #asmTable.freeze-code .gutter-cell {
+    left: 0;
+  }
+  #asmTable.freeze-pc .line-num,
+  #asmTable.freeze-code .line-num {
+    left: var(--left-line, 36px);
+  }
+  #asmTable.freeze-pc .pc-addr,
+  #asmTable.freeze-code .pc-addr {
+    left: var(--left-pc, 72px);
+  }
+  #asmTable.freeze-code .cells-hex {
+    left: var(--left-code, 152px);
+  }
+  #asmTable.freeze-pc th.pc-addr,
+  #asmTable.freeze-pc td.pc-addr,
+  #asmTable.freeze-code th.cells-hex,
+  #asmTable.freeze-code td.cells-hex {
+    box-shadow: inset -1px 0 0 #333;
+  }
+  /* ASM Syntax Highlighting */
+  .syn-comment { color: #6a9955; font-style: italic; }
+  .syn-label { color: #dcdcaa; font-weight: 600; }
+  .syn-directive { color: #c586c0; }
+  .syn-mnemonic { color: #569cd6; font-weight: 600; }
+  .syn-reg { color: #9cdcfe; }
+  body.reg-hover-on #asmBody .syn-reg {
+    cursor: help;
+    border-bottom: 1px dotted rgba(156, 220, 254, 0.45);
+  }
+  body.reg-hover-on #asmBody .syn-reg:hover {
+    background: rgba(156, 220, 254, 0.15);
+    border-radius: 2px;
+  }
+  .syn-num { color: #b5cea8; }
+  #regHoverTooltip,
+  #uiHoverTooltip {
+    display: none;
+    position: fixed;
+    background: #1f2428;
+    color: #e1e4e8;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+  }
+  #regHoverTooltip {
+    z-index: 95;
+    padding: 4px 8px;
+    max-width: min(460px, calc(100vw - 16px));
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+  #uiHoverTooltip {
+    z-index: 250;
+    max-width: min(460px, calc(100vw - 16px));
+    padding: 5px 8px;
+    line-height: 1.4;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .cond-tag {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 10px;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
+    background: rgba(215, 186, 125, 0.14);
+    border: 1px solid rgba(215, 186, 125, 0.35);
+    color: var(--bp-cond);
+    cursor: pointer;
+  }
+  /* Floating Condition Popover */
+  .cond-popover {
+    display: none;
+    position: fixed;
+    z-index: 100;
+    background: #252526;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 6px 8px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+    align-items: center;
+    gap: 6px;
+  }
+  .cond-popover.open {
+    display: inline-flex;
+  }
+  .cond-popover input {
+    width: min(240px, 42vw);
+  }
+  .cond-popover button {
+    background: #37373d;
+    color: #fff;
+    border: 1px solid #45494e;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .cond-popover button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  /* Zero-shift Inline Poke Editor */
+  .editable {
+    cursor: text;
+  }
+  .editable:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .inline-input {
+    position: absolute;
+    inset: 1px;
+    width: calc(100% - 2px);
+    height: calc(100% - 2px);
+    background: #141414;
+    color: #fff;
+    border: 1px solid var(--accent);
+    border-radius: 2px;
+    padding: 0 6px;
+    font-family: var(--mono);
+    font-size: inherit;
+    outline: none;
+    z-index: 5;
+  }
+  .reg-drag-cell {
+    cursor: grab;
+    user-select: none;
+    position: relative;
+    text-align: center;
+  }
+  .drag-grip {
+    position: absolute;
+    left: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #767c85;
+    font-size: 11px;
+  }
+  tr:hover .drag-grip { color: #9da5b4; }
+  .changed-cell {
+    color: var(--changed);
+    font-weight: 600;
+  }
+  .change-badge {
+    display: inline-block;
+    margin-right: 4px;
+    color: var(--changed);
+    font-weight: 700;
+    font-size: 10px;
+  }
+  .dim { color: #90969e; }
+  .filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 5px 10px;
+    background: #222;
+    border-bottom: 1px solid var(--border);
+  }
+  input[type="text"].filter-invalid {
+    border-color: #f48771;
+    box-shadow: 0 0 0 1px rgba(244, 135, 113, 0.3);
+  }
+  .filter-error-hint {
+    padding: 3px 10px;
+    background: #2b1d1d;
+    border-bottom: 1px solid #6b2f2f;
+    color: #f48771;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  input[type="text"], select {
+    background: #1b1b1c;
+    color: #fff;
+    border: 1px solid #3e3e42;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  input[type="text"]:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .reg-dropdown-wrap { position: relative; }
+  .reg-dropdown {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 24px;
+    background: #252526;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    z-index: 20;
+    min-width: 190px;
+    max-height: 260px;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  }
+  .reg-dropdown.open { display: block; }
+  .reg-dropdown-actions {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .reg-dropdown-actions button {
+    background: #333;
+    color: var(--text);
+    border: 1px solid #444;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .reg-check-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: normal;
+    cursor: pointer;
+  }
+  .reg-check-item:hover { background: #333; }
+  .flags-bar {
+    display: none;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 5px 10px;
+    background: #202124;
+    border-bottom: 1px solid var(--border);
+    max-height: 68px;
+    overflow-y: auto;
+  }
+  .flags-bar.visible {
+    display: flex;
+  }
+  .flags-bar-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-right: 2px;
+    user-select: none;
+  }
+  .flag-pill-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .flag-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: #2b2d30;
+    border: 1px solid var(--flag-off);
+    font-family: var(--mono);
+    font-size: var(--ui-font-size);
+    line-height: 1.3;
+    color: #9da5b4;
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+  }
+  .flag-pill:hover {
+    border-color: #636872;
+    color: #fff;
+  }
+  .flag-pill.active {
+    background: rgba(0, 122, 204, 0.22);
+    border-color: var(--flag-on);
+    color: #ffffff;
+  }
+  .flag-pill.changed {
+    background: rgba(78, 201, 176, 0.2);
+    box-shadow: 0 0 0 2px rgba(78, 201, 176, 0.26);
+  }
+  .flag-pill .flag-name {
+    font-weight: 600;
+    color: #9cdcfe;
+  }
+  .flag-pill .flag-val {
+    font-weight: 700;
+    color: var(--flag-off);
+  }
+  .flag-pill.active .flag-val {
+    color: var(--flag-on);
+  }
+  .watch-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    background: #222;
+    border-bottom: 1px solid var(--border);
+  }
+  .watch-form input[type="text"],
+  .watch-form select {
+    height: 24px;
+    font-size: 11.5px;
+  }
+  .watch-form .watch-target-input {
+    flex: 1 1 165px;
+    min-width: 130px;
+  }
+  .watch-form .watch-cond-input {
+    flex: 1 1 180px;
+    min-width: 140px;
+  }
+  .watch-form .mini-btn {
+    height: 24px;
+    padding: 0 10px;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .watch-form .mini-btn:hover:not(:disabled) {
+    background: #148ce0;
+    border-color: #148ce0;
+  }
+  .mem-alias-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .modal-dialog {
+    background: var(--panel-bg);
+    border: 1px solid #45474c;
+    border-radius: 6px;
+    width: min(680px, 92vw);
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+  }
+  .modal-header {
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+  .modal-action-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: #202124;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-search-box {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: #1b1b1c;
+    border: 1px solid #3e3e42;
+    border-radius: 3px;
+    padding: 1px 4px 1px 0;
+    gap: 2px;
+    transition: border-color 0.1s;
+  }
+  .modal-search-box:focus-within {
+    border-color: var(--accent);
+  }
+  .modal-search-box.search-invalid,
+  .modal-search-box.search-invalid:focus-within {
+    border-color: #f48771;
+    box-shadow: 0 0 0 1px rgba(244, 135, 113, 0.3);
+  }
+  .modal-search-box input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    padding: 3px 6px;
+    outline: none;
+  }
+  .modal-search-box input[type="text"]:focus {
+    border-color: transparent;
+  }
+  .search-toggle-btn {
+    min-width: 24px;
+    height: 24px;
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+  .search-toggle-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-bright);
+  }
+  .search-toggle-btn.active {
+    background: rgba(0, 122, 204, 0.28);
+    border-color: var(--accent);
+    color: #ffffff;
+  }
+  .search-toggle-btn .whole-word-glyph {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .modal-alias-row {
+    cursor: pointer;
+    user-select: none;
+  }
+  .modal-alias-row.selected {
+    background: rgba(0, 122, 204, 0.14);
+  }
+  .modal-alias-row.selected:hover {
+    background: rgba(0, 122, 204, 0.22);
+  }
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--header-bg);
+    border-top: 1px solid var(--border);
+  }
+  .mini-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .mini-btn.primary:hover:not(:disabled) {
+    background: #148ce0;
+    border-color: #148ce0;
+  }
+  button:focus-visible,
+  select:focus-visible,
+  input:focus-visible,
+  .tab:focus-visible,
+  .editable:focus-visible,
+  tr.trace-row-clickable:focus-visible {
+    outline: 2px solid #4fc1ff;
+    outline-offset: 1px;
+    position: relative;
+    z-index: 2;
+  }
+  input[type="text"]:focus-visible,
+  select:focus-visible {
+    outline: 2px solid #4fc1ff;
+    outline-offset: 0;
+  }
+  .modal-search-box input[type="text"]:focus-visible {
+    outline: none;
+  }
+  .modal-search-box:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tool-btn, .resizer-v, .resizer-h, .flag-pill, .modal-search-box {
+      transition: none !important;
+    }
+    tr.trace-flash-row td {
+      animation: none !important;
+      background: rgba(79, 193, 255, 0.24);
+    }
+  }
+  @media (max-width: 760px) {
+    body {
+      height: auto;
+      min-height: 100vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    main {
+      flex-direction: column;
+      overflow: visible;
+    }
+    .pane-left {
+      min-width: 0;
+      height: 46vh;
+      min-height: 220px;
+      flex: none;
+    }
+    .resizer-v {
+      display: none;
+    }
+    .pane-right {
+      width: 100% !important;
+      min-width: 0;
+      max-width: 100%;
+      height: auto;
+      min-height: 320px;
+      flex: 1 0 auto;
+    }
+    .pane-reg {
+      height: auto;
+      min-height: 180px;
+      max-height: 48vh;
+    }
+    .pane-mem {
+      min-height: 200px;
+    }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="header-left">
+    <div class="file-badge" id="fileBadge" title="Active Assembly File">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+      </svg>
+      <span id="fileNameText">program.asm</span>
+      <select id="sourceSelect" aria-label="Assembly source file" hidden
+              onchange="currentFile = this.value; renderAsm()"></select>
+    </div>
+    <div class="toolbar" id="mainToolbar">
+      <button type="button" class="tool-btn ico-run" onclick="act('continue')" title="Continue / Run (F5)">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></svg><span>Run</span></div>
+        <div class="btn-sub">F5</div>
+      </button>
+      <button type="button" class="tool-btn ico-step" id="btnOver" onclick="act('step_over')" title="Step Over (F10)" disabled>
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 14a8 8 0 0 1 16 0"/><polyline points="16 10 20 14 16 18"/><circle cx="12" cy="18" r="2"/></svg><span>Step Over</span></div>
+        <div class="btn-sub">F10</div>
+      </button>
+      <button type="button" class="tool-btn ico-step" onclick="act('step_in')" title="Step In (F11)">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><line x1="12" y1="3" x2="12" y2="15"/><polyline points="8 11 12 15 16 11"/><circle cx="12" cy="20" r="2"/></svg><span>Step In</span></div>
+        <div class="btn-sub">F11</div>
+      </button>
+      <button type="button" class="tool-btn ico-step" id="btnOut" onclick="act('step_out')" title="Step Out (Shift+F11)" disabled>
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><line x1="12" y1="15" x2="12" y2="3"/><polyline points="8 7 12 3 16 7"/><circle cx="12" cy="20" r="2"/></svg><span>Step Out</span></div>
+        <div class="btn-sub">Shift+F11</div>
+      </button>
+      <button type="button" class="tool-btn ico-step" id="btnBack" onclick="act('step_back')" title="Step Back (B)" disabled>
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg><span>Step Back</span></div>
+        <div class="btn-sub">B</div>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button type="button" class="tool-btn ico-reset" onclick="act('reset')" title="Reset Simulator">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg><span>Reset</span></div>
+      </button>
+      <button type="button" class="tool-btn ico-reload" onclick="act('reload')" title="Reload Assembly from disk">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span>Reload</span></div>
+      </button>
+      <button type="button" class="tool-btn ico-clear" onclick="act('clear_breakpoints')" title="Clear All Breakpoints">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg><span>Clear BP</span></div>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button type="button" class="tool-btn ico-watch" id="btnWatch" onclick="toggleWatchPanel()" title="Toggle Watchpoints Panel" aria-pressed="false">
+        <div class="btn-top"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><span>Watch</span></div>
+        <span id="watchBadge" class="watch-badge" hidden>0</span>
+      </button>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="status-pill">
+      <span style="display:inline-flex; align-items:center; gap:6px;">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="badgeStatus">READY</span>
+      </span>
+      <span class="pill-sep"></span>
+      <span id="badgeCycle">Cycles: 0</span>
+      <span class="pill-sep"></span>
+      <span id="badgeSteps">Steps: 0</span>
+      <button type="button" class="zero-btn" onclick="zeroCounters()" title="Zero Cycles &amp; Steps counter" aria-label="Zero Cycles and Steps counter">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><line x1="5" y1="5" x2="5" y2="19"/><polyline points="14 7 9 12 14 17"/><line x1="9" y1="12" x2="20" y2="12"/></svg>
+      </button>
+    </div>
+    <button type="button" class="gear-btn" id="btnSettings" onclick="toggleSettings(event)" title="UI &amp; Font Settings" aria-label="UI and Font Settings" aria-expanded="false" aria-controls="settingsPopover">
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+    <div class="settings-popover" id="settingsPopover" onclick="event.stopPropagation()">
+      <div class="set-row">
+        <span>Toolbar</span>
+        <div class="seg-ctrl">
+          <button type="button" id="tbModeFull" class="active" onclick="setToolbarMode('full')">Full</button>
+          <button type="button" id="tbModeIcon" onclick="setToolbarMode('icon')">Compact</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <span>Source Font</span>
+        <div class="font-stepper">
+          <button type="button" onclick="adjustFont('asm', -1)" title="Decrease source font size" aria-label="Decrease source font size">-</button>
+          <span id="asmFontVal">12px</span>
+          <button type="button" onclick="adjustFont('asm', 1)" title="Increase source font size" aria-label="Increase source font size">+</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <span>Tables Font</span>
+        <div class="font-stepper">
+          <button type="button" onclick="adjustFont('ui', -1)" title="Decrease tables font size" aria-label="Decrease tables font size">-</button>
+          <span id="uiFontVal">12px</span>
+          <button type="button" onclick="adjustFont('ui', 1)" title="Increase tables font size" aria-label="Increase tables font size">+</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <span>Freeze Cols</span>
+        <div class="seg-ctrl">
+          <button type="button" id="frzNone" onclick="setFreezeCols('none')" title="Scroll all columns together">None</button>
+          <button type="button" id="frzPc" class="active" onclick="setFreezeCols('pc')" title="Freeze BP, Line, and PC columns">PC</button>
+          <button type="button" id="frzCode" onclick="setFreezeCols('code')" title="Freeze BP, Line, PC, and Code columns">Code</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <span>Reg Hover Tip</span>
+        <div class="seg-ctrl">
+          <button type="button" id="regTipOff" class="active" onclick="setRegHoverTip(false)">Off</button>
+          <button type="button" id="regTipOn" onclick="setRegHoverTip(true)">On</button>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; border-top:1px solid #38383c; padding-top:6px;">
+        <button type="button" class="mini-btn" onclick="resetUiSettings()">Reset Defaults</button>
+      </div>
+    </div>
+  </div>
+</header>
+<div id="errorBanner" role="alert"></div>
+<div class="debug-hint" id="capabilityNotice" role="status" hidden></div>
+
+<!-- Floating Conditional Breakpoint Popover -->
+<div class="cond-popover" id="condPopover" onclick="event.stopPropagation()">
+  <span style="font-size:11px; color:var(--bp-cond); font-family:var(--mono);" id="condPopoverLabel">Line 1 if:</span>
+  <input type="text" id="condPopoverInput" aria-label="Breakpoint condition" placeholder="e.g. reg == 3" data-tooltip="Optional condition, e.g. reg == 3, r[&quot;reg&quot;].field != 0, or cycle > 10" onkeydown="handleCondPopoverKey(event)">
+  <button type="button" class="primary" onclick="saveCondPopover()">Set</button>
+  <button type="button" onclick="clearCondPopover()">Clear</button>
+</div>
+
+<!-- Floating Hover Tooltips -->
+<div id="regHoverTooltip"></div>
+<div id="uiHoverTooltip"></div>
+
+<main>
+  <div class="pane-left">
+    <div class="scroll-container" id="asmScroll">
+      <table id="asmTable">
+        <thead>
+          <tr>
+            <th class="gutter-cell center-col" title="Breakpoint & Condition">BP</th>
+            <th class="line-num center-col">Line</th>
+            <th class="pc-addr center-col" title="Double-click ▷ before address to move PC there">PC</th>
+            <th class="cells-hex">Code</th>
+            <th class="source-col">Source</th>
+          </tr>
+        </thead>
+        <tbody id="asmBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="resizer-v" id="resizerV" title="Drag to resize left/right panels"></div>
+  <div class="pane-right" id="paneRight">
+    <div class="pane-reg" id="paneReg">
+      <div class="pane-header" style="padding:0 8px;">
+        <div class="tabs" role="tablist" aria-label="Register and constant views" onkeydown="handleTabListKey(event)">
+          <button type="button" class="tab active" id="tabReg" role="tab" aria-selected="true" aria-controls="panelReg" onclick="switchTopTab('reg')">Registers</button>
+          <button type="button" class="tab" id="tabConst" role="tab" aria-selected="false" aria-controls="panelConst" onclick="switchTopTab('const')">Constants</button>
+          <button type="button" class="tab" id="tabRegAlias" role="tab" aria-selected="false" aria-controls="panelRegAlias" onclick="switchTopTab('alias')">Aliases</button>
+        </div>
+        <div id="regHeaderControls" style="display:flex; align-items:center; gap:6px;">
+          <input type="text" id="regFilterInput" aria-label="Filter registers" placeholder="Filter registers..." data-tooltip="Comma-separated register filter" oninput="renderRegisters()" style="width:min(150px, 40vw); font-size:11px; padding:2px 6px;">
+          <div class="reg-dropdown-wrap">
+            <button type="button" class="mini-btn" id="btnRegDropdown" onclick="toggleRegDropdown(event)" title="Show / Hide Registers" aria-label="Show or hide registers" aria-expanded="false" aria-controls="regDropdown">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16M7 12h10m-7 7h4"/></svg>
+              <span id="regCountLabel">All</span>
+            </button>
+            <div class="reg-dropdown" id="regDropdown" onclick="event.stopPropagation()">
+              <div class="reg-dropdown-actions">
+                <button type="button" onclick="setAllRegs(true)">Show All</button>
+                <button type="button" onclick="setAllRegs(false)">Hide All</button>
+              </div>
+              <div id="regCheckList"></div>
+            </div>
+          </div>
+        </div>
+        <div id="constHeaderControls" style="display:none; align-items:center; gap:6px;">
+          <input type="text" id="constFilterInput" aria-label="Filter constants" placeholder="Filter constants..." data-tooltip="Comma-separated constant filter" oninput="renderConstants()" style="width:min(170px, 45vw); font-size:11px; padding:2px 6px;">
+        </div>
+        <div id="regAliasHeaderControls" style="display:none; align-items:center; gap:6px;">
+          <input type="text" id="regAliasFilterInput" aria-label="Filter register aliases" placeholder="Filter aliases..." data-tooltip="Filter aliases by name or target" oninput="renderRegAliases()" style="width:min(170px, 45vw); font-size:11px; padding:2px 6px;">
+        </div>
+      </div>
+      <div id="panelReg" role="tabpanel" aria-labelledby="tabReg" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="flags-bar" id="flagsBar"></div>
+        <div class="scroll-container">
+          <table class="fixed-table">
+            <colgroup id="regColGroup"></colgroup>
+            <thead>
+              <tr id="regHeadRow"></tr>
+            </thead>
+            <tbody id="regBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="panelConst" role="tabpanel" aria-labelledby="tabConst" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="scroll-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="center-col">Hex</th>
+                <th class="center-col">Unsigned</th>
+                <th class="center-col">Signed</th>
+              </tr>
+            </thead>
+            <tbody id="constBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="panelRegAlias" role="tabpanel" aria-labelledby="tabRegAlias" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="scroll-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Alias</th>
+                <th>Target</th>
+                <th class="center-col">Hex</th>
+                <th class="center-col">Unsigned</th>
+                <th class="center-col">Signed</th>
+              </tr>
+            </thead>
+            <tbody id="regAliasBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="resizer-h" id="resizerH" title="Drag to resize Register / Memory panels"></div>
+    <div class="pane-mem" id="paneMem">
+      <div class="pane-header" style="padding:0 8px;">
+        <div class="tabs" role="tablist" aria-label="Memory and trace views" onkeydown="handleTabListKey(event)">
+          <button type="button" class="tab active" id="tabMem" role="tab" aria-selected="true" aria-controls="panelMem" onclick="switchRightTab('mem')">Memory</button>
+          <button type="button" class="tab" id="tabMemAlias" role="tab" aria-selected="false" aria-controls="panelMemAlias" onclick="switchRightTab('memAlias')">Mem Aliases</button>
+          <button type="button" class="tab" id="tabTrace" role="tab" aria-selected="false" aria-controls="panelTrace" onclick="switchRightTab('trace')">Trace</button>
+        </div>
+      </div>
+      <div id="panelMem" role="tabpanel" aria-labelledby="tabMem" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="filter-bar">
+          <label for="spaceSelect" style="font-size:11px; color:var(--muted);">Space:</label>
+          <select id="spaceSelect" aria-label="Memory space" onchange="fetchState()"></select>
+          <input type="text" id="memFilter" aria-label="Filter memory addresses" placeholder="Filter: 0x04, 0x10..0x17" data-tooltip="Address filter (e.g. 0x04, 0x10..0x17, 0x20:4)" oninput="debouncedFetchState()" onchange="fetchState()" style="flex:1 1 110px; min-width:110px;">
+          <label style="font-size:11px; display:inline-flex; align-items:center; gap:4px; cursor:pointer; color:var(--muted);" title="Hide memory cells that have not been written/initialized yet">
+            <input type="checkbox" id="hideUninit" checked onchange="fetchState()"> Hide Uninitialized
+          </label>
+        </div>
+        <div id="memFilterError" class="filter-error-hint" role="status" hidden></div>
+        <div class="scroll-container">
+          <table class="fixed-table">
+            <colgroup id="memColGroup"></colgroup>
+            <thead>
+              <tr id="memHeadRow"></tr>
+            </thead>
+            <tbody id="memBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="panelMemAlias" role="tabpanel" aria-labelledby="tabMemAlias" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="filter-bar">
+          <button type="button" class="mini-btn" id="btnSelectMemAliases" onclick="openMemAliasModal()" title="Select memory aliases to track">+ Select...</button>
+          <span class="mem-alias-count" id="memAliasTrackedCount">Tracked: 0 / 0</span>
+          <button type="button" class="mini-btn" id="btnClearTrackedMemAliases" onclick="clearTrackedMemAliases()" style="margin-left:auto;" hidden>Clear Tracked</button>
+        </div>
+        <div class="scroll-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Alias</th>
+                <th>Target</th>
+                <th class="center-col">Hex</th>
+                <th class="center-col">Unsigned</th>
+                <th class="center-col">Signed</th>
+                <th class="center-col" style="width:38px;"></th>
+              </tr>
+            </thead>
+            <tbody id="memAliasBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="panelTrace" role="tabpanel" aria-labelledby="tabTrace" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+        <div class="scroll-container">
+          <table>
+            <thead>
+              <tr><th class="center-col" style="width:52px;">#Seq</th><th class="center-col" style="width:60px;">Cycle</th><th class="center-col" style="width:74px;">PC</th><th>Instruction</th><th>Changes</th></tr>
+            </thead>
+            <tbody id="traceBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="pane-watch" id="paneWatch" hidden>
+      <div class="pane-header">
+        <span>Watchpoints</span>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button type="button" class="mini-btn" id="btnClearWatch" onclick="act('clear_watchpoints')" disabled>Clear All</button>
+          <button type="button" class="mini-btn" onclick="toggleWatchPanel(false)" title="Close Watchpoints" aria-label="Close Watchpoints">&times;</button>
+        </div>
+      </div>
+      <form class="watch-form" id="watchForm" onsubmit="addWatchpoint(event)">
+        <input type="text" class="watch-target-input" name="target" id="watchTargetInput" aria-label="Watch target" placeholder="Target: reg, space[0x10]" data-tooltip="Watch target: reg, space[0x10], space[0x10:0x14], alias, or irq.line" required>
+        <select name="kind" aria-label="Watch access">
+          <option value="w">Write</option>
+          <option value="r">Read</option>
+          <option value="rw">Read/Write</option>
+        </select>
+        <input type="text" class="watch-cond-input" name="condition" id="watchCondInput" aria-label="Watch condition" placeholder="Cond (opt): reg == 5" data-tooltip="Optional condition, e.g. reg == 5, r[&quot;reg&quot;].field != 0, or m.space[0] &amp; 1">
+        <button type="submit" class="mini-btn">+ Watch</button>
+      </form>
+      <div class="scroll-container">
+        <table>
+          <thead>
+            <tr>
+              <th class="center-col" style="width:46px;">ID</th>
+              <th>Target</th>
+              <th class="center-col" style="width:88px;">Access</th>
+              <th>Condition</th>
+              <th class="center-col" style="width:38px;"></th>
+            </tr>
+          </thead>
+          <tbody id="watchBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Memory Aliases Multi-Select Modal -->
+<div class="modal-backdrop" id="memAliasModal" hidden
+     onclick="if (event.target === event.currentTarget) closeMemAliasModal()"
+     role="dialog" aria-modal="true" aria-labelledby="memAliasModalTitle">
+  <div class="modal-dialog" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span id="memAliasModalTitle">Select Memory Aliases</span>
+      <button type="button" class="mini-btn" onclick="closeMemAliasModal()" title="Close (Esc)" aria-label="Close">&times;</button>
+    </div>
+    <div class="filter-bar">
+      <div class="modal-search-box" id="memAliasModalSearchBox">
+        <input type="text" id="memAliasModalSearch"
+               aria-label="Filter memory aliases"
+               placeholder="Filter by alias name (*, ?)..."
+               data-tooltip="Filter by alias name (supports * and ? wildcards)"
+               autocomplete="off"
+               oninput="onMemAliasModalSearchInput()"
+               onkeydown="handleMemAliasModalKey(event)">
+        <button type="button" class="search-toggle-btn" id="btnModalMatchCase"
+                title="Match Case" aria-label="Match Case" aria-pressed="false"
+                onclick="toggleModalSearchOption('case')">Aa</button>
+        <button type="button" class="search-toggle-btn" id="btnModalWholeWord"
+                title="Match Whole Word (VS Code standard: _ is part of word)" aria-label="Match Whole Word" aria-pressed="false"
+                onclick="toggleModalSearchOption('word')"><span class="whole-word-glyph">ab</span></button>
+        <button type="button" class="search-toggle-btn" id="btnModalRegex"
+                title="Use Regular Expression" aria-label="Use Regular Expression" aria-pressed="false"
+                onclick="toggleModalSearchOption('regex')">.*</button>
+      </div>
+    </div>
+    <div class="modal-action-bar">
+      <button type="button" class="mini-btn" id="btnModalSelectFiltered" onclick="setModalFilteredSelection(true)">Select Filtered</button>
+      <button type="button" class="mini-btn" id="btnModalUnselectFiltered" onclick="setModalFilteredSelection(false)">Unselect Filtered</button>
+      <span class="mem-alias-count" id="memAliasModalCount" style="margin-left:auto;">Selected: 0 / 0</span>
+    </div>
+    <div class="scroll-container" id="memAliasModalScroll" style="flex:1; min-height:180px;">
+      <table>
+        <thead>
+          <tr>
+            <th class="center-col" style="width:36px;"></th>
+            <th>Alias</th>
+            <th>Target</th>
+            <th>Format</th>
+          </tr>
+        </thead>
+        <tbody id="memAliasModalBody"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="mini-btn" onclick="closeMemAliasModal()">Cancel</button>
+      <button type="button" class="mini-btn primary" id="btnApplyMemAliasModal" onclick="applyMemAliasModal()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let state = null;
+const debuggerToken = document.querySelector('meta[name="isasim-token"]').content;
+let currentFile = null;
+let condPopoverLine = null;
+let cycleOffset = 0;
+let stepOffset = 0;
+let actionInFlight = false;
+let asmFontSize = Number(localStorage.getItem('isasim_asm_font')) || 12;
+let uiFontSize = Number(localStorage.getItem('isasim_ui_font')) || 12;
+let toolbarMode = localStorage.getItem('isasim_tb_mode') || 'full';
+let freezeCols = localStorage.getItem('isasim_freeze_cols') || 'pc';
+let regHoverTip = localStorage.getItem('isasim_reg_tip') === 'true';
+let watchPanelOpen = false;
+let memAliasStorageKey = null;
+let trackedMemAliases = [];
+let memAliasLoaded = false;
+let modalSelectedMemAliases = new Set();
+let currentModalFiltered = [];
+let lastModalAnchorIdx = null;
+let modalMatchCase = false;
+let modalWholeWord = false;
+let modalUseRegex = false;
+let modalSearchError = '';
+let stateEpoch = 0;
+let stateFetchController = null;
+let modalOpenerEl = null;
+let condPopoverOpenerEl = null;
+const hiddenRegs = new Set();
+
+function clampRightWidth(px) {
+  const maxW = Math.max(280, window.innerWidth - 260);
+  return Math.max(280, Math.min(maxW, px));
+}
+
+function clampRegHeight(pct) {
+  return Math.max(15, Math.min(85, pct));
+}
+
+function applySplitterSettings() {
+  const rawW = localStorage.getItem('isasim_right_width');
+  if (rawW !== null && rawW !== '' && Number.isFinite(Number(rawW))) {
+    document.documentElement.style.setProperty('--right-width', Math.round(clampRightWidth(Number(rawW))) + 'px');
+  } else {
+    document.documentElement.style.setProperty('--right-width', '480px');
+  }
+
+  const rawH = localStorage.getItem('isasim_reg_height');
+  if (rawH !== null && rawH !== '' && Number.isFinite(Number(rawH))) {
+    document.documentElement.style.setProperty('--reg-height', clampRegHeight(Number(rawH)) + '%');
+  } else {
+    document.documentElement.style.setProperty('--reg-height', '48%');
+  }
+}
+
+function updateStickyOffsets() {
+  const tbl = document.getElementById('asmTable');
+  if (!tbl) return;
+  const thBp = tbl.querySelector('th.gutter-cell');
+  const thLine = tbl.querySelector('th.line-num');
+  const thPc = tbl.querySelector('th.pc-addr');
+  if (thBp && thLine && thPc) {
+    const wBp = thBp.offsetWidth;
+    const wLine = thLine.offsetWidth;
+    const wPc = thPc.offsetWidth;
+    tbl.style.setProperty('--left-line', wBp + 'px');
+    tbl.style.setProperty('--left-pc', (wBp + wLine) + 'px');
+    tbl.style.setProperty('--left-code', (wBp + wLine + wPc) + 'px');
+  }
+}
+
+function applyUiSettings() {
+  document.documentElement.style.setProperty('--asm-font-size', asmFontSize + 'px');
+  document.documentElement.style.setProperty('--ui-font-size', uiFontSize + 'px');
+  document.getElementById('asmFontVal').innerText = asmFontSize + 'px';
+  document.getElementById('uiFontVal').innerText = uiFontSize + 'px';
+  const tb = document.getElementById('mainToolbar');
+  if (tb) tb.classList.toggle('icon-only', toolbarMode === 'icon');
+  document.getElementById('tbModeFull').classList.toggle('active', toolbarMode !== 'icon');
+  document.getElementById('tbModeIcon').classList.toggle('active', toolbarMode === 'icon');
+  const asmTbl = document.getElementById('asmTable');
+  if (asmTbl) {
+    asmTbl.classList.toggle('freeze-pc', freezeCols === 'pc');
+    asmTbl.classList.toggle('freeze-code', freezeCols === 'code');
+  }
+  document.getElementById('frzNone').classList.toggle('active', freezeCols === 'none');
+  document.getElementById('frzPc').classList.toggle('active', freezeCols === 'pc');
+  document.getElementById('frzCode').classList.toggle('active', freezeCols === 'code');
+  document.body.classList.toggle('reg-hover-on', regHoverTip);
+  document.getElementById('regTipOff').classList.toggle('active', !regHoverTip);
+  document.getElementById('regTipOn').classList.toggle('active', regHoverTip);
+  if (!regHoverTip) hideRegHoverTooltip();
+  applySplitterSettings();
+  requestAnimationFrame(updateStickyOffsets);
+}
+
+function closeSettingsPopover(restoreFocus = false) {
+  const sp = document.getElementById('settingsPopover');
+  const btn = document.getElementById('btnSettings');
+  const wasOpen = Boolean(sp && sp.classList.contains('open'));
+  if (sp) sp.classList.remove('open');
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && wasOpen) btn.focus();
+  }
+}
+
+function closeRegDropdown(restoreFocus = false) {
+  const dd = document.getElementById('regDropdown');
+  const btn = document.getElementById('btnRegDropdown');
+  const wasOpen = Boolean(dd && dd.classList.contains('open'));
+  if (dd) dd.classList.remove('open');
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && wasOpen) btn.focus();
+  }
+}
+
+function toggleSettings(e) {
+  e.stopPropagation();
+  const sp = document.getElementById('settingsPopover');
+  const btn = document.getElementById('btnSettings');
+  if (!sp) return;
+  const open = sp.classList.toggle('open');
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    closeRegDropdown(false);
+    closeCondPopover(false);
+  }
+}
+
+function setToolbarMode(mode) {
+  toolbarMode = mode;
+  localStorage.setItem('isasim_tb_mode', mode);
+  applyUiSettings();
+}
+
+function setFreezeCols(mode) {
+  freezeCols = mode;
+  localStorage.setItem('isasim_freeze_cols', mode);
+  applyUiSettings();
+}
+
+function setRegHoverTip(enabled) {
+  regHoverTip = Boolean(enabled);
+  localStorage.setItem('isasim_reg_tip', regHoverTip ? 'true' : 'false');
+  applyUiSettings();
+}
+
+function adjustFont(target, delta) {
+  if (target === 'asm') {
+    asmFontSize = Math.max(10, Math.min(20, asmFontSize + delta));
+    localStorage.setItem('isasim_asm_font', String(asmFontSize));
+  } else {
+    uiFontSize = Math.max(10, Math.min(18, uiFontSize + delta));
+    localStorage.setItem('isasim_ui_font', String(uiFontSize));
+  }
+  applyUiSettings();
+}
+
+function resetUiSettings() {
+  asmFontSize = 12;
+  uiFontSize = 12;
+  toolbarMode = 'full';
+  freezeCols = 'pc';
+  regHoverTip = false;
+  localStorage.removeItem('isasim_asm_font');
+  localStorage.removeItem('isasim_ui_font');
+  localStorage.removeItem('isasim_tb_mode');
+  localStorage.removeItem('isasim_freeze_cols');
+  localStorage.removeItem('isasim_reg_tip');
+  localStorage.removeItem('isasim_right_width');
+  localStorage.removeItem('isasim_reg_height');
+  applyUiSettings();
+}
+
+function zeroCounters() {
+  if (!state) return;
+  cycleOffset = state.status.cycle;
+  stepOffset = state.status.steps;
+  render(state);
+}
+
+// Reorderable & Resizable Column State
+let regOrder = [];
+let regCols = [
+  { key: 'hex', label: 'Hex', width: 85 },
+  { key: 'unsigned', label: 'Unsigned', width: 85 },
+  { key: 'signed', label: 'Signed', width: 80 },
+  { key: 'diff', label: 'Diff', width: 130 }
+];
+let regFirstColWidth = 78;
+
+let memCols = [
+  { key: 'hex', label: 'Hex', width: 100 },
+  { key: 'unsigned', label: 'Unsigned', width: 100 },
+  { key: 'signed', label: 'Signed', width: 100 }
+];
+let memFirstColWidth = 78;
+
+const SVG_IF = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5z"/></svg>';
+const SVG_PC_ARROW = '<svg aria-hidden="true" viewBox="0 0 16 16"><polygon points="3,2 14,8 3,14"/></svg>';
+
+function showErrorBanner(msg) {
+  const banner = document.getElementById('errorBanner');
+  if (!banner) return;
+  banner.style.display = 'block';
+  banner.innerText = msg;
+}
+
+async function readErrorDetail(res) {
+  let raw = '';
+  try {
+    raw = await res.text();
+  } catch {
+    return 'HTTP ' + res.status;
+  }
+  if (!raw) return 'HTTP ' + res.status;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && (parsed.detail || JSON.stringify(parsed));
+  } catch {
+    return raw;
+  }
+}
+
+const PC_CHANGING_ACTIONS = new Set([
+  'continue', 'step_in', 'step_over', 'step_out',
+  'step_back', 'run_to_cursor', 'set_pc', 'reset', 'reload'
+]);
+
+function shouldSyncActiveFile(action, data, prevActiveFile, prevPc) {
+  if (!data || !data.files) return false;
+  if (!currentFile || !Object.hasOwn(data.files, currentFile)) return true;
+  if (PC_CHANGING_ACTIONS.has(action)) return true;
+  if (!data.status) return false;
+  return data.status.active_file !== prevActiveFile || data.status.pc !== prevPc;
+}
+
+function currentFilterPayload() {
+  return {
+    space: document.getElementById('spaceSelect').value || null,
+    filter: document.getElementById('memFilter').value || '',
+    hide_uninit: document.getElementById('hideUninit').checked
+  };
+}
+
+let memFilterTimer = null;
+function debouncedFetchState() {
+  if (memFilterTimer) clearTimeout(memFilterTimer);
+  memFilterTimer = setTimeout(() => {
+    memFilterTimer = null;
+    fetchState();
+  }, 120);
+}
+
+async function fetchState(opts = {}) {
+  if (memFilterTimer) {
+    clearTimeout(memFilterTimer);
+    memFilterTimer = null;
+  }
+  if (stateFetchController) {
+    stateFetchController.abort();
+    stateFetchController = null;
+  }
+  const epoch = ++stateEpoch;
+  let signal;
+  if (typeof AbortController !== 'undefined') {
+    stateFetchController = new AbortController();
+    signal = stateFetchController.signal;
+  }
+  const { space, filter, hide_uninit } = currentFilterPayload();
+  const params = new URLSearchParams();
+  if (space) params.set('space', space);
+  params.set('filter', filter);
+  params.set('hide_uninit', hide_uninit ? 'true' : 'false');
+  try {
+    const res = await fetch('/api/state?' + params.toString(), signal ? { signal } : undefined);
+    if (epoch !== stateEpoch) return false;
+    if (!res.ok) {
+      if (!opts.preserveError) {
+        const detail = await readErrorDetail(res);
+        if (epoch === stateEpoch) showErrorBanner('Error: ' + detail);
+      }
+      return false;
+    }
+    const data = await res.json();
+    if (epoch !== stateEpoch) return false;
+    if (opts.syncFileAction && shouldSyncActiveFile(opts.syncFileAction, data, opts.prevActiveFile, opts.prevPc)) {
+      if (data.status && data.status.active_file && data.files && data.files[data.status.active_file]) {
+        currentFile = data.status.active_file;
+      }
+    }
+    render(data);
+    if (opts.preserveError) showErrorBanner(opts.preserveError);
+    return true;
+  } catch (err) {
+    if (err && err.name === 'AbortError') return false;
+    if (epoch === stateEpoch && !opts.preserveError) {
+      showErrorBanner('Error: ' + (err && err.message ? err.message : String(err)));
+    }
+    return false;
+  }
+}
+
+async function act(action, payload = {}) {
+  if (actionInFlight) return false;
+  if ((action === 'step_over' || action === 'step_out') && !state?.status.can_step_depth) return false;
+  if (action === 'step_back' && !state?.status.can_step_back) return false;
+  if (memFilterTimer) {
+    clearTimeout(memFilterTimer);
+    memFilterTimer = null;
+  }
+  if (stateFetchController) {
+    stateFetchController.abort();
+    stateFetchController = null;
+  }
+  const epoch = ++stateEpoch;
+  const prevActiveFile = state?.status?.active_file ?? null;
+  const prevPc = state?.status?.pc ?? null;
+  actionInFlight = true;
+  closeCondPopover(false);
+  hideRegHoverTooltip();
+  try {
+    const res = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Isasim-Token': debuggerToken },
+      body: JSON.stringify({ action, ...currentFilterPayload(), ...payload })
+    });
+    if (action === 'reset' || action === 'reload') {
+      cycleOffset = 0;
+      stepOffset = 0;
+      if (action === 'reload') highlightCache.clear();
+    }
+    if (res.ok) {
+      const data = await res.json();
+      if (epoch === stateEpoch) {
+        if (shouldSyncActiveFile(action, data, prevActiveFile, prevPc)) {
+          if (data.status && data.status.active_file && data.files && data.files[data.status.active_file]) {
+            currentFile = data.status.active_file;
+          }
+        }
+        render(data);
+      }
+      return true;
+    } else {
+      const detail = await readErrorDetail(res);
+      const msg = 'Error: ' + detail;
+      showErrorBanner(msg);
+      actionInFlight = false;
+      await fetchState({
+        preserveError: msg,
+        syncFileAction: action,
+        prevActiveFile,
+        prevPc
+      });
+      return false;
+    }
+  } catch (err) {
+    showErrorBanner('Error: ' + (err && err.message ? err.message : String(err)));
+    return false;
+  } finally {
+    actionInFlight = false;
+  }
+}
+
+function toggleWatchPanel(force) {
+  watchPanelOpen = typeof force === 'boolean' ? force : !watchPanelOpen;
+  const btn = document.getElementById('btnWatch');
+  if (btn) {
+    btn.classList.toggle('active', watchPanelOpen);
+    btn.setAttribute('aria-pressed', watchPanelOpen ? 'true' : 'false');
+  }
+  document.getElementById('paneReg').hidden = watchPanelOpen;
+  document.getElementById('resizerH').hidden = watchPanelOpen;
+  document.getElementById('paneMem').hidden = watchPanelOpen;
+  document.getElementById('paneWatch').hidden = !watchPanelOpen;
+  if (watchPanelOpen) {
+    closeRegDropdown(false);
+  }
+}
+
+async function addWatchpoint(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const target = String(data.get('target') || '').trim();
+  const kind = String(data.get('kind') || 'w');
+  const condition = String(data.get('condition') || '').trim();
+  if (!target) return;
+  const ok = await act('watchpoint', { target, kind, condition });
+  if (ok) {
+    const targetEl = form.querySelector('[name="target"]');
+    const condEl = form.querySelector('[name="condition"]');
+    if (targetEl) targetEl.value = '';
+    if (condEl) condEl.value = '';
+  }
+}
+
+function handleTabListKey(e) {
+  const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+  if (!keys.includes(e.key)) return;
+  const tablist = e.currentTarget;
+  const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+  const idx = tabs.indexOf(document.activeElement);
+  if (idx === -1 || !tabs.length) return;
+  e.preventDefault();
+  let nextIdx = idx;
+  if (e.key === 'ArrowRight') nextIdx = (idx + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') nextIdx = 0;
+  else if (e.key === 'End') nextIdx = tabs.length - 1;
+  tabs[nextIdx].focus();
+  tabs[nextIdx].click();
+}
+
+function switchTopTab(tab) {
+  const map = [
+    ['tabReg', 'panelReg', 'regHeaderControls', tab === 'reg'],
+    ['tabConst', 'panelConst', 'constHeaderControls', tab === 'const'],
+    ['tabRegAlias', 'panelRegAlias', 'regAliasHeaderControls', tab === 'alias']
+  ];
+  for (const [tabId, panelId, ctrlId, active] of map) {
+    const t = document.getElementById(tabId);
+    const p = document.getElementById(panelId);
+    const c = document.getElementById(ctrlId);
+    if (t) {
+      t.className = active ? 'tab active' : 'tab';
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    if (p) p.style.display = active ? 'flex' : 'none';
+    if (c) c.style.display = active ? 'flex' : 'none';
+  }
+  if (tab !== 'reg') {
+    closeRegDropdown(false);
+  }
+}
+
+function switchRightTab(tab) {
+  const map = [
+    ['tabMem', 'panelMem', tab === 'mem'],
+    ['tabMemAlias', 'panelMemAlias', tab === 'memAlias'],
+    ['tabTrace', 'panelTrace', tab === 'trace']
+  ];
+  for (const [tabId, panelId, active] of map) {
+    const t = document.getElementById(tabId);
+    const p = document.getElementById(panelId);
+    if (t) {
+      t.className = active ? 'tab active' : 'tab';
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    if (p) p.style.display = active ? 'flex' : 'none';
+  }
+}
+
+function updateDynamicPlaceholders(st) {
+  const regs = (st.registers || []).filter(r => !r.is_flag);
+  const nonPcRegs = regs.some(r => Object.hasOwn(r, 'is_pc'))
+    ? regs.filter(r => !r.is_pc)
+    : (regs.length > 1 ? regs.slice(1) : regs);
+  const sampleReg = nonPcRegs[0]?.name || regs[0]?.name || null;
+  const sampleRegs = nonPcRegs.slice(0, 2).map(r => r.name);
+  const flagReg = (st.registers || []).find(r => r.is_flag);
+  if (flagReg) sampleRegs.push(flagReg.name);
+
+  const spaces = (st.memory && st.memory.spaces) || [];
+  const sampleSpace = (st.memory && st.memory.current_space) || (spaces.length > 1 ? spaces[1] : spaces[0]) || null;
+  const regEx = sampleReg || 'reg';
+  const spaceEx = sampleSpace || 'space';
+
+  const setInputHints = (el, placeholder, tooltip) => {
+    if (!el) return;
+    el.placeholder = placeholder;
+    setTooltipText(el, tooltip);
+  };
+
+  setInputHints(
+    document.getElementById('watchTargetInput'),
+    `Target: ${regEx}, ${spaceEx}[0x10]`,
+    `Watch target: ${regEx}, ${spaceEx}[0x10], ${spaceEx}[0x10:0x14], alias, or irq.line`
+  );
+  setInputHints(
+    document.getElementById('watchCondInput'),
+    `Cond (opt): ${regEx} == 5`,
+    `Optional condition, e.g. ${regEx} == 5, r["${regEx}"].field != 0, or m.${spaceEx}[0] & 1`
+  );
+  setInputHints(
+    document.getElementById('condPopoverInput'),
+    `e.g. ${regEx} == 3`,
+    `Optional condition, e.g. ${regEx} == 3, r["${regEx}"].field != 0, or cycle > 10`
+  );
+
+  const regFilterEl = document.getElementById('regFilterInput');
+  if (regFilterEl) {
+    if (sampleRegs.length) {
+      const hint = sampleRegs.join(', ');
+      setInputHints(regFilterEl, `Filter: ${hint}`, `Comma-separated filter (e.g. ${hint})`);
+    } else {
+      setInputHints(regFilterEl, 'Filter registers...', 'Comma-separated register filter');
+    }
+  }
+}
+
+function formatSourceOptionLabels(fnames) {
+  const splitParts = fnames.map(f => String(f).split('/').filter(Boolean));
+  const counts = new Map();
+  for (const parts of splitParts) {
+    const base = parts[parts.length - 1] || '';
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return fnames.map((file, idx) => {
+    const parts = splitParts[idx];
+    const base = parts[parts.length - 1] || file;
+    if ((counts.get(base) || 0) <= 1) return { file, label: base };
+    for (let k = 2; k <= parts.length; k++) {
+      const candidate = parts.slice(-k).join('/');
+      const collisions = splitParts.filter((p, j) => j !== idx && p.slice(-k).join('/') === candidate);
+      if (!collisions.length) return { file, label: candidate };
+    }
+    return { file, label: file };
+  });
+}
+
+function render(st) {
+  state = st;
+  const rawReason = (st.status.stop_reason || 'ready').toLowerCase();
+  const reasonMap = {
+    ready: 'READY',
+    step_done: 'STEP',
+    step_back: 'STEP BACK',
+    step_limit: 'STEP LIMIT',
+    max_steps: 'STEP LIMIT',
+    max_cycles: 'CYCLE LIMIT',
+    breakpoint: 'BREAKPOINT',
+    watchpoint: 'WATCHPOINT',
+    halted: 'HALTED',
+    set_pc: 'SET PC',
+    poke: 'POKE',
+    fault: 'FAULT',
+    debug_error: 'DEBUG ERROR',
+    uninitialized_read: 'UNINIT READ',
+    undefined_opcode: 'UNDEF OPCODE',
+    out_of_range: 'OUT OF RANGE',
+    readonly_write: 'READONLY WRITE',
+    python_error: 'PYTHON ERROR',
+    interrupted: 'INTERRUPTED',
+    stuck: 'STUCK'
+  };
+  const errorStopReasons = new Set([
+    'fault', 'uninitialized_read', 'undefined_opcode',
+    'out_of_range', 'readonly_write', 'python_error', 'stuck'
+  ]);
+  const warnStopReasons = new Set([
+    'breakpoint', 'watchpoint', 'step_limit', 'max_steps', 'max_cycles', 'interrupted'
+  ]);
+  const banner = document.getElementById('errorBanner');
+  if (st.status.error) {
+    banner.style.display = 'block';
+    banner.innerText = 'Error: ' + st.status.error;
+  } else if (errorStopReasons.has(rawReason)) {
+    banner.style.display = 'block';
+    const label = reasonMap[rawReason] || rawReason.toUpperCase();
+    banner.innerText = st.status.detail ? `${label}: ${st.status.detail}` : label;
+  } else {
+    banner.style.display = 'none';
+  }
+  document.getElementById('badgeStatus').innerText = reasonMap[rawReason] || rawReason.toUpperCase();
+  const dot = document.getElementById('statusDot');
+  if (st.status.error || errorStopReasons.has(rawReason) || rawReason === 'halted' || rawReason === 'debug_error') {
+    dot.className = 'status-dot err';
+  } else if (warnStopReasons.has(rawReason)) {
+    dot.className = 'status-dot warn';
+  } else {
+    dot.className = 'status-dot';
+  }
+  if (st.status.cycle < cycleOffset) cycleOffset = st.status.cycle;
+  if (st.status.steps < stepOffset) stepOffset = st.status.steps;
+  document.getElementById('badgeCycle').innerText = 'Cycles: ' + (st.status.cycle - cycleOffset);
+  document.getElementById('badgeSteps').innerText = 'Steps: ' + (st.status.steps - stepOffset);
+  for (const [id, enabled, reason, label] of [
+    ['btnBack', st.status.can_step_back, st.status.step_back_reason, 'Step Back (B)'],
+    ['btnOver', st.status.can_step_depth, st.status.step_depth_reason, 'Step Over (F10)'],
+    ['btnOut', st.status.can_step_depth, st.status.step_depth_reason, 'Step Out (Shift+F11)']
+  ]) {
+    const button = document.getElementById(id);
+    button.disabled = !enabled;
+    button.title = reason ? `${label}: ${reason}` : label;
+  }
+  document.getElementById('badgeStatus').title = [
+    st.status.detail, st.status.step_depth_reason, st.status.step_back_reason
+  ].filter(Boolean).join('\n');
+  const notice = document.getElementById('capabilityNotice');
+  notice.textContent = [st.status.step_depth_reason, st.status.step_back_reason].filter(Boolean).join(' ');
+  notice.hidden = !notice.textContent;
+
+  updateDynamicPlaceholders(st);
+  renderWatchpoints();
+
+  const fnames = Object.keys(st.files);
+  if (!currentFile || !st.files[currentFile]) currentFile = st.status.active_file || fnames[0];
+  const sourceSelect = document.getElementById('sourceSelect');
+  sourceSelect.hidden = fnames.length <= 1;
+  document.getElementById('fileNameText').hidden = !sourceSelect.hidden;
+  const filesKey = fnames.join('\0');
+  if (sourceSelect.dataset.filesKey !== filesKey) {
+    sourceSelect.dataset.filesKey = filesKey;
+    sourceSelect.replaceChildren(
+      ...formatSourceOptionLabels(fnames).map(({ file, label }) => {
+        const opt = new Option(label, file);
+        opt.title = file;
+        return opt;
+      })
+    );
+  }
+
+  // Sync register order list
+  const incomingNames = st.registers.map(r => r.name);
+  regOrder = regOrder.filter(n => incomingNames.includes(n));
+  incomingNames.forEach(n => { if (!regOrder.includes(n)) regOrder.push(n); });
+
+  renderAsm();
+  renderRegisterDropdown();
+  renderRegisters();
+  renderConstants();
+  renderRegAliases();
+
+  const spaceSel = document.getElementById('spaceSelect');
+  const spacesKey = (st.memory.spaces || []).join('\0');
+  if (spaceSel.dataset.spacesKey !== spacesKey) {
+    spaceSel.dataset.spacesKey = spacesKey;
+    spaceSel.replaceChildren(
+      ...(st.memory.spaces || []).map(s => new Option(s, s, false, s === st.memory.current_space))
+    );
+  }
+  if (st.memory.current_space) {
+    spaceSel.value = st.memory.current_space;
+  }
+
+  const filterErrs = st.memory.filter_errors || [];
+  const memFilterEl = document.getElementById('memFilter');
+  const memFilterErrEl = document.getElementById('memFilterError');
+  if (memFilterEl) {
+    memFilterEl.classList.toggle('filter-invalid', filterErrs.length > 0);
+    if (filterErrs.length > 0) memFilterEl.setAttribute('aria-invalid', 'true');
+    else memFilterEl.removeAttribute('aria-invalid');
+  }
+  if (memFilterErrEl) {
+    memFilterErrEl.hidden = filterErrs.length === 0;
+    memFilterErrEl.textContent = filterErrs.length
+      ? `Ignored invalid filter token(s): ${filterErrs.join(', ')}`
+      : '';
+  }
+
+  renderMemory();
+  renderMemAliases();
+  renderTrace();
+}
+
+const highlightCache = new Map();
+let lastHighlightRegKey = '';
+let lastScrolledPcKey = null;
+let lastDropdownKey = '';
+
+function getRegSet() {
+  if (!state) return new Set();
+  const key = state.registers.map(r => r.name.toLowerCase()).join(',');
+  if (key !== lastHighlightRegKey) {
+    lastHighlightRegKey = key;
+    highlightCache.clear();
+  }
+  return new Set(key ? key.split(',') : []);
+}
+
+function highlightAsm(rawText, isInstr, regSet) {
+  const cacheKey = (isInstr ? '1:' : '0:') + rawText;
+  const cached = highlightCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let codePart = rawText;
+  let commentPart = '';
+  const semiIdx = rawText.indexOf(';');
+  if (semiIdx !== -1) {
+    codePart = rawText.slice(0, semiIdx);
+    commentPart = rawText.slice(semiIdx);
+  }
+
+  const m = codePart.match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*:)?(\s*)(.*)$/);
+  if (!m) {
+    const res = escapeHtml(codePart) + (commentPart ? `<span class="syn-comment">${escapeHtml(commentPart)}</span>` : '');
+    highlightCache.set(cacheKey, res);
+    return res;
+  }
+  const [, indent, label, midSpace, rest] = m;
+  let out = escapeHtml(indent);
+  if (label) out += `<span class="syn-label">${escapeHtml(label)}</span>`;
+  out += escapeHtml(midSpace);
+
+  if (rest) {
+    const assignMatch = rest.match(/^([A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$/);
+    if (assignMatch) {
+      out += `<span class="syn-directive">${escapeHtml(assignMatch[1])}</span>` + highlightOperands(assignMatch[2], regSet);
+    } else if (rest.startsWith('.')) {
+      const sp = rest.match(/^(\.[A-Za-z0-9_]+)(.*)$/);
+      if (sp) {
+        out += `<span class="syn-directive">${escapeHtml(sp[1])}</span>` + highlightOperands(sp[2], regSet);
+      } else {
+        out += `<span class="syn-directive">${escapeHtml(rest)}</span>`;
+      }
+    } else {
+      const opMatch = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)(\s+.*|$)/);
+      if (opMatch && isInstr) {
+        out += `<span class="syn-mnemonic">${escapeHtml(opMatch[1])}</span>` + highlightOperands(opMatch[2], regSet);
+      } else {
+        out += highlightOperands(rest, regSet);
+      }
+    }
+  }
+  if (commentPart) {
+    out += `<span class="syn-comment">${escapeHtml(commentPart)}</span>`;
+  }
+  highlightCache.set(cacheKey, out);
+  return out;
+}
+
+function highlightOperands(text, regSet) {
+  if (!text) return '';
+  return text.split(/(\b(?:0x[0-9a-fA-F]+|0b[01]+|\d+|[A-Za-z_][A-Za-z0-9_]*)\b)/g).map(tok => {
+    if (!tok) return '';
+    if (/^(?:0x[0-9a-fA-F]+|0b[01]+|\d+)$/.test(tok)) {
+      return `<span class="syn-num">${escapeHtml(tok)}</span>`;
+    }
+    const lower = tok.toLowerCase();
+    if (regSet.has(lower)) {
+      return `<span class="syn-reg" data-reg="${escapeAttr(lower)}">${escapeHtml(tok)}</span>`;
+    }
+    return escapeHtml(tok);
+  }).join('');
+}
+
+function renderAsm() {
+  const file = currentFile || 'program.asm';
+  document.getElementById('sourceSelect').value = file;
+  document.getElementById('fileNameText').innerText = file.split('/').pop();
+  document.getElementById('fileBadge').title = file === state.status.active_file
+    ? state.status.active_file_path : file;
+  const rows = (state && state.files[currentFile]) || [];
+  const regSet = getRegSet();
+  const tbody = document.getElementById('asmBody');
+  tbody.innerHTML = rows.map(r => {
+    let gutterHtml = '';
+    if (r.is_instr) {
+      const hasBp = r.bp_cond !== null;
+      const isCond = Boolean(r.bp_cond);
+      const circleCls = hasBp ? (isCond ? 'bp-circle cond' : 'bp-circle active') : 'bp-circle';
+      const bpTitle = hasBp ? (isCond ? `Conditional BP: ${r.bp_cond} (click to remove)` : 'Breakpoint (click to remove)') : 'Click to toggle Breakpoint';
+      gutterHtml = `
+        <div class="gutter-box">
+          <button type="button" class="bp-btn" onclick="act('breakpoint', {file:currentFile, line:${r.line}})" title="${escapeAttr(bpTitle)}" aria-label="${escapeAttr(bpTitle)}">
+            <span class="${circleCls}"></span>
+          </button>
+          <button type="button" class="icon-btn ${isCond ? 'has-cond' : ''}" onclick="openCondPopover(event, ${r.line}, ${escapeAttr(JSON.stringify(r.bp_cond || ''))})" title="Set conditional breakpoint (if)" aria-label="Set conditional breakpoint on line ${r.line}">
+            ${SVG_IF}
+          </button>
+        </div>
+      `;
+    }
+    const condBadge = r.bp_cond
+      ? `<button type="button" class="cond-tag" onclick="openCondPopover(event, ${r.line}, ${escapeAttr(JSON.stringify(r.bp_cond))})" data-tooltip="Click to edit condition: ${escapeAttr(r.bp_cond)}" aria-label="Edit condition on line ${r.line}">if ${escapeHtml(r.bp_cond)}</button>`
+      : '';
+    let pcCellHtml = r.addr_hex || '';
+    if (r.is_instr) {
+      const markerHtml = r.is_pc
+        ? `<span class="pc-marker current" data-tip="Current PC (${r.addr_hex})">${SVG_PC_ARROW}</span>`
+        : `<button type="button" class="pc-marker set-btn" ondblclick="act('set_pc', {file:currentFile, line:${r.line}})" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); act('set_pc', {file:currentFile, line:${r.line}}); }" data-tip="Double-click or Enter to set PC to ${r.addr_hex}" title="Double-click or press Enter to set PC to ${r.addr_hex}" aria-label="Set PC to ${escapeAttr(r.addr_hex)}">${SVG_PC_ARROW}</button>`;
+      pcCellHtml = `<span class="pc-addr-wrap"><span class="pc-slot">${markerHtml}</span><span>${r.addr_hex}</span></span>`;
+    }
+    return `
+      <tr class="${r.is_pc ? 'pc-row' : ''}" id="row-${r.line}">
+        <td class="gutter-cell center-col">${gutterHtml}</td>
+        <td class="line-num center-col">${r.line}</td>
+        <td class="pc-addr center-col">${pcCellHtml}</td>
+        <td class="cells-hex">${r.cells_hex}</td>
+        <td class="source-col"><code>${highlightAsm(r.text, r.is_instr, regSet)}</code>${condBadge}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const pcKey = state ? `${currentFile}:${state.status.pc}` : null;
+  if (pcKey !== lastScrolledPcKey) {
+    lastScrolledPcKey = pcKey;
+    const activeEl = tbody.querySelector('.pc-row');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  }
+  updateStickyOffsets();
+}
+
+// Delegated Floating Hover Tooltips
+const asmBodyEl = document.getElementById('asmBody');
+const regTipEl = document.getElementById('regHoverTooltip');
+const uiTipEl = document.getElementById('uiHoverTooltip');
+let activeUiTipTarget = null;
+
+function positionFloatingTooltip(tipEl, anchorEl) {
+  tipEl.style.display = 'block';
+  const rect = anchorEl.getBoundingClientRect();
+  const tipRect = tipEl.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth - tipRect.width - 8, rect.left));
+  const top = rect.top > tipRect.height + 10 ? rect.top - tipRect.height - 6 : rect.bottom + 6;
+  tipEl.style.left = left + 'px';
+  tipEl.style.top = top + 'px';
+}
+
+function hideRegHoverTooltip() {
+  if (regTipEl) regTipEl.style.display = 'none';
+}
+
+function hideUiHoverTooltip() {
+  activeUiTipTarget = null;
+  if (uiTipEl) uiTipEl.style.display = 'none';
+}
+
+function setTooltipText(el, text) {
+  if (!el) return;
+  if (text) {
+    el.dataset.tooltip = text;
+    if (el === activeUiTipTarget && uiTipEl && uiTipEl.style.display === 'block') {
+      uiTipEl.textContent = text;
+      positionFloatingTooltip(uiTipEl, el);
+    }
+  } else {
+    delete el.dataset.tooltip;
+    if (el === activeUiTipTarget) hideUiHoverTooltip();
+  }
+}
+
+function showUiHoverTooltip(target) {
+  if (!uiTipEl || !target) return;
+  const text = target.getAttribute('data-tooltip');
+  if (!text) {
+    hideUiHoverTooltip();
+    return;
+  }
+  activeUiTipTarget = target;
+  uiTipEl.textContent = text;
+  positionFloatingTooltip(uiTipEl, target);
+}
+
+document.addEventListener('mouseover', e => {
+  const target = e.target?.closest?.('[data-tooltip]');
+  if (!target) return;
+  if (target !== activeUiTipTarget) showUiHoverTooltip(target);
+});
+
+document.addEventListener('mouseout', e => {
+  const from = e.target?.closest?.('[data-tooltip]');
+  if (!from) return;
+  const to = e.relatedTarget?.closest?.('[data-tooltip]');
+  if (from === to) return;
+  if (to) showUiHoverTooltip(to);
+  else hideUiHoverTooltip();
+});
+
+document.addEventListener('focusin', e => {
+  const target = e.target?.closest?.('[data-tooltip]');
+  if (!target) return;
+  if (target !== activeUiTipTarget) showUiHoverTooltip(target);
+});
+
+document.addEventListener('focusout', e => {
+  const from = e.target?.closest?.('[data-tooltip]');
+  if (!from) return;
+  const to = e.relatedTarget?.closest?.('[data-tooltip]');
+  if (from === to) return;
+  if (to) showUiHoverTooltip(to);
+  else hideUiHoverTooltip();
+});
+
+document.addEventListener('scroll', e => {
+  hideRegHoverTooltip();
+  hideUiHoverTooltip();
+  if (condPopoverLine !== null && (e.target === document || e.target?.id === 'asmScroll')) {
+    closeCondPopover(false);
+  }
+}, true);
+window.addEventListener('blur', () => {
+  hideRegHoverTooltip();
+  hideUiHoverTooltip();
+});
+
+function formatValueWithHexFallback(rawVal, hexVal) {
+  if (rawVal !== null && rawVal !== undefined) {
+    const text = String(rawVal);
+    return { display: text, edit: text, active: text !== '0' };
+  }
+  if (hexVal !== null && hexVal !== undefined && hexVal !== '' && hexVal !== '--') {
+    const hexText = String(hexVal);
+    return { display: hexText, edit: hexText, active: !/^0x0+$/i.test(hexText) };
+  }
+  return { display: '--', edit: '', active: false };
+}
+
+function formatRegFieldsSummary(fields) {
+  return (fields || [])
+    .map(f => `${f.name}=${formatValueWithHexFallback(f.value_str ?? f.value, f.hex).display}`)
+    .join(' ');
+}
+
+asmBodyEl.addEventListener('mouseover', e => {
+  if (!regHoverTip || !state) return;
+  const target = e.target.closest('.syn-reg');
+  if (!target) return;
+  const regKey = target.getAttribute('data-reg');
+  if (!regKey) return;
+  const regObj = state.registers.find(r => r.name.toLowerCase() === regKey);
+  if (!regObj) return;
+  const fieldsSummary = formatRegFieldsSummary(regObj.fields);
+  const fieldsStr = fieldsSummary ? ` | ${fieldsSummary}` : '';
+  const unsDisp = escapeHtml(regObj.unsigned_str ?? regObj.unsigned ?? '--');
+  const sigDisp = escapeHtml(regObj.signed_str ?? regObj.signed ?? '--');
+  regTipEl.innerHTML = `<strong style="color:#9cdcfe;">${escapeHtml(regObj.name)}</strong>: <span style="color:#b5cea8;">${escapeHtml(regObj.hex)}</span> <span style="color:#9da5b4;">(Dec: ${unsDisp} | Signed: ${sigDisp}${escapeHtml(fieldsStr)})</span>`;
+  positionFloatingTooltip(regTipEl, target);
+});
+
+asmBodyEl.addEventListener('mouseout', e => {
+  if (!regHoverTip) return;
+  const target = e.target.closest('.syn-reg');
+  if (target) hideRegHoverTooltip();
+});
+
+// Click Trace Row to Locate & Flash ASM Source Line (Feature A)
+let traceFlashTimer = null;
+function locateTraceLine(file, line) {
+  if (!line || !state || !Object.hasOwn(state.files, file)) return;
+  if (currentFile !== file) {
+    currentFile = file;
+    renderAsm();
+  }
+  const rowEl = document.getElementById('row-' + line);
+  if (!rowEl) return;
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  rowEl.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+  rowEl.classList.remove('trace-flash-row');
+  void rowEl.offsetWidth;
+  rowEl.classList.add('trace-flash-row');
+  if (reduceMotion) {
+    if (traceFlashTimer) clearTimeout(traceFlashTimer);
+    traceFlashTimer = setTimeout(() => {
+      traceFlashTimer = null;
+      rowEl.classList.remove('trace-flash-row');
+    }, 1200);
+  }
+}
+
+// Conditional Breakpoint Floating Popover
+function openCondPopover(e, line, currentCond) {
+  e.stopPropagation();
+  hideUiHoverTooltip();
+  closeRegDropdown(false);
+  closeSettingsPopover(false);
+  condPopoverOpenerEl = e.currentTarget || null;
+  condPopoverLine = line;
+  const pop = document.getElementById('condPopover');
+  const inp = document.getElementById('condPopoverInput');
+  document.getElementById('condPopoverLabel').innerText = `Line ${line} if:`;
+  inp.value = currentCond || '';
+  const rect = e.currentTarget.getBoundingClientRect();
+  pop.classList.add('open');
+  const popWidth = pop.offsetWidth || 380;
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - popWidth - 12, rect.right + 6)) + 'px';
+  pop.style.top = Math.min(window.innerHeight - 48, Math.max(8, rect.top - 4)) + 'px';
+  inp.focus();
+  inp.select();
+}
+
+function closeCondPopover(restoreFocus = false) {
+  const wasOpen = condPopoverLine !== null;
+  condPopoverLine = null;
+  hideUiHoverTooltip();
+  const pop = document.getElementById('condPopover');
+  if (pop) pop.classList.remove('open');
+  if (restoreFocus && wasOpen && condPopoverOpenerEl && condPopoverOpenerEl.isConnected) {
+    condPopoverOpenerEl.focus();
+  }
+  if (!wasOpen || restoreFocus) condPopoverOpenerEl = null;
+}
+
+function handleCondPopoverKey(e) {
+  e.stopPropagation();
+  if (e.key === 'Enter') { e.preventDefault(); saveCondPopover(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeCondPopover(true); }
+}
+
+function saveCondPopover() {
+  if (condPopoverLine === null) return;
+  const line = condPopoverLine;
+  const val = document.getElementById('condPopoverInput').value.trim();
+  closeCondPopover(false);
+  if (val) {
+    act('breakpoint', { file: currentFile, line, condition: val });
+  } else {
+    clearCondOnLine(line);
+  }
+}
+
+function clearCondPopover() {
+  if (condPopoverLine === null) return;
+  const line = condPopoverLine;
+  closeCondPopover(false);
+  clearCondOnLine(line);
+}
+
+function clearCondOnLine(line) {
+  const row = ((state && state.files[currentFile]) || []).find(x => x.line === line);
+  if (row && row.bp_cond) {
+    act('breakpoint', { file: currentFile, line, condition: '' });
+  }
+}
+
+function isFlagContainerReg(r) {
+  return Boolean(r && r.is_flag);
+}
+
+function renderRegisterDropdown() {
+  if (!state) return;
+  const regMap = {};
+  state.registers.forEach(r => { regMap[r.name] = r; });
+  const plainNames = regOrder.filter(name => !isFlagContainerReg(regMap[name]));
+  const total = plainNames.length;
+  const visible = plainNames.filter(name => !hiddenRegs.has(name)).length;
+  document.getElementById('regCountLabel').innerText = visible === total ? `All (${total})` : `${visible}/${total}`;
+  const key = plainNames.join(',') + '|' + Array.from(hiddenRegs).join(',');
+  if (key === lastDropdownKey) return;
+  lastDropdownKey = key;
+  const list = document.getElementById('regCheckList');
+  list.innerHTML = plainNames.map(name => `
+    <label class="reg-check-item">
+      <input type="checkbox" ${hiddenRegs.has(name) ? '' : 'checked'} data-name="${escapeAttr(name)}" onchange="toggleReg(this.dataset.name)">
+      <span>${escapeHtml(name)}</span>
+    </label>
+  `).join('');
+}
+
+function toggleRegDropdown(e) {
+  e.stopPropagation();
+  const dd = document.getElementById('regDropdown');
+  const btn = document.getElementById('btnRegDropdown');
+  if (!dd) return;
+  const open = dd.classList.toggle('open');
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    closeSettingsPopover(false);
+    closeCondPopover(false);
+  }
+}
+
+document.addEventListener('click', e => {
+  closeRegDropdown(false);
+  closeSettingsPopover(false);
+  closeCondPopover(false);
+});
+
+function setAllRegs(show) {
+  if (!state) return;
+  if (show) hiddenRegs.clear();
+  else state.registers.forEach(r => { if (!isFlagContainerReg(r)) hiddenRegs.add(r.name); });
+  renderRegisterDropdown();
+  renderRegisters();
+}
+
+function toggleReg(name) {
+  if (hiddenRegs.has(name)) hiddenRegs.delete(name);
+  else hiddenRegs.add(name);
+  renderRegisterDropdown();
+  renderRegisters();
+}
+
+// Column & Row Rendering for Registers
+function onFlagClick(el, target, bits, currentVal) {
+  if (bits === 1) {
+    act('poke', { target, value: Number(currentVal) ? 0 : 1 });
+  } else {
+    startInlinePoke(el, target, currentVal);
+  }
+}
+
+function renderFlagsBar(regMap) {
+  const bar = document.getElementById('flagsBar');
+  if (!bar || !state) return;
+  const flagRegs = regOrder
+    .map(name => regMap[name])
+    .filter(r => isFlagContainerReg(r) && !hiddenRegs.has(r.name));
+  if (!flagRegs.length) {
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+    return;
+  }
+  const multiFieldRegs = flagRegs.filter(r => r.fields && r.fields.length > 0);
+  const showPrefix = multiFieldRegs.length > 1;
+  const pillsHtml = [];
+  flagRegs.forEach(r => {
+    if (r.fields && r.fields.length > 0) {
+      r.fields.forEach(f => {
+        const target = f.target || `${r.name}.${f.name}`;
+        const bits = f.bits || 1;
+        const { display: fDisp, edit: fEdit, active: isActive } = formatValueWithHexFallback(f.value_str ?? f.value, f.hex);
+        const label = showPrefix ? `${r.name}.${f.name}` : f.name;
+        const cls = [
+          'flag-pill',
+          isActive ? 'active' : '',
+          f.changed ? 'changed' : ''
+        ].filter(Boolean).join(' ');
+        const tip = bits === 1
+          ? `${target} = ${fDisp} (Click to toggle 0/1)`
+          : `${target} (${bits}-bit) = ${fDisp} (Click to edit)`;
+        const pressedAttr = bits === 1 ? ` aria-pressed="${isActive ? 'true' : 'false'}"` : '';
+        const btnHtml = `<button type="button" class="${cls}" data-target="${escapeAttr(target)}" data-val="${escapeAttr(fEdit)}" onclick="onFlagClick(this, this.dataset.target, ${bits}, this.dataset.val)" title="${escapeAttr(tip)}"${pressedAttr}><span class="flag-name">${escapeHtml(label)}</span><span class="flag-val">${escapeHtml(fDisp)}</span></button>`;
+        pillsHtml.push(bits > 1 ? `<span class="flag-pill-wrap">${btnHtml}</span>` : btnHtml);
+      });
+    } else {
+      const { display: rDisp, edit: rEdit, active: isActive } = formatValueWithHexFallback(r.unsigned_str ?? r.unsigned ?? r.value, r.hex);
+      const cls = [
+        'flag-pill',
+        isActive ? 'active' : '',
+        r.changed ? 'changed' : ''
+      ].filter(Boolean).join(' ');
+      const tip = r.bits === 1
+        ? `${r.name} = ${rDisp} (Click to toggle 0/1)`
+        : `${r.name} = ${rDisp} (Click to edit)`;
+      const pressedAttr = r.bits === 1 ? ` aria-pressed="${isActive ? 'true' : 'false'}"` : '';
+      const btnHtml = `<button type="button" class="${cls}" data-target="${escapeAttr(r.name)}" data-val="${escapeAttr(rEdit)}" onclick="onFlagClick(this, this.dataset.target, ${r.bits}, this.dataset.val)" title="${escapeAttr(tip)}"${pressedAttr}><span class="flag-name">${escapeHtml(r.name)}</span><span class="flag-val">${escapeHtml(rDisp)}</span></button>`;
+      pillsHtml.push(r.bits > 1 ? `<span class="flag-pill-wrap">${btnHtml}</span>` : btnHtml);
+    }
+  });
+  bar.innerHTML = `<span class="flags-bar-label">FLAGS</span>` + pillsHtml.join('');
+  bar.classList.add('visible');
+}
+
+function renderRegisters() {
+  if (!state) return;
+  const colGroup = document.getElementById('regColGroup');
+  colGroup.innerHTML = `<col style="width:${regFirstColWidth}px">` +
+    regCols.map(c => `<col style="width:${c.width}px">`).join('');
+
+  const headRow = document.getElementById('regHeadRow');
+  headRow.innerHTML = `<th class="center-col">Reg<div class="col-resizer" onmousedown="startColResize(event, 'reg', -1)"></div></th>` +
+    regCols.map((c, idx) => `
+      <th class="draggable-col center-col" draggable="true"
+          ondragstart="onColDragStart(event, 'reg', ${idx})"
+          ondragover="onColDragOver(event, 'reg')"
+          ondragleave="onColDragLeave(event)"
+          ondrop="onColDrop(event, 'reg', ${idx})"
+          ondragend="onColDragEnd()"
+          title="Drag header to reorder column, drag right edge to resize">
+        ${c.label}
+        <div class="col-resizer" onmousedown="startColResize(event, 'reg', ${idx})"></div>
+      </th>
+    `).join('');
+
+  const regMap = {};
+  state.registers.forEach(r => { regMap[r.name] = r; });
+
+  renderFlagsBar(regMap);
+
+  const rawFilter = (document.getElementById('regFilterInput').value || '').trim().toLowerCase();
+  const tokens = rawFilter ? rawFilter.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const regBody = document.getElementById('regBody');
+  const rows = regOrder
+    .map(name => regMap[name])
+    .filter(r => {
+      if (!r || isFlagContainerReg(r) || hiddenRegs.has(r.name)) return false;
+      if (!tokens.length) return true;
+      const rn = r.name.toLowerCase();
+      return tokens.some(t => rn.includes(t));
+    });
+
+  if (!rows.length) {
+    regBody.innerHTML = `<tr><td colspan="${regCols.length + 1}" class="empty-hint">No registers matching filter</td></tr>`;
+    return;
+  }
+
+  regBody.innerHTML = rows.map(r => {
+      const fieldsStr = formatRegFieldsSummary(r.fields);
+      const unsRaw = r.unsigned_str ?? r.unsigned;
+      const sigRaw = r.signed_str ?? r.signed;
+      const unsVal = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '--';
+      const sigVal = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '--';
+      const unsEdit = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '';
+      const sigEdit = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '';
+      const changeStr = r.changed ? `<span class="changed-cell">${escapeHtml(r.old_hex || '')} ➔ ${escapeHtml(r.hex)}</span>` : '';
+      const diffContent = [changeStr, fieldsStr ? escapeHtml(fieldsStr) : ''].filter(Boolean).join(' ');
+      const diffTip = [r.changed ? `${r.old_hex || ''} -> ${r.hex}` : '', fieldsStr].filter(Boolean).join(' | ');
+      const cellsHtml = regCols.map(c => {
+        if (c.key === 'hex') {
+          return `<td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(r.name)} hex (${escapeAttr(r.hex)})" data-target="${escapeAttr(r.name)}" data-val="${escapeAttr(r.hex)}" ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(r.hex)} — Double-click or press Enter to edit">${escapeHtml(r.hex)}</td>`;
+        }
+        if (c.key === 'unsigned') {
+          return `<td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(r.name)} unsigned (${escapeAttr(unsVal)})" data-target="${escapeAttr(r.name)}" data-val="${escapeAttr(unsEdit)}" ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(unsVal)} — Double-click or press Enter to edit">${escapeHtml(unsVal)}</td>`;
+        }
+        if (c.key === 'signed') {
+          return `<td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(r.name)} signed (${escapeAttr(sigVal)})" data-target="${escapeAttr(r.name)}" data-val="${escapeAttr(sigEdit)}" ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(sigVal)} — Double-click or press Enter to edit">${escapeHtml(sigVal)}</td>`;
+        }
+        return `<td class="center-col"${diffTip ? ` title="${escapeAttr(diffTip)}"` : ''}>${diffContent}</td>`;
+      }).join('');
+
+      return `
+        <tr draggable="true"
+            data-reg="${escapeAttr(r.name)}"
+            ondragstart="onRegRowDragStart(event, this.dataset.reg)"
+            ondragover="onRegRowDragOver(event)"
+            ondragleave="onRegRowDragLeave(event)"
+            ondrop="onRegRowDrop(event, this.dataset.reg)"
+            ondragend="onRegRowDragEnd()">
+          <td class="reg-drag-cell" title="${escapeAttr(r.name)} (${r.bits}-bit) — Drag to reorder register row"><span class="drag-grip">⋮⋮</span><strong>${escapeHtml(r.name)}</strong></td>
+          ${cellsHtml}
+        </tr>
+      `;
+    }).join('');
+}
+
+function renderWatchpoints() {
+  if (!state) return;
+  const points = state.watchpoints || [];
+  const badge = document.getElementById('watchBadge');
+  if (badge) {
+    badge.textContent = String(points.length);
+    badge.hidden = points.length === 0;
+  }
+  const clearBtn = document.getElementById('btnClearWatch');
+  if (clearBtn) {
+    clearBtn.disabled = points.length === 0;
+  }
+  const tbody = document.getElementById('watchBody');
+  if (!tbody) return;
+  if (!points.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">No watchpoints set. Add a target above (register, alias, or memory slice).</td></tr>';
+    return;
+  }
+  const accessLabels = { w: 'Write', r: 'Read', rw: 'Read/Write' };
+  tbody.innerHTML = points.map(point => {
+    const access = accessLabels[point.kind] || point.kind;
+    const condHtml = point.condition
+      ? `<code>${escapeHtml(point.condition)}</code>`
+      : '<span class="dim">--</span>';
+    const condTipAttr = point.condition
+      ? ` data-tooltip="${escapeAttr(point.condition)}"`
+      : '';
+    return `
+      <tr>
+        <td class="center-col">#${escapeHtml(point.id)}</td>
+        <td data-tooltip="${escapeAttr(point.target)}"><strong>${escapeHtml(point.target)}</strong></td>
+        <td class="center-col">${escapeHtml(access)}</td>
+        <td${condTipAttr}>${condHtml}</td>
+        <td class="center-col">
+          <button type="button" class="mini-btn" onclick="act('remove_watchpoint', {id: ${escapeAttr(JSON.stringify(point.id))}})"
+                  title="Remove watchpoint #${escapeAttr(point.id)}" aria-label="Remove watchpoint #${escapeAttr(point.id)}">&times;</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderConstants() {
+  if (!state) return;
+  const tbody = document.getElementById('constBody');
+  if (!tbody) return;
+  const entries = Object.entries(state.constants || {});
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-hint">No assembly constants defined</td></tr>';
+    return;
+  }
+  const rawFilter = (document.getElementById('constFilterInput')?.value || '').trim().toLowerCase();
+  const tokens = rawFilter ? rawFilter.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const filtered = tokens.length
+    ? entries.filter(([name]) => {
+        const ln = name.toLowerCase();
+        return tokens.some(t => ln.includes(t));
+      })
+    : entries;
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-hint">No constants matching filter</td></tr>';
+    return;
+  }
+  const metaMap = state.constants_display || {};
+  tbody.innerHTML = filtered.map(([name, val]) => {
+    let hexStr = '--';
+    let unsignedStr = '--';
+    let signedStr = '--';
+    const meta = Object.hasOwn(metaMap, name) ? metaMap[name] : null;
+    if (meta) {
+      hexStr = meta.hex ?? '--';
+      unsignedStr = meta.unsigned_str ?? '--';
+      signedStr = meta.signed_str ?? '--';
+    } else if (typeof val === 'number' && Number.isFinite(val)) {
+      const intVal = Math.trunc(val);
+      if (intVal < 0) {
+        hexStr = '-0x' + Math.abs(intVal).toString(16);
+        unsignedStr = '--';
+        signedStr = String(intVal);
+      } else {
+        hexStr = '0x' + intVal.toString(16);
+        unsignedStr = String(intVal);
+        signedStr = String(intVal);
+      }
+    } else if (val !== null && val !== undefined) {
+      signedStr = String(val);
+    }
+    return `
+      <tr>
+        <td title="${escapeAttr(name)}"><strong>${escapeHtml(name)}</strong></td>
+        <td class="center-col" title="${escapeAttr(hexStr)}">${escapeHtml(hexStr)}</td>
+        <td class="center-col" title="${escapeAttr(unsignedStr)}">${escapeHtml(unsignedStr)}</td>
+        <td class="center-col" title="${escapeAttr(signedStr)}">${escapeHtml(signedStr)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderRegAliases() {
+  if (!state) return;
+  const tbody = document.getElementById('regAliasBody');
+  if (!tbody) return;
+  const allAliases = state.aliases || [];
+  if (!allAliases.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">No register aliases defined in MCU</td></tr>';
+    return;
+  }
+  const rawFilter = (document.getElementById('regAliasFilterInput')?.value || '').trim().toLowerCase();
+  const tokens = rawFilter ? rawFilter.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const filtered = tokens.length
+    ? allAliases.filter(a => {
+        const an = String(a.name || '').toLowerCase();
+        const at = String(a.target || '').toLowerCase();
+        return tokens.some(t => an.includes(t) || at.includes(t));
+      })
+    : allAliases;
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-hint">No register aliases matching filter</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(a => {
+    const bits = a.bits || 0;
+    const hasNum = a.value !== null && a.value !== undefined;
+    const hexRaw = (a.hex && a.hex !== '--') ? a.hex : (hasNum ? '0x' + Number(a.value).toString(16) : null);
+    const hexVal = hexRaw ?? '--';
+    const hexEdit = hexRaw ?? '';
+    const unsRaw = a.unsigned_str ?? a.unsigned ?? (hasNum ? a.value : null);
+    const sigRaw = a.signed_str ?? a.signed ?? (hasNum ? a.value : null);
+    const unsVal = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '--';
+    const sigVal = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '--';
+    const unsEdit = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '';
+    const sigEdit = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '';
+    const titleBits = bits ? `${a.target} (${bits}-bit)` : a.target;
+    return `
+      <tr>
+        <td title="${escapeAttr(a.name)}"><strong>${escapeHtml(a.name)}</strong></td>
+        <td title="${escapeAttr(titleBits)}"><span style="color:#9cdcfe;">${escapeHtml(a.target)}</span></td>
+        <td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(a.name)} hex (${escapeAttr(hexVal)})" data-target="${escapeAttr(a.name)}" data-val="${escapeAttr(hexEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(hexVal)} — Double-click or press Enter to edit">${escapeHtml(hexVal)}</td>
+        <td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(a.name)} unsigned (${escapeAttr(unsVal)})" data-target="${escapeAttr(a.name)}" data-val="${escapeAttr(unsEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(unsVal)} — Double-click or press Enter to edit">${escapeHtml(unsVal)}</td>
+        <td class="editable center-col" tabindex="0" role="button" aria-label="Edit ${escapeAttr(a.name)} signed (${escapeAttr(sigVal)})" data-target="${escapeAttr(a.name)}" data-val="${escapeAttr(sigEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(sigVal)} — Double-click or press Enter to edit">${escapeHtml(sigVal)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function initTrackedMemAliases(st) {
+  if (memAliasLoaded) return;
+  const scope = (st && st.status && st.status.program_path)
+    || (st && st.files && Object.keys(st.files)[0])
+    || (st && st.status && st.status.active_file_path)
+    || location.host
+    || 'default';
+  memAliasStorageKey = 'isasim_tracked_mem_aliases:' + scope;
+  memAliasLoaded = true;
+  try {
+    const raw = localStorage.getItem(memAliasStorageKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    trackedMemAliases = Array.isArray(parsed)
+      ? parsed.filter(x => typeof x === 'string' && x.length > 0)
+      : [];
+  } catch {
+    trackedMemAliases = [];
+  }
+}
+
+function saveTrackedMemAliases() {
+  if (!memAliasStorageKey) return;
+  try {
+    if (trackedMemAliases.length) {
+      localStorage.setItem(memAliasStorageKey, JSON.stringify(trackedMemAliases));
+    } else {
+      localStorage.removeItem(memAliasStorageKey);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function untrackMemAlias(name) {
+  trackedMemAliases = trackedMemAliases.filter(n => n !== name);
+  saveTrackedMemAliases();
+  renderMemAliases();
+}
+
+function clearTrackedMemAliases() {
+  trackedMemAliases = [];
+  saveTrackedMemAliases();
+  renderMemAliases();
+}
+
+function isMemAliasModalOpen() {
+  const modal = document.getElementById('memAliasModal');
+  return Boolean(modal && !modal.hidden);
+}
+
+function wildcardToRegexBody(pattern) {
+  return String(pattern).replace(/[.*+?^${}()|[\]\\]/g, ch => {
+    if (ch === '*') return '.*';
+    if (ch === '?') return '.';
+    return `\\${ch}`;
+  });
+}
+
+function syncModalSearchToggleUI() {
+  const map = [
+    ['btnModalMatchCase', modalMatchCase],
+    ['btnModalWholeWord', modalWholeWord],
+    ['btnModalRegex', modalUseRegex]
+  ];
+  for (const [id, active] of map) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+function toggleModalSearchOption(opt) {
+  if (opt === 'case') modalMatchCase = !modalMatchCase;
+  else if (opt === 'word') modalWholeWord = !modalWholeWord;
+  else if (opt === 'regex') modalUseRegex = !modalUseRegex;
+  lastModalAnchorIdx = null;
+  syncModalSearchToggleUI();
+  renderMemAliasModalList();
+  const input = document.getElementById('memAliasModalSearch');
+  if (input) input.focus();
+}
+
+function getFilteredModalMemAliases() {
+  const all = (state && state.mem_aliases) || [];
+  const input = document.getElementById('memAliasModalSearch');
+  const box = document.getElementById('memAliasModalSearchBox');
+  const raw = input ? input.value.trim() : '';
+  modalSearchError = '';
+  if (box) box.classList.remove('search-invalid');
+  if (!raw) return all.slice();
+
+  const flags = modalMatchCase ? '' : 'i';
+  let body = '';
+  if (modalUseRegex) {
+    try {
+      new RegExp(raw, flags);
+    } catch (err) {
+      modalSearchError = err && err.message ? err.message : 'Invalid regular expression';
+      if (box) box.classList.add('search-invalid');
+      return [];
+    }
+    body = raw;
+  } else {
+    body = wildcardToRegexBody(raw);
+  }
+
+  const pattern = modalWholeWord
+    ? `(?<![A-Za-z0-9_])(?:${body})(?![A-Za-z0-9_])`
+    : body;
+  try {
+    const re = new RegExp(pattern, flags);
+    return all.filter(item => re.test(String(item.name || '')));
+  } catch (err) {
+    modalSearchError = err && err.message ? err.message : 'Invalid regular expression';
+    if (box) box.classList.add('search-invalid');
+    return [];
+  }
+}
+
+function openMemAliasModal() {
+  if (!state) return;
+  const all = state.mem_aliases || [];
+  if (!all.length) return;
+  modalOpenerEl = document.activeElement || document.getElementById('btnSelectMemAliases');
+  initTrackedMemAliases(state);
+  const definedNames = new Set(all.map(item => item.name));
+  modalSelectedMemAliases = new Set(trackedMemAliases.filter(n => definedNames.has(n)));
+  lastModalAnchorIdx = null;
+  modalSearchError = '';
+
+  closeRegDropdown(false);
+  closeSettingsPopover(false);
+  closeCondPopover(false);
+
+  const box = document.getElementById('memAliasModalSearchBox');
+  if (box) box.classList.remove('search-invalid');
+  const input = document.getElementById('memAliasModalSearch');
+  if (input) input.value = '';
+  syncModalSearchToggleUI();
+  const modal = document.getElementById('memAliasModal');
+  if (modal) modal.hidden = false;
+
+  renderMemAliasModalList();
+  if (input) input.focus();
+}
+
+function closeMemAliasModal(restoreFocus = true) {
+  const modal = document.getElementById('memAliasModal');
+  if (modal) modal.hidden = true;
+  lastModalAnchorIdx = null;
+  if (restoreFocus && modalOpenerEl && modalOpenerEl.isConnected) {
+    modalOpenerEl.focus();
+  }
+  modalOpenerEl = null;
+}
+
+function onMemAliasModalSearchInput() {
+  lastModalAnchorIdx = null;
+  renderMemAliasModalList();
+}
+
+function handleMemAliasModalKey(e) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeMemAliasModal(true);
+  }
+}
+
+function setModalFilteredSelection(select) {
+  for (const item of currentModalFiltered) {
+    if (select) modalSelectedMemAliases.add(item.name);
+    else modalSelectedMemAliases.delete(item.name);
+  }
+  renderMemAliasModalList();
+}
+
+function applyModalRowSelection(idx, desiredState, isShift) {
+  const item = currentModalFiltered[idx];
+  if (!item) return;
+  if (isShift && lastModalAnchorIdx !== null && lastModalAnchorIdx >= 0 && lastModalAnchorIdx < currentModalFiltered.length) {
+    const start = Math.min(lastModalAnchorIdx, idx);
+    const end = Math.max(lastModalAnchorIdx, idx);
+    for (let i = start; i <= end; i++) {
+      const rowItem = currentModalFiltered[i];
+      if (!rowItem) continue;
+      if (desiredState) modalSelectedMemAliases.add(rowItem.name);
+      else modalSelectedMemAliases.delete(rowItem.name);
+    }
+  } else {
+    if (desiredState) modalSelectedMemAliases.add(item.name);
+    else modalSelectedMemAliases.delete(item.name);
+  }
+  lastModalAnchorIdx = idx;
+  renderMemAliasModalList();
+}
+
+function onMemAliasModalRowClick(e, idx) {
+  if (e.target && e.target.tagName === 'INPUT') return;
+  const item = currentModalFiltered[idx];
+  if (!item) return;
+  const desiredState = !modalSelectedMemAliases.has(item.name);
+  applyModalRowSelection(idx, desiredState, Boolean(e.shiftKey));
+}
+
+function onMemAliasModalCheckboxClick(e, idx) {
+  e.stopPropagation();
+  const desiredState = Boolean(e.currentTarget.checked);
+  applyModalRowSelection(idx, desiredState, Boolean(e.shiftKey));
+}
+
+function renderMemAliasModalList() {
+  const all = (state && state.mem_aliases) || [];
+  currentModalFiltered = getFilteredModalMemAliases();
+
+  const selectedCount = all.reduce(
+    (acc, item) => acc + (modalSelectedMemAliases.has(item.name) ? 1 : 0),
+    0
+  );
+  const countEl = document.getElementById('memAliasModalCount');
+  if (countEl) {
+    countEl.textContent = `Selected: ${selectedCount} / ${all.length}`;
+  }
+
+  const selBtn = document.getElementById('btnModalSelectFiltered');
+  if (selBtn) selBtn.disabled = currentModalFiltered.length === 0;
+  const unselBtn = document.getElementById('btnModalUnselectFiltered');
+  if (unselBtn) unselBtn.disabled = currentModalFiltered.length === 0;
+
+  const tbody = document.getElementById('memAliasModalBody');
+  if (!tbody) return;
+  const scrollEl = document.getElementById('memAliasModalScroll');
+  const prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+  if (!currentModalFiltered.length) {
+    const input = document.getElementById('memAliasModalSearch');
+    const raw = input ? input.value.trim() : '';
+    const msg = !all.length
+      ? 'No memory aliases defined'
+      : (modalSearchError
+        ? `Invalid regular expression: ${escapeHtml(modalSearchError)}`
+        : `No memory aliases matching "${escapeHtml(raw)}"`);
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-hint">${msg}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = currentModalFiltered.map((item, idx) => {
+    const checked = modalSelectedMemAliases.has(item.name);
+    const format = [
+      item.bits ? `${item.bits}-bit` : null,
+      item.endian || null,
+      item.bit_order || null
+    ].filter(Boolean).join(' / ');
+    return `
+      <tr class="modal-alias-row${checked ? ' selected' : ''}" data-idx="${idx}" onclick="onMemAliasModalRowClick(event, ${idx})">
+        <td class="center-col">
+          <input type="checkbox" ${checked ? 'checked' : ''}
+                 aria-label="Select ${escapeAttr(item.name)}"
+                 onclick="onMemAliasModalCheckboxClick(event, ${idx})">
+        </td>
+        <td class="reg-name">${escapeHtml(item.name)}</td>
+        <td class="muted">${escapeHtml(item.target || '')}</td>
+        <td class="muted">${escapeHtml(format || '--')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  if (scrollEl && typeof prevScrollTop === 'number') {
+    scrollEl.scrollTop = prevScrollTop;
+  }
+}
+
+function applyMemAliasModal() {
+  const all = (state && state.mem_aliases) || [];
+  const definedSet = new Set(all.map(item => item.name));
+  const retained = trackedMemAliases.filter(name => definedSet.has(name) && modalSelectedMemAliases.has(name));
+  const retainedSet = new Set(retained);
+  const added = [];
+  for (const item of all) {
+    if (modalSelectedMemAliases.has(item.name) && !retainedSet.has(item.name)) {
+      added.push(item.name);
+      retainedSet.add(item.name);
+    }
+  }
+  trackedMemAliases = retained.concat(added);
+  saveTrackedMemAliases();
+  renderMemAliases();
+  closeMemAliasModal();
+}
+
+function renderMemAliases() {
+  if (!state) return;
+  initTrackedMemAliases(state);
+  const all = state.mem_aliases || [];
+  const aliasMap = new Map(all.map(item => [item.name, item]));
+
+  const selectBtn = document.getElementById('btnSelectMemAliases');
+  if (selectBtn) {
+    selectBtn.disabled = all.length === 0;
+    selectBtn.title = all.length
+      ? 'Select memory aliases to track'
+      : 'No memory aliases defined (declare via mcu.mem_alias or sim.mem_alias in --script)';
+  }
+
+  const countEl = document.getElementById('memAliasTrackedCount');
+  if (countEl) {
+    countEl.textContent = `Tracked: ${trackedMemAliases.length} / ${all.length}`;
+  }
+  const clearBtn = document.getElementById('btnClearTrackedMemAliases');
+  if (clearBtn) {
+    clearBtn.hidden = trackedMemAliases.length === 0;
+  }
+
+  if (isMemAliasModalOpen()) {
+    renderMemAliasModalList();
+  }
+
+  const tbody = document.getElementById('memAliasBody');
+  if (!tbody) return;
+  if (!trackedMemAliases.length) {
+    const hint = all.length
+      ? 'Click + Select... to choose memory aliases to track'
+      : 'No memory aliases defined (declare via mcu.mem_alias or sim.mem_alias in --script)';
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-hint">${hint}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = trackedMemAliases.map(name => {
+    const item = aliasMap.get(name);
+    if (!item) {
+      return `
+        <tr>
+          <td class="dim">${escapeHtml(name)}</td>
+          <td class="dim">(undefined)</td>
+          <td class="center-col dim">--</td>
+          <td class="center-col dim">--</td>
+          <td class="center-col dim">--</td>
+          <td class="center-col">
+            <button type="button" class="mini-btn" data-name="${escapeAttr(name)}"
+                    onclick="untrackMemAlias(this.dataset.name)" title="Untrack ${escapeAttr(name)}" aria-label="Untrack ${escapeAttr(name)}">&times;</button>
+          </td>
+        </tr>
+      `;
+    }
+    const hexRaw = (item.hex && item.hex !== '--') ? item.hex : null;
+    const hasVal = Boolean(item.initialized) && (
+      hexRaw !== null || (item.value !== null && item.value !== undefined)
+    );
+    const unsRaw = hasVal ? (item.unsigned_str ?? item.unsigned ?? item.value ?? null) : null;
+    const sigRaw = hasVal ? (item.signed_str ?? item.signed ?? item.value ?? null) : null;
+    const hexDisp = hasVal ? (hexRaw ?? '--') : '--';
+    const unsDisp = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '--';
+    const sigDisp = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '--';
+    const hexEdit = hasVal && hexRaw !== null ? String(hexDisp) : '';
+    const unsEdit = unsRaw !== null && unsRaw !== undefined ? String(unsRaw) : '';
+    const sigEdit = sigRaw !== null && sigRaw !== undefined ? String(sigRaw) : '';
+    const cellCls = hasVal ? 'editable center-col' : 'editable center-col dim';
+    const rowCls = item.changed ? 'changed-cell' : '';
+    const changeMarker = item.changed ? '<span class="change-badge" title="Changed in last step" aria-label="Changed">Δ</span>' : '';
+    const metaTip = [
+      item.target,
+      item.bits ? `${item.bits}-bit` : null,
+      item.endian || null,
+      item.bit_order || null
+    ].filter(Boolean).join(' · ');
+    return `
+      <tr class="${rowCls}">
+        <td title="${escapeAttr(item.name)}">${changeMarker}<strong>${escapeHtml(item.name)}</strong></td>
+        <td title="${escapeAttr(metaTip)}"><span style="color:#9cdcfe;">${escapeHtml(item.target)}</span></td>
+        <td class="${cellCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(item.name)} hex (${escapeAttr(hexDisp)})" data-target="${escapeAttr(item.name)}" data-val="${escapeAttr(hexEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(hexDisp)} — Double-click or press Enter to edit">${escapeHtml(hexDisp)}</td>
+        <td class="${cellCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(item.name)} unsigned (${escapeAttr(unsDisp)})" data-target="${escapeAttr(item.name)}" data-val="${escapeAttr(unsEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(unsDisp)} — Double-click or press Enter to edit">${escapeHtml(unsDisp)}</td>
+        <td class="${cellCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(item.name)} signed (${escapeAttr(sigDisp)})" data-target="${escapeAttr(item.name)}" data-val="${escapeAttr(sigEdit)}"
+            ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(sigDisp)} — Double-click or press Enter to edit">${escapeHtml(sigDisp)}</td>
+        <td class="center-col">
+          <button type="button" class="mini-btn" data-name="${escapeAttr(item.name)}"
+                  onclick="untrackMemAlias(this.dataset.name)" title="Untrack ${escapeAttr(item.name)}" aria-label="Untrack ${escapeAttr(item.name)}">&times;</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Column Rendering for Memory
+function renderMemory() {
+  if (!state) return;
+  const colGroup = document.getElementById('memColGroup');
+  colGroup.innerHTML = `<col style="width:${memFirstColWidth}px">` +
+    memCols.map(c => `<col style="width:${c.width}px">`).join('');
+
+  const headRow = document.getElementById('memHeadRow');
+  headRow.innerHTML = `<th class="center-col">Addr<div class="col-resizer" onmousedown="startColResize(event, 'mem', -1)"></div></th>` +
+    memCols.map((c, idx) => `
+      <th class="draggable-col center-col" draggable="true"
+          ondragstart="onColDragStart(event, 'mem', ${idx})"
+          ondragover="onColDragOver(event, 'mem')"
+          ondragleave="onColDragLeave(event)"
+          ondrop="onColDrop(event, 'mem', ${idx})"
+          ondragend="onColDragEnd()"
+          title="Drag header to reorder column, drag right edge to resize">
+        ${c.label}
+        <div class="col-resizer" onmousedown="startColResize(event, 'mem', ${idx})"></div>
+      </th>
+    `).join('');
+
+  const sp = state.memory.current_space;
+  const memBody = document.getElementById('memBody');
+  if (!state.memory.cells.length) {
+    const errs = state.memory.filter_errors || [];
+    const emptyMsg = errs.length
+      ? `Invalid memory filter syntax: ${escapeHtml(errs.join(', '))}`
+      : 'No initialized memory cells matching filter';
+    memBody.innerHTML = `<tr><td colspan="${memCols.length + 1}" class="empty-hint">${emptyMsg}</td></tr>`;
+    return;
+  }
+  memBody.innerHTML = state.memory.cells.map(c => {
+    const target = `${sp}[${c.addr_hex}]`;
+    const initCls = c.initialized ? 'editable center-col' : 'editable center-col dim';
+    const uninitAttr = c.initialized ? '' : ' data-uninit="1"';
+    const hasCellVal = c.value !== null || (c.initialized && typeof c.hex === 'string' && c.hex !== '--' && c.hex !== '');
+    const unsRaw = c.unsigned_str ?? c.unsigned ?? null;
+    const sigRaw = c.signed_str ?? c.signed ?? null;
+    const cellsHtml = memCols.map(col => {
+      if (!hasCellVal && c.value === null) return '<td class="center-col dim" title="Unavailable (device-owned cell)">--</td>';
+      if (col.key === 'hex') {
+        const editVal = c.initialized ? c.hex : '0x0';
+        const tip = c.initialized ? `${c.hex} — Double-click or press Enter to edit` : '-- (uninitialized) — Double-click or press Enter to initialize';
+        return `<td class="${initCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(target)} hex (${escapeAttr(c.hex)})" data-target="${escapeAttr(target)}" data-val="${escapeAttr(editVal)}"${uninitAttr} ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(tip)}">${escapeHtml(c.hex)}</td>`;
+      }
+      if (col.key === 'unsigned') {
+        const disp = c.initialized ? (unsRaw !== null ? String(unsRaw) : '--') : '--';
+        const editVal = c.initialized ? (unsRaw !== null ? String(unsRaw) : '') : '0';
+        const tip = c.initialized ? `${disp} — Double-click or press Enter to edit` : '-- (uninitialized) — Double-click or press Enter to initialize';
+        return `<td class="${initCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(target)} unsigned (${escapeAttr(disp)})" data-target="${escapeAttr(target)}" data-val="${escapeAttr(editVal)}"${uninitAttr} ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(tip)}">${escapeHtml(disp)}</td>`;
+      }
+      const disp = c.initialized ? (sigRaw !== null ? String(sigRaw) : '--') : '--';
+      const editVal = c.initialized ? (sigRaw !== null ? String(sigRaw) : '') : '0';
+      const tip = c.initialized ? `${disp} — Double-click or press Enter to edit` : '-- (uninitialized) — Double-click or press Enter to initialize';
+      return `<td class="${initCls}" tabindex="0" role="button" aria-label="Edit ${escapeAttr(target)} signed (${escapeAttr(disp)})" data-target="${escapeAttr(target)}" data-val="${escapeAttr(editVal)}"${uninitAttr} ondblclick="startInlinePoke(this, this.dataset.target, this.dataset.val)" onkeydown="handleEditableCellKey(event, this, this.dataset.target, this.dataset.val)" title="${escapeAttr(tip)}">${escapeHtml(disp)}</td>`;
+    }).join('');
+
+    const changeMarker = c.changed ? '<span class="change-badge" title="Changed in last step" aria-label="Changed">Δ</span>' : '';
+    return `
+      <tr class="${c.changed ? 'changed-cell' : ''}">
+        <td class="pc-addr center-col">${changeMarker}${c.addr_hex}</td>
+        ${cellsHtml}
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderTrace() {
+  if (!state) return;
+  const traceBody = document.getElementById('traceBody');
+  if (!state.trace.length) {
+    traceBody.innerHTML = `<tr><td colspan="5" class="empty-hint">No trace events yet</td></tr>`;
+    return;
+  }
+  traceBody.innerHTML = state.trace.map(t => {
+    const canJump = t.line && Object.hasOwn(state.files, t.file);
+    const rowAttrs = canJump
+      ? `class="trace-row-clickable" tabindex="0" role="button" aria-label="Locate line ${t.line} in ${escapeAttr(t.file)}" onclick="locateTraceLine(${escapeAttr(JSON.stringify(t.file))}, ${t.line})" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); locateTraceLine(${escapeAttr(JSON.stringify(t.file))}, ${t.line}); }" title="Click or press Enter to locate Line ${t.line} in ASM Source"`
+      : '';
+    return `
+      <tr ${rowAttrs}>
+        <td class="center-col">${t.seq}</td><td class="center-col">${t.cycle}</td><td class="pc-addr center-col">${t.pc_hex}</td>
+        <td><strong>${escapeHtml(t.text || t.kind)}</strong></td><td>${formatTraceChanges(t.changes)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function formatTraceChanges(changes) {
+  return escapeHtml(changes).replace(/-&gt;/g, ' ➔ ');
+}
+
+// Column Drag-to-Reorder & Resize Handlers
+let dragColInfo = null;
+function onColDragStart(e, tableKind, idx) {
+  dragRegName = null;
+  dragColInfo = { tableKind, idx };
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onColDragOver(e, tableKind) {
+  if (!dragColInfo || (tableKind && dragColInfo.tableKind !== tableKind)) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over-col');
+}
+function onColDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over-col');
+}
+function onColDragEnd() {
+  dragColInfo = null;
+  document.querySelectorAll('th.drag-over-col').forEach(el => el.classList.remove('drag-over-col'));
+}
+function onColDrop(e, tableKind, targetIdx) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over-col');
+  const info = dragColInfo;
+  dragColInfo = null;
+  if (!info || info.tableKind !== tableKind || info.idx === targetIdx) return;
+  const arr = tableKind === 'reg' ? regCols : memCols;
+  const [moved] = arr.splice(info.idx, 1);
+  arr.splice(targetIdx, 0, moved);
+  if (tableKind === 'reg') renderRegisters();
+  else renderMemory();
+}
+
+function startColResize(e, tableKind, colIdx) {
+  e.stopPropagation();
+  e.preventDefault();
+  const startX = e.clientX;
+  const arr = tableKind === 'reg' ? regCols : memCols;
+  const startW = colIdx === -1
+    ? (tableKind === 'reg' ? regFirstColWidth : memFirstColWidth)
+    : arr[colIdx].width;
+  const colGroup = document.getElementById(tableKind === 'reg' ? 'regColGroup' : 'memColGroup');
+  const colEl = colGroup ? colGroup.children[colIdx + 1] : null;
+
+  const onMove = ev => {
+    const newW = Math.max(48, startW + (ev.clientX - startX));
+    if (colIdx === -1) {
+      if (tableKind === 'reg') regFirstColWidth = newW;
+      else memFirstColWidth = newW;
+    } else {
+      arr[colIdx].width = newW;
+    }
+    if (colEl) colEl.style.width = newW + 'px';
+  };
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+// Register Row Drag-to-Reorder Handlers
+let dragRegName = null;
+function onRegRowDragStart(e, name) {
+  dragColInfo = null;
+  dragRegName = name;
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onRegRowDragOver(e) {
+  if (!dragRegName) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over-row');
+}
+function onRegRowDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over-row');
+}
+function onRegRowDragEnd() {
+  dragRegName = null;
+  document.querySelectorAll('tr.drag-over-row').forEach(el => el.classList.remove('drag-over-row'));
+}
+function onRegRowDrop(e, targetName) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over-row');
+  const sourceName = dragRegName;
+  dragRegName = null;
+  if (!sourceName || sourceName === targetName) return;
+  const fromIdx = regOrder.indexOf(sourceName);
+  const toIdx = regOrder.indexOf(targetName);
+  if (fromIdx !== -1 && toIdx !== -1) {
+    regOrder.splice(fromIdx, 1);
+    regOrder.splice(toIdx, 0, sourceName);
+    renderRegisterDropdown();
+    renderRegisters();
+  }
+}
+
+function handleEditableCellKey(e, td, target, currentVal) {
+  if (e.key === 'Enter' || e.key === 'F2' || e.key === ' ') {
+    e.preventDefault();
+    startInlinePoke(td, target, currentVal);
+  }
+}
+
+function startInlinePoke(td, target, currentVal) {
+  const host = td.parentElement && td.parentElement.classList && td.parentElement.classList.contains('flag-pill-wrap')
+    ? td.parentElement
+    : td;
+  if (host.querySelector('input')) return;
+  const allowSame = Boolean(td.dataset && td.dataset.uninit === '1');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'inline-input';
+  input.value = currentVal;
+  input.setAttribute('aria-label', `Edit ${target}`);
+  let finished = false;
+
+  const commit = () => {
+    if (finished) return;
+    finished = true;
+    const val = input.value.trim();
+    input.remove();
+    if (val !== '' && (allowSame || val !== String(currentVal))) {
+      act('poke', { target, value: val });
+    }
+  };
+  const cancel = () => {
+    if (finished) return;
+    finished = true;
+    input.remove();
+    if (td && typeof td.focus === 'function' && td.isConnected !== false) {
+      td.focus();
+    }
+  };
+
+  input.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
+
+  host.appendChild(input);
+  input.focus();
+  input.select();
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function escapeAttr(t) {
+  return escapeHtml(t).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Main Panel Splitters
+(function initResizers() {
+  const resizerV = document.getElementById('resizerV');
+  const resizerH = document.getElementById('resizerH');
+  const paneRight = document.getElementById('paneRight');
+
+  resizerV.addEventListener('mousedown', e => {
+    e.preventDefault();
+    resizerV.classList.add('dragging');
+    let lastRightW = null;
+    const onMove = ev => {
+      lastRightW = Math.round(clampRightWidth(window.innerWidth - ev.clientX));
+      document.documentElement.style.setProperty('--right-width', lastRightW + 'px');
+    };
+    const onUp = () => {
+      resizerV.classList.remove('dragging');
+      if (lastRightW !== null) {
+        localStorage.setItem('isasim_right_width', String(lastRightW));
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+
+  resizerH.addEventListener('mousedown', e => {
+    e.preventDefault();
+    resizerH.classList.add('dragging');
+    let lastPct = null;
+    const onMove = ev => {
+      const rect = paneRight.getBoundingClientRect();
+      if (rect.height <= 0) return;
+      const relY = ev.clientY - rect.top;
+      lastPct = Number(clampRegHeight((relY / rect.height) * 100).toFixed(2));
+      document.documentElement.style.setProperty('--reg-height', lastPct + '%');
+    };
+    const onUp = () => {
+      resizerH.classList.remove('dragging');
+      if (lastPct !== null) {
+        localStorage.setItem('isasim_reg_height', String(lastPct));
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+
+  window.addEventListener('resize', () => {
+    const rawW = localStorage.getItem('isasim_right_width');
+    if (rawW !== null && rawW !== '' && Number.isFinite(Number(rawW))) {
+      const clampedW = Math.round(clampRightWidth(Number(rawW)));
+      document.documentElement.style.setProperty('--right-width', clampedW + 'px');
+    } else {
+      const curW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--right-width'));
+      if (Number.isFinite(curW)) {
+        document.documentElement.style.setProperty('--right-width', Math.round(clampRightWidth(curW)) + 'px');
+      }
+    }
+    requestAnimationFrame(updateStickyOffsets);
+  });
+})();
+
+window.addEventListener('keydown', e => {
+  if (isMemAliasModalOpen()) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMemAliasModal(true);
+    } else if (e.key === 'Tab') {
+      const modal = document.getElementById('memAliasModal');
+      if (modal) {
+        const focusables = Array.from(
+          modal.querySelectorAll('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')
+        ).filter(el => el.offsetParent !== null);
+        if (focusables.length) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (condPopoverLine !== null) {
+      e.preventDefault();
+      closeCondPopover(true);
+      return;
+    }
+    const dd = document.getElementById('regDropdown');
+    if (dd && dd.classList.contains('open')) {
+      e.preventDefault();
+      closeRegDropdown(true);
+      return;
+    }
+    const sp = document.getElementById('settingsPopover');
+    if (sp && sp.classList.contains('open')) {
+      e.preventDefault();
+      closeSettingsPopover(true);
+      return;
+    }
+    hideUiHoverTooltip();
+    hideRegHoverTooltip();
+    return;
+  }
+  const activeEl = document.activeElement;
+  const tag = activeEl ? activeEl.tagName : '';
+  const inputType = tag === 'INPUT' ? String(activeEl.type || 'text').toLowerCase() : '';
+  const isTextEntry = tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'submit', 'reset'].includes(inputType));
+  const isInlineOrPopover = Boolean(activeEl && activeEl.classList && activeEl.classList.contains('inline-input')) || condPopoverLine !== null;
+  if (isInlineOrPopover) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'F5') { e.preventDefault(); act('continue'); }
+  else if (e.key === 'F10') { e.preventDefault(); act('step_over'); }
+  else if (e.key === 'F11') {
+    e.preventDefault();
+    if (e.shiftKey) act('step_out'); else act('step_in');
+  } else if ((e.key === 'b' || e.key === 'B') && !isTextEntry && tag !== 'SELECT') {
+    e.preventDefault();
+    act('step_back');
+  }
+});
+
+applyUiSettings();
+fetchState();
+</script>
+</body>
+</html>

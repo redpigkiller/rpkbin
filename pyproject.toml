@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rpkbin"
-version = "0.2.1"
-description = "General-purpose utilities for IC design and verification workflows (MapBV, TablePack, JobManager, Wave Web GUI)."
+version = "0.3.0"
+description = "General-purpose utilities for IC design and verification workflows (MapBV, TablePack, JobCore, Flow, Wave, Calc, ISA simulation, mcucc)."
 readme = "README.md"
 authors = [
     { name = "redpigkiller", email = "hongrunlu511@gmail.com" }
@@ -15,6 +15,7 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.21",
+    "regex>=2024.11.6",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -30,6 +31,7 @@ fixed = ["apytypes>=0.5.0"]
 table = ["brotli>=1.2"]
 # The 6.12.0 Linux/Python 3.11 matrix aborts during interpreter finalization.
 calc  = ["apytypes>=0.5.0", "PySide6>=6.5.0,<6.12", "qtconsole>=5.7.2,<6", "ipykernel>=6.29,<8", "jupyter-client>=8.6,<9", "matplotlib>=3.8,<4"]
+isasim_gui = []
 all   = ["brotli>=1.2", "apytypes>=0.5.0", "PySide6>=6.5.0,<6.12", "qtconsole>=5.7.2,<6", "ipykernel>=6.29,<8", "jupyter-client>=8.6,<9", "matplotlib>=3.8,<4"]
 
 [project.urls]
@@ -38,10 +40,34 @@ Repository = "https://github.com/redpigkiller/rpkbin"
 
 [project.scripts]
 rpk-wave = "rpkbin.wave.cli:main"
-rpk-calc = "rpkbin.calc.cli:main"
+rpk-calc = "rpkbin.app.calc.cli:main"
+rpk-isasim = "rpkbin.isasim.cli:main"
+rpk-isasim-gui = "rpkbin.app.isasim_gui.cli:main"
+rpk-mcucc = "rpkbin.mcucc.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rpkbin*"]
 
 [tool.setuptools.package-data]
-"rpkbin.calc.ui" = ["assets/*.png", "assets/*.ico"]
+"rpkbin.app.calc.ui" = ["assets/*.png", "assets/*.ico"]
+"rpkbin.wave" = ["*.js", "static/*.html", "static/*.css", "static/*.js"]
+"rpkbin.app.isasim_gui" = ["static/*.html"]
+"rpkbin.isasim" = ["*.md"]
+"rpkbin.mcucc" = [
+    "*.md",
+    "doc/*.md",
+    "examples/*.md",
+    "examples/*.py.txt",
+    "examples/*.asm",
+    "examples/*.json",
+    "examples/*.tsv",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+"rpkbin/mcucc/target.py" = ["E742"]

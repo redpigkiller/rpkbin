@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.startup import STARTUP_TEMPLATE, StartupFile, prepare_startup
-from rpkbin.calc.core.settings_transfer import export_preferences, parse_preferences
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.startup import STARTUP_TEMPLATE, StartupFile, prepare_startup
+from rpkbin.app.calc.core.settings_transfer import export_preferences, parse_preferences
 
 
 def test_template_is_inert_and_custom_imports_override_packs(tmp_path):

@@ -1,0 +1,73 @@
+{
+  "format": "isasim-assembly-1",
+  "isa_hash": "05d59fea489d14d376f228dd4c7c1afda4e2821f95d069c5b21a9bd629e9bdec",
+  "source": "COUNT = 2\nstart: ADD COUNT\nMIX 10, 5, 3\n.db 7, 8\nEND\n",
+  "filename": "main.asm",
+  "source_sha256": "0b811452a830d40a92da5fffdb34aff813d44a4621e9a034e1d1a8db9825dc14",
+  "cell_bits": 8,
+  "cells": [
+    [
+      0,
+      18
+    ],
+    [
+      1,
+      89
+    ],
+    [
+      2,
+      57
+    ],
+    [
+      3,
+      7
+    ],
+    [
+      4,
+      8
+    ],
+    [
+      5,
+      240
+    ]
+  ],
+  "symbols": {
+    "start": 0
+  },
+  "lines": [
+    {
+      "addr": 0,
+      "cells": [
+        18
+      ],
+      "line": 2,
+      "instruction": true
+    },
+    {
+      "addr": 1,
+      "cells": [
+        89,
+        57
+      ],
+      "line": 3,
+      "instruction": true
+    },
+    {
+      "addr": 3,
+      "cells": [
+        7,
+        8
+      ],
+      "line": 4,
+      "instruction": false
+    },
+    {
+      "addr": 5,
+      "cells": [
+        240
+      ],
+      "line": 5,
+      "instruction": true
+    }
+  ]
+}

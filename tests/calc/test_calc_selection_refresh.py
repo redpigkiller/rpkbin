@@ -8,9 +8,9 @@ import pytest
 from PySide6.QtCore import QObject, QEvent, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import WorkspaceSession, make_fxp
-from rpkbin.calc.ui.app import CalcMainWindow
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import WorkspaceSession, make_fxp
+from rpkbin.app.calc.ui.studio_window import CalcMainWindow
 
 
 class PaintRecorder(QObject):

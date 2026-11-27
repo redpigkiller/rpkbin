@@ -1,9 +1,13 @@
 """Regression tests for MapBV bug fixes (nested slices, cycles, const writes, etc.)."""
 
+import ast
+import os
 import warnings
+from pathlib import Path
 
 import pytest
 
+import rpkbin.mapbv as mbv
 from rpkbin.mapbv import concat, const, var
 
 
@@ -202,3 +206,101 @@ class TestUsability:
         a.value = np.int64(5)
         assert a.value == 5
         assert const(np.uint8(3), 4).value == 3
+
+
+class TestS1Regressions:
+    def test_numpy_widths_and_slice_bounds(self):
+        np = pytest.importorskip("numpy")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            big = var("BIG", np.int64(64), 1)
+            assert big.width == 64
+            assert big.value == 1
+            c64 = const(0, np.int64(64))
+            assert c64.width == 64
+            big63 = var("BIG63", np.int64(63), 1)
+            assert big63.width == 63
+
+        wide = var("WIDE", 256)
+        sl = wide[np.uint8(255) : np.uint8(0)]
+        assert sl.width == 256
+
+        a = var("A", 8, 0b00001000)
+        assert a[np.int64(3)].value == 1
+        assert a[np.int64(2)].value == 0
+
+    def test_bool_rejected_for_width_and_index(self):
+        a = var("A", 8, 0xAA)
+        with pytest.raises(TypeError):
+            _ = a[True]
+        with pytest.raises(TypeError):
+            _ = a[True:0]
+        with pytest.raises(TypeError):
+            _ = a[1:False]
+        with pytest.raises(TypeError):
+            var("BAD", True)
+        with pytest.raises(TypeError):
+            const(0, True)
+
+    def test_value_eq_numpy_non_int_and_expr(self):
+        np = pytest.importorskip("numpy")
+        a = var("A", 8, 5)
+        b = var("B", 8, 0xFF)
+        assert a.value_eq(np.uint8(5))
+        assert not a.value_eq(np.int64(6))
+        assert not a.value_eq(None)
+        assert not a.value_eq("5")
+        assert not a.value_eq(5.0)
+        assert (b & 0x05).value_eq(0x05)
+        assert a.value_eq(b & 0x05)
+
+    def test_const_write_non_int_raises_typeerror(self):
+        c = const(0, 4)
+        with pytest.raises(TypeError, match="constant"):
+            c.value = "abc"
+        sl = const(0xF, 4)[1:0]
+        with pytest.raises(TypeError, match="constant"):
+            sl.value = "abc"
+        with pytest.raises(TypeError, match="constant"):
+            sl.value = 99
+
+
+class TestReprExportsAndEncoding:
+    def test_repr_mapbv_and_expr(self):
+        r = var("R", 16, 0x1234)
+        c = const(0x5, 4)
+        s = r[7:0]
+        bus = concat("BUS", r[15:8], c)
+        expr = r & 0xFF
+        inv = ~r[3:0]
+
+        assert repr(r) == "<MapBV VAR R[15:0] value=0x1234>"
+        assert repr(c) == "<MapBV CONST Constant[3:0] value=0x5>"
+        assert repr(s) == "<MapBV SLICE R[7:0] value=0x34>"
+        assert repr(bus) == "<MapBV VAR linked BUS[11:0] value=0x125>"
+        assert "MapBVExpr" in repr(expr)
+        assert "0xFF" in repr(expr)
+        assert "0x0034" in repr(expr)
+        assert "MapBVExpr" in repr(inv)
+        assert "~R[3:0]" in repr(inv)
+
+    def test_star_import_all_exports(self):
+        assert mbv.__all__ == ["MapBV", "MapBVExpr", "const", "var", "concat"]
+        ns = {}
+        exec("from rpkbin.mapbv import *", ns)
+        ns.pop("__builtins__", None)
+        assert set(ns) == {"MapBV", "MapBVExpr", "const", "var", "concat"}
+
+    def test_mapbv_no_bom_lf_and_py311_ast(self):
+        path = Path(__file__).resolve().parents[2] / "rpkbin" / "mapbv.py"
+        raw = path.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        assert b"\r" not in raw.replace(b"\r\n", b"")
+        crlf_count = raw.count(b"\r\n")
+        lf_count = raw.count(b"\n")
+        assert crlf_count in (0, lf_count)
+        if os.name != "nt":
+            assert crlf_count == 0
+        ast.parse(raw.decode("utf-8"), feature_version=(3, 11))
+
+

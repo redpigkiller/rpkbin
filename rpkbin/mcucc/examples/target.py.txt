@@ -1,0 +1,103 @@
+"""Fictional two-register target used by the mcucc quickstart."""
+
+from rpkbin.mcucc.target import (
+    Target, Space, Reg, Cls, Form, R, I, T, Abi, SimBinding,
+)
+from rpkbin.isasim import MCU, Simulator
+
+# The ABI passes the arguments in a and b and returns the result in a.
+names = ("a", "b")
+mask = (1 << 8) - 1
+
+def rr_encoder(base):
+    def encode(v):
+        return (base + 2 * names.index(v["d"]) + names.index(v["s"]),)
+    return encode
+
+forms = (
+    Form("add_rr", "add", 8, (R("d", "byte"), R("s", "byte")),
+         {"dst": "d", "a": "d", "b": "s"}, 1, "inksum {d}, {s}",
+         encode=rr_encoder(0x10)),
+    Form("mov", "mov", 8, (R("d", "byte"), R("s", "byte")),
+         {"dst": "d", "a": "s"}, 1, "inkcopy {d}, {s}",
+         encode=rr_encoder(0x20)),
+    Form("add_ri", "add", 8, (R("d", "byte"), I("k", 8)),
+         {"dst": "d", "a": "d", "b": "k"}, 2, "inksum {d}, #{k}",
+         encode=lambda v: (0x40 + names.index(v["d"]), v["k"])),
+    Form("call", "call", 0, (T("t", abs_bits=12),), {}, 3, "inkcall {t}",
+         encode=lambda v: (0x60, v["t"] >> 8, v["t"] & mask)),
+    Form("ret", "ret", 0, (), {}, 1, "inkdone", encode=lambda v: (0x61,)),
+    Form("jmp", "jmp", 0, (T("t", rel_bits=8),), {}, 2, "inkskip {t}",
+         encode=lambda v: (0x62, v["t"] & mask)),
+)
+TARGET = Target(
+    name="small", cell_bits=8,
+    spaces=(Space("code", 12, "program"), Space("data", 8, "data")),
+    regs=tuple(Reg(name, 8) for name in names), aliases=(),
+    classes=(Cls("byte", names),), flags=(), forms=forms,
+    abi=Abi({8: names}, {8: "a"}, ()), long_branch="none",
+    comment=";", local_label=".L{fn}_{n}", label_def="{name}:",
+)
+
+# The simulator is used by check-forms and verify.
+machine = MCU("small")
+for name, width, access, program in (
+    ("code", 12, "ro", True), ("data", 8, "rw", False),
+    ("frames", 12, "rw", False),
+):
+    machine.space(name, cell_bits=8, size=1 << width, access=access,
+                  is_program=program, reset_state="initialized", init=0)
+for name in names:
+    machine.reg(name, bits=8, reset=0)
+machine.reg("cursor", bits=12, reset=0, is_pc=True)
+machine.reg("depth", bits=16, reset=0)
+machine.on_undefined_opcode("stop")
+machine.on_out_of_range("stop")
+machine.on_write_to_readonly("stop")
+machine.on_uninitialized_read("stop")
+machine.instr("00000000", syntax="inkhalt", cycles=1, name="inkhalt")(
+    lambda state: state.halt("example"))
+
+def rr_handler(destination, source, add):
+    def execute(state):
+        value = state.reg[source]
+        if add:
+            value += state.reg[destination]
+        state.reg[destination] = value & mask
+    return execute
+
+def immediate_handler(destination):
+    def execute(state, k):
+        state.reg[destination] = (state.reg[destination] + k) & mask
+    return execute
+
+for d, destination in enumerate(names):
+    for s, source in enumerate(names):
+        for base, add, mnemonic in ((0x10, True, "inksum"), (0x20, False, "inkcopy")):
+            machine.instr(format(base + 2 * d + s, "08b"),
+                          syntax=f"{mnemonic} {destination}, {source}", cycles=1,
+                          name=f"{mnemonic}_{d}_{s}")(
+                rr_handler(destination, source, add))
+    machine.instr(format(0x40 + d, "08b") + "k" * 8,
+                  syntax=f"inksum {destination}, {{k}}", cycles=1, name=f"add_i_{d}")(
+        immediate_handler(destination))
+
+def call_handler(state, t):
+    depth = state.reg["depth"]
+    state.mem["frames"].write_word(depth, 2, state.next_pc, "little")
+    state.reg["depth"] = depth + 2
+    state.next_pc = t
+
+def return_handler(state):
+    depth = state.reg["depth"] - 2
+    state.next_pc = state.mem["frames"].read_word(depth, 2, "little")
+    state.reg["depth"] = depth
+
+def jump_handler(state, t):
+    offset = t if t < (1 << 7) else t - (1 << 8)
+    state.next_pc = state.next_pc + offset
+
+machine.instr("011000000000" + "t" * 12, syntax="inkcall {t}", cycles=1)(call_handler)
+machine.instr("01100001", syntax="inkdone", cycles=1)(return_handler)
+machine.instr("01100010" + "t" * 8, syntax="inkskip {t}", cycles=1)(jump_handler)
+SIM = SimBinding(lambda: Simulator(machine), "code", "cursor", (0,))

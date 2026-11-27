@@ -1,110 +1,111 @@
-# MapBV 快速入門：第一次建立、讀取與修改位元欄位
+# `rpkbin.mapbv`
 
-[English](../../en/mapbv/README.md) · [文件導覽](../README.md) · [情境教學](scenarios.md) · [API 參考](reference.md)
+[English](../../en/mapbv/README.md) · [文件導覽](../README.md) · [實戰使用情境](scenarios.md) · [API 參考手冊](reference.md)
 
-MapBV (MapBitVector) 是一套針對數位 IC 設計、硬體暫存器映射（Register Mapping）與驗證測試平台開發的輕量級 BitVector 工具庫。
+`rpkbin.mapbv` 以純 Python 建立無號硬體暫存器與位元欄位模型，讓切片、父暫存器、串接匯流排與邏輯運算式維持即時同步。
 
-它核心解決的問題是：**如何在軟體中直覺、高效地操作暫存器的特定位元欄位，並保證欄位切片與原暫存器、以及暫存器與 Bus 串接之間的雙向即時同步**。
+## 語法
 
----
+```python
+reg = mbv.var(name, width, value=0)
+c = mbv.const(value, width)
+bus = mbv.concat(name, *parts)
+field = reg[high:low]
+bit = reg[bit_index]
+text = f"{reg:hex}"
+bits = f"{reg:bin}"
+```
 
-## 5 分鐘快速上手
+## 說明
 
-### 1. 建立變數與常數
+- `reg = mbv.var(name, width, value=0)` 建立可寫入的具名無號暫存器，寬度為 `width` 位元，初始值為 `value`。
+- `c = mbv.const(value, width)` 建立唯讀常數節點，用來表示固定識別碼或保留位元。
+- `bus = mbv.concat(name, *parts)` 依 MSB 到 LSB 順序串接既有的變數、常數、切片或匯流排，寫入時會依寬度拆解並寫回底層可寫入節點。
+- `field = reg[high:low]` 與 `bit = reg[bit_index]` 建立雙端包含的閉區間切片視圖（`high >= low`）；指派 `.value` 或 `reg[high:low] = val` 會立刻更新原暫存器。
+- `f"{reg:hex}"` 與 `f"{reg:bin}"` 依節點位元寬度補零格式化輸出（十六進位補至 `ceil(width / 4)` 位，二進位補至 `width` 位）。
 
-使用工廠函式 `var()` 建立具名的暫存器變數，使用 `const()` 建立唯讀常數：
+## 範例
+
+### 1. 基本範例：建立變數、常數與格式化輸出
+
+建立一個 16 位元暫存器變數與一個 4 位元常數，並用 `to_hex()`、`to_bin()` 及 f-string 格式碼印出結果。
 
 ```python
 import rpkbin.mapbv as mbv
 
-# 建立名為 REG0 的 16 位元暫存器變數，初始值為 0x1234
 reg = mbv.var("REG0", 16, 0x1234)
-
-# 建立 4 位元的唯讀常數 0xF
 mask = mbv.const(0xF, 4)
 
-print(f"變數: {reg.name}, 寬度: {reg.width} bits, 數值: 0x{reg.value:04X}")
-print(f"常數: {mask.name}, 寬度: {mask.width} bits, 數值: 0x{mask.value:X}")
+print(f"Variable: {reg.name}, width: {reg.width} bits, hex: {reg.to_hex()}")
+print(f"Constant: {mask.name}, width: {mask.width} bits, hex: {mask:hex}")
+print(f"Binary:   {reg:bin}")
 ```
 
-### 2. 格式化輸出 (Hex 與 Binary)
-
-MapBV 內建十六進位與二進位轉換方法，亦原生支援 Python f-string 格式化格式代碼：
-
-```python
-# 方法一：呼叫方法
-print(reg.to_hex())  # 輸出: 0x1234
-print(reg.to_bin())  # 輸出: 0b0001001000110100
-
-# 方法二：f-string 格式化代碼
-print(f"{reg:hex}")  # 輸出: 0x1234
-print(f"{reg:bin}")  # 輸出: 0b0001001000110100
+輸出：
+```text
+Variable: REG0, width: 16 bits, hex: 0x1234
+Constant: Constant, width: 4 bits, hex: 0xF
+Binary:   0b0001001000110100
 ```
 
-### 3. 切片讀取與單一位元操作
+### 2. 進階範例：欄位切片與雙向即時同步
 
-MapBV 採用硬體描述語言（Verilog / SystemVerilog）習慣的**閉區間**語法 `[high:low]`（同時包含 high 與 low 位元，且 $high \ge low$）：
+使用 Verilog 風格的閉區間 `[high:low]` 切出欄位，並驗證原暫存器與切片之間的雙向更新。
 
 ```python
-# 讀取高位元組 [15:8]
+import rpkbin.mapbv as mbv
+
+reg = mbv.var("REG0", 16, 0x1234)
 high_byte = reg[15:8]
-print(f"high_byte 寬度: {len(high_byte)} bits, 數值: {high_byte:hex}")  # 8 bits, 0x12
-
-# 讀取單一位元 [3]
 bit3 = reg[3]
-print(f"bit3 寬度: {len(bit3)} bits, 數值: {bit3.value}")  # 1 bit, 0 (因 0x1234 的 bit 3 為 0)
+
+print(f"high_byte width: {len(high_byte)} bits, value: {high_byte:hex}")
+print(f"bit3 width: {len(bit3)} bits, value: {bit3.value}")
+
+reg[15:8] = 0xAB
+print(f"After slice index write: reg={reg:hex}, high_byte={high_byte:hex}")
+
+high_byte.value = 0x55
+print(f"After slice .value write: reg={reg:hex}")
 ```
 
-### 4. 共享視圖與雙向即時連動
+輸出：
+```text
+high_byte width: 8 bits, value: 0x12
+bit3 width: 1 bits, value: 0
+After slice index write: reg=0xAB34, high_byte=0xAB
+After slice .value write: reg=0x5534
+```
 
-由暫存器切出的子視圖是**動態活連結（Live View）**：
-- 修改切片會立刻寫回原暫存器。
-- 修改原暫存器，切片讀取的值也會同步改變。
+## 注意事項與限制
+
+- **物件同一性與數值比較（`==`）**：`reg == other` 比較物件同一性（`self is other`），確保可變節點仍可作為 dict 鍵或放入 set。直接拿 `MapBV` 或 `MapBVExpr` 與整數比對（`reg == 0x5534`）會引發 `TypeError`；請改用 `reg.value == 0x5534` 或 `reg.value_eq(0x5534)`。
+- **無號範圍與閉區間規則**：不接受負數、大於等於 `2**width` 的數值、切片步長（`reg[7:0:2]`）與反向索引（`reg[0:7]`）。
 
 ```python
-# 直接賦值修改切片視圖
-reg[15:8] = 0xAB
+import rpkbin.mapbv as mbv
 
-# 原暫存器數值自動更新
-print(f"更新後原暫存器: {reg:hex}")  # 輸出: 0xAB34
-print(f"切片視圖讀取值: {high_byte:hex}")  # 輸出: 0xAB
+reg = mbv.var("REG0", 16, 0x5534)
+assert reg.value == 0x5534
+assert reg.value_eq(0x5534)
 
-# 也可以直接對切片物件的 .value 賦值
-high_byte.value = 0x55
-print(f"再次更新後原暫存器: {reg:hex}")  # 輸出: 0x5534
+for bad in (lambda: reg == 0x5534, lambda: reg[3:0].__setattr__("value", 0x10)):
+    try:
+        bad()
+    except (TypeError, ValueError) as exc:
+        print(f"{type(exc).__name__}: {exc}")
 ```
 
----
+輸出：
+```text
+TypeError: MapBV == int compares identity and is almost certainly a bug; use `bv.value == n` or `bv.value_eq(n)`
+ValueError: Value 0x10 out of bounds for 4-bit MapBV (max 0xF)
+```
 
-## 關鍵注意事項與常見誤區
+- **相容性**：純 Python `>= 3.11`，離線執行且不進行外部 I/O。位寬、數值與索引接受實作 `__index__` 的整數物件（包含 NumPy 整數純量），但位寬與切片索引會拒絕 `bool`（`TypeError`）。範例已在 Windows、Python 3.13 實測驗證。
 
-> [!WARNING]
-> ### 1. 數值比較 vs. 物件同一性比較 (`==`)
-> 在 Python 中，`reg == other` 會比較**物件身分識別（Identity，即 `self is other`）**，而非數值相等！
-> 若誤寫 `reg == 0x5534`，MapBV 會主動拋出 `TypeError` 阻止潛在的邏輯 Bug。
->
-> **正確的數值比對寫法：**
-> ```python
-> # 寫法 A：比對 .value 屬性
-> assert reg.value == 0x5534
->
-> # 寫法 B：使用 value_eq() 方法
-> assert reg.value_eq(0x5534)
-> ```
+## 延伸閱讀
 
-> [!CAUTION]
-> ### 2. 位元寬度與負數檢查
-> MapBV 模擬的是無號數位硬體信號。
-> - 賦值負數會拋出 `ValueError`。
-> - 賦值超出位元寬度上限的數值會拋出 `ValueError`。
-> ```python
-> reg[3:0] = 0x10  # 拋出 ValueError: 0x10 超出 4 位元最大值 0xF
-> reg[3:0] = -1    # 拋出 ValueError: 不支援負數
-> ```
-
----
-
-## 下一步
-
-- **[實戰使用情境](scenarios.md)**：深入學習多欄位組合、硬體 Bus 串接 (`concat`)、唯讀常數位元防護、組合邏輯運算式延遲求值與符號代入。
-- **[API 參考手冊](reference.md)**：查閱所有方法、魔術函式與例外型別的完整規格。
+- [實戰使用情境](scenarios.md)
+- [API 參考手冊](reference.md)
+- [文件導覽](../README.md)

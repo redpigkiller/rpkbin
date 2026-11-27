@@ -7,9 +7,9 @@ import apytypes as apy
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import CalcConfig, FxpSpec, WorkspaceSession
-from rpkbin.calc.core.editing import EditJournal
-from rpkbin.calc.core.fxp_model import RpkFixed, RpkFixedArray, extract_spec, make_fxp
+from rpkbin.app.calc.core import CalcConfig, FxpSpec, WorkspaceSession
+from rpkbin.app.calc.core.editing import EditJournal
+from rpkbin.app.calc.core.fxp_model import RpkFixed, RpkFixedArray, extract_spec, make_fxp
 
 
 OPERATIONS = {

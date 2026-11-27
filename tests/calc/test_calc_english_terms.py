@@ -9,12 +9,12 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.config import KERNEL_CONFIG_FIELDS
-from rpkbin.calc.ui.app import CalcMainWindow
-from rpkbin.calc.ui.i18n import UiText, t, tr
-from rpkbin.calc.ui.matrix_editor import MatrixEditorPage
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.config import KERNEL_CONFIG_FIELDS
+from rpkbin.app.calc.ui.studio_window import CalcMainWindow
+from rpkbin.app.calc.ui.i18n import UiText, t, tr
+from rpkbin.app.calc.ui.matrix_editor import MatrixEditorPage
 
 
 def test_exact_owned_labels_only_use_english_policy():

@@ -1,83 +1,56 @@
-# Wave Troubleshooting Guide
+# Troubleshooting
 
-[繁體中文](../../zh/wave/troubleshooting.md) · [Documentation Index](../README.md) · [Quickstart](README.md)
+Diagnosis and fixes for common Wave execution, UI, Flow, and archive issues.
 
-This document diagnoses common unexpected behaviors, root causes, and verified fixes when working with Wave and JobManager.
+## Work File Loads in Preview Instead of Running
 
----
+- **Symptom**: Running `rpk-wave work.py` opens the browser, and all jobs sit idle without output.
+- **Cause**: GUI launches enter Preview mode (`started == False`) so you can inspect jobs, hold or remove entries, and adjust settings first.
+- **Fix**: Click **Start** in the top bar for GUI sessions, or pass `--headless` on the command line for immediate batch execution.
 
-## 1. Process is running, but no log lines appear in GUI or terminal
+## `--host` Rejected at Startup
 
-### Symptom
-Job status is `RUNNING`, but the log viewer remains blank until the command terminates, at which point all output appears at once.
+- **Symptom**: Startup raises an error when setting `--host 0.0.0.0` or a LAN IP.
+- **Cause**: `WaveServer` rejects non-loopback bind addresses (`127.0.0.1`, `localhost`, `::1` only).
+- **Fix**: Keep the loopback bind address and tunnel the port over SSH (`ssh -L 8080:127.0.0.1:<port> ...`) when working remotely.
 
-### Root Cause
-Standard C runtimes (glibc, MSVCRT) and languages like Python default to **block buffering** (typically 4KB–8KB) when stdout connects to a pipe rather than an interactive terminal.
+## Interactive Prompt Does Not Trigger `Automation` or Appears Late
 
-### Resolution
-- **Python children**: Pass `-u` or set unbuffered environment variables:
-  ```python
-  cmd = [sys.executable, "-u", "script.py"]
-  ```
-  Or explicitly flush within code: `print("...", flush=True)`.
-- **C/C++ children**: Insert `setvbuf(stdout, NULL, _IOLBF, 0);` or call `fflush(stdout);`.
-- **POSIX PTY**: Keep `pty=True` (default on POSIX) to simulate interactive line buffering.
+- **Symptom**: A child tool stops on a question without a trailing newline (`Continue? [y/N]:`), and neither the Log view nor `Automation` receives the line.
+- **Cause**: Standard line buffering waits for `\n`, or block buffering holds stdout on Windows pipes (`pty=False`).
+- **Fix**: Add `prompts=("Continue? [y/N]:",)` to `Job(...)` so Wave flushes matching ANSI-stripped suffixes immediately before a newline arrives. When testing Python scripts on Windows, pass `-u` (`python -u`) or call `flush=True`. When sending replies manually or from `Automation`, verify whether the target tool expects `newline=True` (default) or `newline=False`.
 
----
+## `Ctrl+F` Opens Browser Find Instead of Wave Log Search
 
-## 2. Process exited 0, but Result is FAIL or N/A
+- **Symptom**: Pressing `Ctrl+F` opens the browser page finder instead of Wave's Find bar.
+- **Cause**: Wave scopes `Ctrl+F` strictly to `Split` and `Inspect` layouts while the `Log` view is active and focus/pointer target is inside the Log viewer or Find bar.
+- **Fix**: Click inside the Log panel or press `/` while focused in Inspect/Log, or click the Find icon directly.
 
-### Symptom
-Terminal indicates `Exit: 0`, but the final verdict is not `PASS`.
+## Waveform Controls Look Incomplete
 
-### Root Cause
-- **Result is FAIL**:
-  - A required check (`Expect.PRESENT`) never matched any output line.
-  - A forbidden check (`Expect.ABSENT`) matched an output line.
-  - Invariant: **Exit code 0 only reflects process termination, not business verification success**.
-- **Result is N/A**:
-  - The job declared no `job.check(...)` rules. Commands that finish without checks resolve to `Result=N/A`.
+- **Missing expected signals or extra signals appear**: Open **Get Signals (`g`)** and press **Defaults** to reset back to declared view defaults (or the first 8 signals in `long` mode) and clear row overrides.
+- **`Expand Bits [msb:0]` is disabled or missing**: Bit expansion applies only to vectors with width `<= 64` bits.
+- **Fewer slices appear than expected**: **Bit Select `[msb:lsb]`…** displays at most **16** slices per signal.
+- **`Left`/`Right` arrow keys vs `n`/`N` seem to jump differently**: `Left`/`Right` arrows step Cursor A to transitions on the currently selected signal row (regardless of `By:`), whereas `n`/`N` follow the **`By:`** condition selector (`Any Edge`, `Rising`, `Falling`, `= Bus Value`).
 
----
+## `Latest: Record / Merged` Toggle Looks Different Than Older Docs
 
-## 3. `job.send()` returns True, but the process does not react
+- **Symptom**: The Flow panel displays a segmented `Latest:` control with `Record` and `Merged`.
+- **Fix**: Use `Record` when you want only keys from the single latest record, or `Merged` when records emit partial updates and you want the newest value per key.
 
-### Symptom
-Sending text via Python or the GUI input line reports transmission success, but the child process ignores the input.
+## Very Long Log Lines Show `[truncated]` or `Preview · read full`
 
-### Root Cause
-- `send()` returning `True` only confirms that bytes were accepted by the OS pipe buffer.
-- **Successful transmission does not guarantee the external application parsed or executed the command**.
-- Common reasons include:
-  1. The tool requires a newline delimiter (`send(text, newline=True)` sends `\n`, but some Windows tools require `\r\n`).
-  2. The tool's stdin reader is block-buffered.
-  3. The tool is currently busy executing a previous task and has not returned to its event loop.
+- **Symptom**: Archived log rows longer than 1024 characters show a truncated preview in the main Log stream.
+- **Fix**: Click **Preview · read full** on that row to inspect full **65,536-byte** chunks in the Raw Log viewer, or call `RunArchive.read_text(job_id, attempt_id, seq)` in Python.
 
----
+## Archive Retention or Staging Errors (`move_failed`, Skipped Prune)
 
-## 4. Web GUI port conflicts or remote connection issues
+- **`archive_health["disposition"] == "move_failed"`**: Staged writes succeeded locally under `temp_dir`, but moving the finished `.sqlite3` file to `archive_dir` failed (permissions, disk full, or network outage). Recover the `.sqlite3` file from `archive_health["path"]` inside `temp_dir` before cleaning scratch folders.
+- **`prune_archives` reports `skipped` files**: Pruning skips the active run (`exclude_run_id`), unclosed archives lacking closure metadata, and non-Wave `.sqlite3` files. Age checks use internal archive metadata timestamps rather than filesystem `mtime`.
 
-### Symptom
-Launching `rpk-wave work.py` fails with `OSError: [Errno 98/10048] Address already in use`.
+## See Also
 
-### Resolution
-- Default port is `0` (system assigns an available ephemeral port). If you specified `-p 8080` and the port is busy, select another or let the system choose:
-  ```bash
-  rpk-wave work.py -p 0
-  ```
-- **Remote Access Note**: Wave GUI server binds strictly to local loopback addresses (`127.0.0.1` or `localhost`) for security; binding to `0.0.0.0` is explicitly disallowed and raises `ValueError`. If you need remote access to a headless server, use SSH port forwarding (e.g., `ssh -L 8080:127.0.0.1:8080 user@remote`).
-
----
-
-## 5. Early log lines disappear or show "Older logs evicted"
-
-### Symptom
-Long-running jobs show truncated log views and cannot scroll back to initial lines.
-
-### Root Cause
-Wave enforces bounded memory via `max_log_lines` (default 10000). When line count exceeds capacity, the ring buffer evicts older lines.
-
-### Invariant
-- **Evidence is preserved**: All check matches, line numbers, and timestamps were snapshot independently and remain fully accessible in the Details tab.
-- For unbounded disk retention, pass `Job(..., log_file="full.log")` or `JobManager(log_dir="logs/")`.
-- You can also increase `max_log_lines` via GUI **Settings -> Section B**.
+- [Wave Overview](README.md)
+- [Web GUI Guide](gui.md)
+- [History and Archives](history.md)
+- [rpk-wave CLI Reference](reference/cli.md)

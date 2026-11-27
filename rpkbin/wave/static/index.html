@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wave — Job Monitor</title>
+<link rel="stylesheet" href="/app.css">
+</head><body>
+<div class="topbar compact-chrome">
+  <div class="topbar-left">
+    <div class="brand"><span id="statusDot" class="brand-dot"></span><span>WAVE</span></div>
+    <div class="workspace-modes" role="group" aria-label="Workspace mode"><button type="button" id="layoutJobs" onclick="setWorkspaceLayout('jobs')" aria-pressed="true" title="Full-width Jobs overview; double-click a job to inspect">Jobs</button><button type="button" id="layoutInspect" onclick="setWorkspaceLayout('split')" aria-pressed="false" title="Inspect the selected job">Inspect</button><button type="button" id="layoutCharts" onclick="setWorkspaceLayout('charts')" aria-pressed="false" title="Full-width Charts workspace">Charts</button></div>
+    <span class="topbar-divider" aria-hidden="true"></span>
+    <div class="workspace-meta" id="workspaceMeta">
+      <span id="workspaceBadge" class="stage-pill">PREVIEW</span><span id="workspaceInfo" class="page-status"></span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="topbar-group queue-group" id="queueGroup" role="group" aria-label="Queue controls">
+      <button type="button" id="btnStart" class="primary" onclick="managerAction('start')" hidden>Start Jobs</button>
+      <button type="button" id="btnStopWatching" class="primary source-stop" onclick="stopWatching()" aria-label="Stop Watching all sources" hidden disabled>Stop Watching</button>
+      <button type="button" id="btnPauseResume" onclick="managerAction(STATE.paused?'resume':'pause')" title="Pause dispatch only; running jobs continue" hidden>Pause Queue</button>
+      <div class="split-btn-group" id="stopAllGroup" hidden>
+        <button type="button" id="btnStopAll" onclick="allAction('stop')" title="Pause queue dispatch, cancel unheld pending jobs, and stop active jobs (Held jobs are kept). Stop escalates to Force Stop after timeout." disabled>Stop All</button>
+        <details class="control-menu stop-all-menu" id="stopAllMenu">
+          <summary id="btnStopAllMenu" aria-label="More stop options" title="More stop options"><span data-wave-icon="chevron-down" aria-hidden="true"></span></summary>
+          <div class="control-popup stop-all-popup">
+            <button type="button" id="btnMenuStopAll" onclick="allAction('stop'); closeStopAllMenu()">Stop All</button>
+            <button type="button" id="btnForceAll" class="danger" data-keep-menu-open="true" onclick="promptForceStopAll(event)" disabled>Force Stop All…</button>
+            <div id="forceAllConfirm" class="inline-confirm" data-keep-menu-open="true" hidden>
+              <span class="inline-confirm-text">Kill all active jobs immediately?</span>
+              <div class="inline-confirm-actions">
+                <button type="button" id="btnForceAllCancel" data-keep-menu-open="true" onclick="cancelForceStopAll(event)">Cancel</button>
+                <button type="button" id="btnForceAllConfirm" class="danger" onclick="confirmForceStopAll()">Confirm Force Stop</button>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+    <span class="topbar-divider" aria-hidden="true"></span>
+    <div class="topbar-group workspace-group" id="workspaceGroup" role="group" aria-label="Workspace navigation">
+      <button type="button" id="btnOpenWorkspace" class="ghost" onclick="openWorkFile()" aria-label="Open work file, logs, or archive" title="Open work file, logs, or saved archive"><span data-wave-icon="folder" aria-hidden="true"></span><span class="btn-label">Open</span></button>
+      <button type="button" id="btnReloadWorkspace" class="ghost" onclick="reloadWorkFile()" aria-label="Reload work file" title="Reload work file and Python helper modules from disk"><span data-wave-icon="reload" aria-hidden="true"></span><span class="btn-label">Reload</span></button>
+    </div>
+    <span class="topbar-divider" aria-hidden="true"></span>
+    <details class="control-menu resources-menu" id="resourcesMenu"><summary id="btnResources" aria-label="System resources and dispatch quotas" title="Inspect resource usage, active holders, quotas, and scheduling mode"><span class="res-dot" id="resourcesDot"></span><span id="resourcesButtonText">Resources ▾</span></summary><div class="control-popup resources-panel" id="resourcesPanel">
+      <div class="resources-panel-head"><strong>System Resources &amp; Dispatch Quotas</strong><span id="resourcesPanelMeta" class="help-text"></span></div>
+      <div class="resources-mode-row">
+        <label for="resSchedulingMode">Scheduling Mode</label>
+        <select id="resSchedulingMode">
+          <option value="backfill">backfill — Maximize throughput (run non-conflicting)</option>
+          <option value="strict">strict — Head-of-line FIFO blocking</option>
+          <option value="tier_strict">tier_strict — Block only strictly lower priority</option>
+        </select>
+      </div>
+      <div class="resources-table-wrap">
+        <table class="resources-table" aria-label="Resource quotas and active holders">
+          <thead><tr><th>Resource</th><th class="num">Used</th><th>Held By</th><th class="num">Capacity</th><th>Usage</th></tr></thead>
+          <tbody id="resourcesTableBody"></tbody>
+        </table>
+      </div>
+      <div id="resourcesFeedback" class="error-text" role="alert"></div>
+      <div class="resources-panel-foot">
+        <span id="resourceSummary" class="help-text"></span><span id="queueTargetLabel" class="sr-only"></span>
+        <div class="resources-panel-actions">
+          <button type="button" onclick="el('resourcesMenu').open=false; el('btnResources').focus()">Close</button>
+          <button type="button" id="btnApplyResourcesPanel" class="primary" data-keep-menu-open="true" onclick="saveResourcesPanel()">Apply</button>
+        </div>
+      </div>
+    </div></details>
+    <button type="button" id="btnSettings" class="ghost" onclick="openSettings('retention')" disabled aria-label="Wave Settings" title="Retention and display preferences"><span data-wave-icon="settings" aria-hidden="true"></span><span class="btn-label">Settings</span></button>
+  </div>
+</div>
+<div class="view active" id="view-monitor">
+  <div class="batch-input" id="broadcastPanel" hidden>
+    <div id="broadcastTargets" class="help-text" style="color:#fde68a"></div>
+    <div class="stdin-row">
+      <input id="broadcastText" type="text" class="mono" autocomplete="off" spellcheck="false" aria-label="Broadcast text" placeholder="Text for checked running jobs…" onkeydown="if(event.key==='Enter')broadcastSend()">
+      <button type="button" id="btnBroadcastSend" class="primary" onclick="broadcastSend()">Send</button>
+      <button type="button" onclick="toggleBroadcast(false)">Close</button>
+    </div>
+    <span class="help-text">Transport only. Rejected or skipped targets are reported separately and input is retained on rejection.</span>
+  </div>
+  <div class="split-pane jobs-overview" id="monitorSplit">
+    <div class="pane-left" id="paneLeft">
+      <div class="job-list-heading"><strong id="jobsHeadingTitle">Jobs <span id="jobCount" class="help-text"></span></strong>
+      <input type="search" id="jobSearch" autocomplete="off" spellcheck="false" aria-label="Search jobs and causes" placeholder="Search jobs, resources, reason…" oninput="renderMonitor()">
+      <details class="control-menu" id="jobFilters"><summary aria-label="More job filters" title="Filter jobs by state, result, warnings, or held status"><span data-wave-icon="filters" aria-hidden="true"></span><span class="filter-label">More</span><span id="jobFilterCount"></span><span data-wave-icon="chevron-down" aria-hidden="true"></span></summary><div class="control-popup filter-card-popup">
+      <div class="popup-card-head"><strong>Filter Jobs</strong><button type="button" id="btnClearJobFilters" onclick="clearFilters()" hidden>Reset</button></div>
+      <div class="filter-card-grid">
+        <label><span>State</span><select id="stateFilter" onchange="renderMonitor()"><option value="">All states</option><option>PENDING</option><option>RUNNING</option><option value="WAITING_INPUT">PROMPT DETECTED</option><option>STOPPING</option><option value="DONE">FINISHED</option><option>FAILED</option><option>CANCELLED</option></select></label>
+        <label><span>Result</span><select id="resultFilter" onchange="renderMonitor()"><option value="">All results</option><option value="-">Undecided</option><option>PASS</option><option>FAIL</option><option>ERROR</option><option>INCOMPLETE</option><option>N/A</option></select></label>
+        <label class="warn-filter"><input type="checkbox" id="warningFilter" onchange="renderMonitor()"><span>Warnings only</span></label>
+        <label class="warn-filter"><input type="checkbox" id="heldFilter" onchange="renderMonitor()"><span>Held / excluded only</span></label>
+      </div>
+      </div></details>
+      <div id="qeHeaderInline" class="qe-header-inline" hidden></div>
+      <span class="toolbar-divider" id="editQueueDivider" aria-hidden="true"></span>
+      <button type="button" id="btnEditQueue" class="edit-queue-toggle" onclick="toggleEditQueue()" aria-pressed="false" title="Edit queue dispatch priority order, hold/include jobs, or remove queued jobs"><span data-wave-icon="arrows-up-down" aria-hidden="true"></span><span class="btn-label">Edit Queue</span></button>
+      </div>
+      <div class="job-summary-row" id="jobSummaryRow"><div class="summary-pills" id="summaryPills"></div>
+    <div class="batch-controls" id="batchMenu" hidden>
+    <span id="checkedCount" class="help-text">0 checked</span>
+    <button type="button" class="primary" data-batch-action="stop" onclick="batchJobAction('stop')">Stop</button>
+    <details class="control-menu batch-menu" id="batchMore"><summary aria-label="More actions for checked jobs" title="More actions for checked jobs"><span data-wave-icon="more" aria-hidden="true"></span></summary><div class="control-popup">
+      <strong>Checked jobs only</strong>
+      <button type="button" class="danger" data-batch-action="force_stop" onclick="batchJobAction('force_stop')">Force Stop</button>
+      <button type="button" data-batch-action="rerun" onclick="batchJobAction('rerun')">Rerun</button>
+      <button type="button" data-batch-action="priority" onclick="openPriorityEditor('checked')">Set Priority…</button>
+      <button type="button" data-batch-action="interrupt" onclick="batchJobAction('interrupt')">Ctrl+C</button>
+      <button type="button" id="btnBroadcast" onclick="toggleBroadcast()">Send to Checked…</button>
+    </div></details>
+    </div>
+      </div>
+
+      <div class="table-wrap" id="jobsTableWrap">
+        <table aria-label="Jobs" id="jobsTable" data-reading-scope="jobs-builtins">
+          <colgroup id="jobTableColumns"></colgroup>
+          <thead id="jobTableHead" title="Click to sort · Drag header to reorder · Right-click for Columns"></thead>
+          <tbody id="jobTableBody"></tbody>
+        </table>
+      </div>
+      <div class="queue-editor" id="queueEditorView" hidden aria-label="Queue editor"></div>
+    </div>
+    <div id="paneDivider" class="pane-divider" role="separator" aria-label="Resize job list and log (drag, arrow keys, or double-click to reset)" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="42" tabindex="0"></div>
+    <div class="pane-right">
+      <div class="job-detail-header" id="detailHeader">
+        <span id="jobListToggleReading"><button type="button" id="btnFocusAnalysis" class="icon-button" onclick="toggleAnalysisFocus()" aria-pressed="false" title="Hide jobs · [" aria-label="Hide jobs" hidden><span data-wave-icon="panel-left-close" aria-hidden="true"></span></button></span>
+        <div class="job-detail-top">
+          <div class="job-heading">
+            <button type="button" id="detailTitle" class="job-picker-button" onclick="openJobPicker()" title="Choose a job">Select a job</button>
+            <span id="detailMeta" class="help-text"></span>
+          </div>
+          <span id="attemptStatic" class="attempt-static help-text" hidden></span>
+          <select id="attemptSelect" aria-label="Attempt to inspect" onchange="selectAttempt(this.value)"></select>
+        </div>
+        <button type="button" id="btnStopSource" class="source-stop" onclick="stopWatching(true)" hidden disabled>Stop Watching</button>
+        <div id="attemptControls" class="single-actions" aria-label="Selected job controls">
+          <button type="button" data-single-action="stop" onclick="singleJobAction('stop')">Stop</button>
+          <button type="button" id="btnQuickForceStop" class="danger" data-single-action="force_stop" onclick="singleJobAction('force_stop')" hidden title="Kill stopping job immediately">Force Stop</button>
+          <button type="button" id="btnQuickInterrupt" class="warn" data-single-action="interrupt" onclick="singleJobAction('interrupt')" hidden title="Send Ctrl+C interrupt">Ctrl+C</button>
+          <button type="button" data-single-action="rerun" class="primary" onclick="singleJobAction('rerun')" aria-label="Rerun selected job" title="Rerun selected job"><span data-wave-icon="rerun" aria-hidden="true"></span><span>Rerun</span></button>
+          <details id="attemptMore" class="control-menu"><summary aria-label="More actions for selected job" title="More actions for selected job"><span data-wave-icon="more" aria-hidden="true"></span></summary><div class="control-popup"><strong id="singleTargetLabel">Selected job</strong><button type="button" class="danger" data-single-action="force_stop" onclick="singleJobAction('force_stop')">Force Stop</button><button type="button" class="warn" data-single-action="interrupt" onclick="singleJobAction('interrupt')">Ctrl+C</button></div></details>
+        </div>
+      </div>
+      <div class="history-notice" id="historyNotice" hidden>
+        <span id="historyNoticeText"></span>
+        <div class="history-follow" id="archiveFollowControls" hidden>
+          <span id="archiveFollowStatus" role="status"></span>
+          <button type="button" id="archiveFollowToggle" onclick="RunHistory.toggleFollow()" hidden>Pause follow</button>
+        </div>
+        <button type="button" id="historyBackToCurrent" class="primary" onclick="selectAttempt('')">Back to Current</button>
+      </div>
+      <div id="readerToolbar" class="analysis-toolbar reader-toolbar">
+        <div class="detail-tabs" role="tablist" aria-label="Reading view">
+          <button type="button" id="analysisLogTab" role="tab" aria-selected="true" aria-controls="logView">Log</button>
+          <button type="button" id="analysisParsedTab" role="tab" aria-selected="false" aria-controls="flowWorkspaceView" tabindex="-1">Parsed</button>
+          <button type="button" id="analysisResultsTab" role="tab" aria-selected="false" aria-controls="flowWorkspaceView" tabindex="-1">Analysis</button>
+          <button type="button" id="automationTab" role="tab" aria-selected="false" aria-controls="flowWorkspaceView" tabindex="-1">Automation</button>
+          <button type="button" id="btnDetailsTab" role="tab" aria-selected="false" aria-controls="flowWorkspaceView" tabindex="-1">Details</button>
+        </div>
+        <div id="analysisFilterControls" class="reader-controls">
+          <button type="button" id="btnToggleFind" class="icon-button" aria-label="Find in log" aria-pressed="false" aria-expanded="false" aria-controls="vscodeFindWidget" title="Find in log · Ctrl+F"><span data-wave-icon="search" aria-hidden="true"></span></button>
+          <details id="logOptionsMenu" class="control-menu"><summary aria-label="Log options" title="Elapsed filter, log font, wrap, and ANSI colors"><span data-wave-icon="sliders" aria-hidden="true"></span><span id="analysisFilterCount"></span></summary><div class="control-popup reader-filter-menu">
+            <label class="elapsed-range" title="Seconds from attempt start until Wave received the record"><span>Elapsed</span><input id="analysisStart" type="number" min="0" step="any" placeholder="0" aria-label="Wave elapsed start seconds">–<input id="analysisEnd" type="number" min="0" step="any" placeholder="60" aria-label="Wave elapsed end seconds">s</label>
+            <button type="button" id="btnAnalysisElapsedApply" onclick="applyAnalysisFilter(this)">Apply</button>
+            <hr>
+            <label>Log font <input id="logFontSize" type="number" min="9" max="20" step="1" value="13" aria-label="Log font size in pixels" oninput="setLogFontSize(this.value)"> px</label>
+            <label><input type="checkbox" id="logWrapToggle" checked onchange="setLogWrap(this.checked)"><span>Wrap long lines</span></label>
+            <label><input type="checkbox" id="logAnsiToggle" checked onchange="setLogAnsiColor(this.checked)"><span>ANSI colors</span></label>
+            <button type="button" onclick="setLogFontSize(13)">Reset font to 13 px</button>
+            <button type="button" onclick="jumpLogBeginning(this)">Jump to beginning · Ctrl+Home</button>
+          </div></details>
+          <label class="icon-toggle" title="Follow latest output · Ctrl+End"><input id="analysisFollow" type="checkbox" checked aria-label="Follow latest output"><span data-wave-icon="follow" aria-hidden="true"></span></label>
+        </div>
+      </div>
+      <div id="analysisFilterChips" class="analysis-filter-chips"></div>
+      <section id="chartsView" class="charts-view" hidden role="region" aria-label="Charts workspace">
+        <div id="chartsHostStrip" class="charts-host-strip">
+          <label>Job <select id="chartJobSelect" aria-label="Chart job" onchange="selectChartJob(this.value)"></select></label>
+          <label>Run <select id="chartRunSelect" aria-label="Chart run" onchange="selectChartAttempt(this.value)"></select></label>
+          <label id="chartViewSelectWrap">View <select id="chartViewSelect" aria-label="Chart view" disabled></select></label>
+          <label>Axis <select id="chartAxis" aria-label="Chart time basis" disabled></select></label>
+          <div id="chartToggleGroup" class="wf-toggle-cluster">
+            <button id="chartSnapToggle" type="button" class="wf-toggle-btn" aria-pressed="true" title="Snap cursor to nearest transition edge" hidden><span data-wave-icon="magnet" aria-hidden="true"></span><span>Snap</span></button>
+            <button id="chartHierToggle" type="button" class="wf-toggle-btn" aria-pressed="false" title="Toggle full hierarchy path in signal list (h)" hidden><span data-wave-icon="tree-path" aria-hidden="true"></span><span>Path</span></button>
+            <button id="chartNewData" type="button" class="wf-toggle-btn" title="Refresh chart data (Shift+L)" aria-label="Refresh chart data" hidden><span data-wave-icon="reload" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        <div id="chartControlSlot" class="chart-toolbar">
+          <button id="chartOpenRcBtn" type="button" class="wf-icon-btn" title="Open waveform .rc config file" aria-label="Open .rc file"><span data-wave-icon="folder" aria-hidden="true"></span></button>
+          <button id="chartSaveRcBtn" type="button" class="wf-icon-btn" title="Save waveform .wave.rc config (first save asks path; Shift+click to Save As…)" aria-label="Save .wave.rc file"><span data-wave-icon="save" aria-hidden="true"></span></button>
+          <button id="chartExportVcdBtn" type="button" class="wf-icon-btn" title="Export waveform data to IEEE 1364 .vcd file" aria-label="Export .vcd file"><span data-wave-icon="export-vcd" aria-hidden="true"></span></button>
+          <input id="chartRcFileInput" type="file" accept=".rc,.json" hidden>
+          <div class="wf-toolbar-sep" aria-hidden="true"></div>
+          <button id="chartSignalsToggle" type="button" class="wf-icon-btn" aria-expanded="false" aria-controls="chartSignals" title="Get Signals (g)" aria-label="Get Signals" disabled><span data-wave-icon="wave-signals" aria-hidden="true"></span></button>
+          <button id="chartAddDivider" type="button" class="wf-icon-btn" title="Group selected signal or create group (Shift+G)" aria-label="Create Group" hidden><span data-wave-icon="folder-plus" aria-hidden="true"></span></button>
+          <div class="wf-toolbar-sep" aria-hidden="true"></div>
+          <button id="chartLastView" type="button" class="wf-icon-btn" aria-label="Undo / Last view" title="Undo / Last view (l)" disabled><span data-wave-icon="undo" aria-hidden="true"></span></button>
+          <button id="chartCutSignal" type="button" class="wf-icon-btn" aria-label="Cut selected signal" title="Cut selected signal or group (Ctrl+X)"><span data-wave-icon="scissors" aria-hidden="true"></span></button>
+          <button id="chartCopySignal" type="button" class="wf-icon-btn" aria-label="Copy selected signal" title="Copy selected signal or group (Ctrl+C)"><span data-wave-icon="copy" aria-hidden="true"></span></button>
+          <button id="chartPasteSignal" type="button" class="wf-icon-btn" aria-label="Paste signal" title="Paste signal or group below selection (Ctrl+V)" disabled><span data-wave-icon="clipboard-paste" aria-hidden="true"></span></button>
+          <div class="wf-toolbar-sep" aria-hidden="true"></div>
+          <div id="chartCursorBar" class="wf-cursor-bar" hidden>
+            <label class="wf-cursor-box wf-cursor-a" title="Cursor A time (type value and press Enter to jump)"><span class="wf-cursor-tag"><span data-wave-icon="cursor-a" aria-hidden="true"></span>A</span><input id="chartCursorAInput" type="text" placeholder="0" aria-label="Cursor A time"></label>
+            <label class="wf-cursor-box wf-cursor-b" title="Marker B time (middle-click / Shift+click, or type value and press Enter)"><span class="wf-cursor-tag"><span data-wave-icon="cursor-b" aria-hidden="true"></span>B</span><input id="chartCursorBInput" type="text" placeholder="0" aria-label="Marker B time"></label>
+            <button type="button" id="chartCursorSummary" class="chart-cursor-summary mono" hidden disabled title="Δt = B − A (click to zoom A↔B)" aria-live="polite">Δt: —</button>
+            <select id="chartTimeUnit" class="wf-time-unit" aria-label="Display time unit scale" title="Time scale unit (choose Custom… for arbitrary multiplier)"><option value="1ps">x 1ps</option><option value="10ps">x 10ps</option><option value="100ps">x 100ps</option><option value="1ns" selected>x 1ns</option><option value="10ns">x 10ns</option><option value="100ns">x 100ns</option><option value="1us">x 1us</option><option value="1ms">x 1ms</option><option value="1s">x 1s</option><option value="custom">Custom…</option></select>
+          </div>
+          <div class="wf-toolbar-sep" aria-hidden="true"></div>
+          <button id="chartZoomOut" type="button" class="wf-icon-btn" aria-label="Zoom out" title="Zoom out (z / -)" disabled><span data-wave-icon="zoom-out" aria-hidden="true"></span></button>
+          <button id="chartZoomIn" type="button" class="wf-icon-btn" aria-label="Zoom in" title="Zoom in (Z / +)" disabled><span data-wave-icon="zoom-in" aria-hidden="true"></span></button>
+          <button id="chartResetWindow" type="button" class="wf-fit-btn" title="Fit full window 100% (f / Home)" aria-label="Fit full window 100%" disabled>100%</button>
+          <div id="chartFindTools" class="wf-find-inline" hidden>
+            <div class="wf-toolbar-sep" aria-hidden="true"></div>
+            <label>By: <select id="chartFindOp" aria-label="Find operation"><option value="any">↕ Any Edge</option><option value="rising">↑ Rising</option><option value="falling">↓ Falling</option><option value="eq">= Bus Value</option></select></label>
+            <input id="chartFindValue" type="text" maxlength="128" aria-label="Value to find" placeholder="Value (dec/0x/0b/X/Z)" hidden>
+            <button id="chartFindPrev" type="button" class="wf-icon-btn" aria-label="Find previous event" title="Previous match (N)"><span data-wave-icon="edge-prev" aria-hidden="true"></span></button>
+            <button id="chartFindNext" type="button" class="wf-icon-btn" aria-label="Find next event" title="Next match (n)"><span data-wave-icon="edge-next" aria-hidden="true"></span></button>
+            <button id="chartContinueFind" type="button" hidden disabled>More</button>
+          </div>
+          <div class="wf-toolbar-sep" aria-hidden="true"></div>
+          <button id="chartPanLeft" type="button" class="wf-icon-btn" aria-label="Pan left" title="Pan left" disabled><span data-wave-icon="pan-left" aria-hidden="true"></span></button>
+          <button id="chartPanRight" type="button" class="wf-icon-btn" aria-label="Pan right" title="Pan right" disabled><span data-wave-icon="pan-right" aria-hidden="true"></span></button>
+        </div>
+        <div id="chartLanes" class="chart-legend" aria-label="Selected signals"></div>
+        <div id="chartReadingArea" class="flow-reading chart-reading chart-studio" data-context="hidden">
+          <div id="chartSignals" class="chart-signals chart-signals-modal" hidden>
+            <div id="chartSignalsDialog" class="chart-signals-dialog" role="dialog" aria-label="Get Signals">
+              <div id="chartSignalsHeader" class="chart-signal-head" title="Drag to move · Double-click to reset position">
+                <strong>Get Signals</strong>
+                <button id="chartResetSignals" type="button" title="Reset signals to view defaults">Defaults</button>
+                <button id="chartCloseSignals" type="button" class="icon-button" aria-label="Close signal browser" title="Close (Esc)">×</button>
+              </div>
+              <div class="chart-signal-tools">
+                <div class="vscode-find-input-wrap chart-signal-find-wrap">
+                  <input id="chartSignalSearch" type="search" maxlength="128" autocomplete="off" spellcheck="false" aria-label="Search signals" placeholder="Filter signal name…">
+                  <label class="icon-toggle find-opt-btn" title="Match Case (Aa)"><input id="chartSignalCase" type="checkbox" aria-label="Match case"><span aria-hidden="true">Aa</span></label>
+                  <label class="icon-toggle find-opt-btn" title="Match Whole Word (ab)"><input id="chartSignalWord" type="checkbox" aria-label="Match whole word"><span aria-hidden="true">ab</span></label>
+                  <label class="icon-toggle find-opt-btn" title="Use Regular Expression (.*)"><input id="chartSignalRegex" type="checkbox" aria-label="Use regular expression"><span aria-hidden="true">.*</span></label>
+                </div>
+              </div>
+              <div id="chartBrowserSplit" class="chart-browser-split">
+                <div id="chartHierarchyPane" class="chart-hierarchy-wrap">
+                  <div class="chart-subhead"><span>Hierarchy</span><button id="chartScopeAll" type="button" class="ghost" title="Show all hierarchy scopes">All</button></div>
+                  <div id="chartHierarchyTree" class="chart-hierarchy-tree" role="tree" aria-label="Signal hierarchy"></div>
+                </div>
+                <div id="chartBrowserSplitter" class="wf-resizer chart-browser-resizer" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize hierarchy and signals panes" aria-valuenow="42" title="Drag to resize Hierarchy and Signals panes"></div>
+                <div class="chart-signal-list-wrap">
+                  <div class="chart-subhead"><span>Signals</span><button id="chartScopeRecursive" type="button" class="wf-scope-mode-btn" aria-pressed="true" title="Sub-tree: include all descendant hierarchy levels · Level Only: only list signals directly at selected hierarchy">Scope: Sub-tree</button></div>
+                  <div id="chartSignalTree" class="chart-signal-tree" role="group" aria-label="Available signals"></div>
+                </div>
+              </div>
+              <div class="chart-signal-foot">
+                <span id="chartSignalStatus" role="status"></span>
+                <button id="chartMoreSignals" type="button" hidden disabled>Load more</button>
+                <div class="chart-signal-foot-actions">
+                  <button id="chartSelectAllSignals" type="button" title="Select all listed signals">Select All</button>
+                  <button id="chartAddSignals" type="button" class="primary" disabled title="Add checked signals to waveform">Add</button>
+                </div>
+              </div>
+              <div class="fb-resize fb-resize-n" data-gs-resize="n" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-s" data-gs-resize="s" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-e" data-gs-resize="e" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-w" data-gs-resize="w" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-ne" data-gs-resize="ne" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-nw" data-gs-resize="nw" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-se" data-gs-resize="se" aria-hidden="true"></div>
+              <div class="fb-resize fb-resize-sw" data-gs-resize="sw" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div class="chart-main">
+            <div id="chartStage" class="chart-stage">
+              <div id="chartSignalPane" class="wf-pane" hidden>
+                <div class="wf-head">
+                  <div class="wf-col-name"><span>Signals</span></div>
+                  <div id="chartNameColResizer" class="wf-col-resizer" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize signal and value columns" aria-valuenow="55" title="Drag to resize · Double-click to auto-fit column widths"></div>
+                  <div class="wf-col-val"><span>Value</span><button type="button" id="chartColRatioBtn" class="wf-head-mini-btn" title="Cycle Signals / Value width ratio (Auto / 65:35 / 50:50 / 75:25)" aria-label="Cycle column width ratio"><span data-wave-icon="arrows-left-right" aria-hidden="true"></span></button></div>
+                </div>
+                <div id="chartSignalRows" class="wf-rows" tabindex="0" aria-label="Selected waveform signals"></div>
+              </div>
+              <div id="chartSignalPaneResizer" class="wf-resizer" hidden tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize waveform signal pane" aria-valuenow="280"></div>
+              <div id="chartPlot" class="chart-plot">
+                <div id="chartCanvasStack" class="chart-canvas-stack">
+                  <canvas id="chartCanvas" tabindex="0" role="img" aria-label="Chart plot" aria-describedby="chartStatus chartKeyboard">Chart plot. Use the Signal / Value columns and context menu for waveform inspection.</canvas>
+                  <canvas id="chartOverlayCanvas" aria-hidden="true"></canvas>
+                </div>
+                <div id="chartPlotSpace" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div id="chartHScroll" class="wf-hscroll" hidden aria-label="Waveform horizontal scrollbar">
+              <button type="button" id="chartHScrollLeft" class="wf-hscroll-btn" aria-label="Scroll timeline left" title="Scroll left"><span data-wave-icon="chevron-left" aria-hidden="true"></span></button>
+              <div id="chartHScrollTrack" class="wf-hscroll-track">
+                <div id="chartHScrollThumb" class="wf-hscroll-thumb" tabindex="0" role="slider" aria-label="Pan timeline horizontally" title="Drag to pan timeline"></div>
+              </div>
+              <button type="button" id="chartHScrollRight" class="wf-hscroll-btn" aria-label="Scroll timeline right" title="Scroll right"><span data-wave-icon="chevron-right" aria-hidden="true"></span></button>
+            </div>
+            <dl id="chartReadout" class="chart-readout" aria-label="Chart values"></dl>
+            <span id="chartKeyboard" class="sr-only">Use click for Cursor A, middle-click or Shift+click for Cursor B, left-drag down-right/up-left to zoom in, up-right to zoom out, down-left to fit, Z/z/f/l for zoom and last view, Shift+L to reload, g for Get Signals, Shift+G to group selected signal, h for hierarchy path, c for color, n/N and arrows to jump edges, drag bottom border of a signal row to resize height (double-click to auto-fit), and right-click for signal options including Expand Bits and FXP format.</span>
+            <span id="chartAnnouncement" class="sr-only" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="chart-footer">
+          <span id="chartSelectedPath" class="wf-selected-path mono"></span>
+          <span id="chartStatus" role="status"></span>
+          <button id="chartTarget" type="button" hidden></button>
+          <button id="chartContinue" type="button" hidden disabled>Continue window</button>
+        </div>
+        <div id="chartContextMenu" class="wf-ctx-menu" hidden role="menu" aria-label="Waveform signal actions"></div>
+        <div id="chartParamModal" class="wf-param-modal" hidden>
+          <div id="chartParamDialog" class="wf-param-dialog" role="dialog" aria-modal="true" aria-labelledby="chartParamTitle">
+            <div class="chart-signal-head"><strong id="chartParamTitle">Settings</strong><button type="button" id="chartParamClose" class="icon-button" aria-label="Close" title="Close (Esc)">×</button></div>
+            <div id="chartParamBody" class="wf-param-body"></div>
+            <div class="wf-param-foot"><button type="button" id="chartParamCancel">Cancel</button><button type="button" id="chartParamApply" class="primary">Apply</button></div>
+          </div>
+        </div>
+        <div id="chartFileModal" class="wf-file-modal" hidden>
+          <div id="chartFileDialog" class="wf-file-dialog" role="dialog" aria-modal="true" aria-labelledby="chartFileTitle">
+            <div class="chart-signal-head"><strong id="chartFileTitle">Waveform File</strong><button type="button" id="chartFileClose" class="icon-button" aria-label="Close" title="Close (Esc)">×</button></div>
+            <div class="wf-file-pathbar">
+              <div class="fb-nav-btns" role="group" aria-label="Folder navigation">
+                <button type="button" id="chartFileBack" class="wf-file-nav-btn" title="Back" aria-label="Back" disabled><span data-wave-icon="arrow-left" aria-hidden="true"></span></button>
+                <button type="button" id="chartFileForward" class="wf-file-nav-btn" title="Forward" aria-label="Forward" disabled><span data-wave-icon="arrow-right" aria-hidden="true"></span></button>
+                <button type="button" id="chartFileUp" class="wf-file-nav-btn" title="Parent folder" aria-label="Parent folder" disabled><span data-wave-icon="arrow-up" aria-hidden="true"></span></button>
+                <button type="button" id="chartFileRefresh" class="wf-file-nav-btn" title="Refresh folder" aria-label="Refresh folder"><span data-wave-icon="reload" aria-hidden="true"></span></button>
+              </div>
+              <input type="text" id="chartFileDir" class="mono" aria-label="Folder path">
+              <button type="button" id="chartFileGo">Go</button>
+            </div>
+            <div class="wf-file-body">
+              <div id="chartFileShortcuts" class="wf-file-shortcuts"></div>
+              <div id="chartFileList" class="wf-file-list" tabindex="0"></div>
+            </div>
+            <div class="wf-file-foot">
+              <label class="wf-file-name-wrap"><span>File name:</span><input type="text" id="chartFileName" class="mono" aria-label="File name"></label>
+              <span id="chartFileError" class="error-text" role="alert"></span>
+              <div class="chart-signal-foot-actions">
+                <button type="button" id="chartFileLocalBtn" hidden>Browse Local…</button>
+                <button type="button" id="chartFileCancel">Cancel</button>
+                <button type="button" id="chartFileConfirm" class="primary">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="flowWorkspaceView" class="flow-workspace" hidden role="tabpanel" aria-labelledby="analysisParsedTab">
+        <div id="flowParsedTools" class="flow-toolbar">
+          <label>Parser <select id="flowParser" aria-label="Parser output"></select></label><button type="button" id="flowParserSpec" title="Parser input, output and code" aria-label="Parser specification">&lt;/&gt;</button>
+          <span id="flowOutputActions" class="flow-output-actions"><button type="button" id="flowLatestMode" aria-pressed="true">Latest</button><button type="button" id="flowHistoryMode" aria-pressed="false">History</button><label id="flowFollowLabel" class="icon-toggle" title="Follow latest output"><input id="flowFollow" type="checkbox" aria-label="Follow latest output"><span data-wave-icon="follow" aria-hidden="true"></span></label><details id="flowReadingSettings" class="control-menu"><summary aria-label="Reading settings" title="Reading settings"><span data-wave-icon="settings" aria-hidden="true"></span></summary><div class="control-popup"><label>Latest values <select id="flowLatestPolicy" aria-label="Latest display mode" title="Applies to Parsed and Analysis in Latest mode"><option value="record">Latest record</option><option value="fields">Latest per field</option></select></label></div></details></span>
+        </div>
+        <div id="flowAnalysisTools" class="flow-toolbar" hidden><label>Analyzer <select id="flowAnalyzer" aria-label="Analyzer output"></select></label><button type="button" id="flowAnalyzerSpec" aria-label="Analyzer specification" title="Analyzer input, output and code">&lt;/&gt;</button><label>Report <select id="flowReportSelect" aria-label="Report output"><option value="">All reports</option><option value="find">Find or enter name…</option></select></label></div>
+        <div id="flowAutomationTools" class="flow-toolbar" hidden><label>Automation <select id="flowAutomation" aria-label="Automation operations"></select></label><button type="button" id="flowAutomationSpec" aria-label="Automation specification" title="Automation inputs, callbacks and code">&lt;/&gt;</button></div>
+        <div id="flowDetailsNav" class="flow-toolbar" hidden><button type="button" data-flow-section="execution">Execution</button><button type="button" data-flow-section="definition">Flow</button></div>
+        <div id="flowReadingArea" class="flow-reading" data-context="hidden"><div class="flow-main">
+          <div id="flowParsedScroll" class="flow-scroll" tabindex="0" aria-label="Parsed history"><div id="flowParsedRows"></div></div>
+          <div id="flowAnalysisScroll" class="flow-scroll" tabindex="0" hidden aria-label="Analysis results"><div id="flowAnalysisRows"></div></div>
+          <div id="flowAutomationScroll" class="flow-scroll" tabindex="0" hidden aria-label="Automation operations"><div id="flowAutomationRows"></div></div>
+          <div id="flowDetailsScroll" class="flow-scroll" tabindex="0" hidden aria-label="Job and Flow details"><section id="flowExecutionSection" class="flow-section"><h3>Execution</h3><div id="flowExecutionFacts"></div><div id="flowPrioritySlot"></div></section><section id="flowDefinitionSection" class="flow-section"><h3>Flow</h3><div id="flowDefinitionFacts"></div></section></div>
+        </div></div>
+        <div id="flowStatus" class="flow-status" role="status" aria-live="polite"></div>
+      </section>
+      <div id="priorityHome" hidden><span id="flowPriorityHome"></span><div id="priorityEditor" hidden>
+        <button type="button" id="btnApplyPriority" onclick="openSelectedPriority()">Set pending priority…</button>
+        <span class="help-text">Higher priority dispatches first among eligible pending jobs.</span>
+      </div></div>
+      <div id="logView" class="log-view" role="tabpanel" aria-labelledby="analysisLogTab">
+        <div id="vscodeFindWidget" class="vscode-find-widget" role="search" aria-label="Find in log" hidden>
+          <div class="vscode-find-input-wrap">
+            <input id="analysisQuery" type="search" autocomplete="off" spellcheck="false" aria-label="Find in log" placeholder="Find…">
+            <label class="icon-toggle find-opt-btn" title="Match Case (Aa)"><input id="analysisCase" type="checkbox" aria-label="Match case"><span aria-hidden="true">Aa</span></label>
+            <label class="icon-toggle find-opt-btn" title="Match Whole Word (ab)"><input id="analysisWord" type="checkbox" aria-label="Match whole word"><span aria-hidden="true">ab</span></label>
+            <label class="icon-toggle find-opt-btn" title="Use Regular Expression (.*)"><input id="analysisRegex" type="checkbox" aria-label="Use regular expression"><span aria-hidden="true">.*</span></label>
+          </div>
+          <span id="analysisMatchCount" class="find-match-count" role="status" aria-live="polite"></span>
+          <button type="button" id="analysisFindPrev" class="icon-button" aria-label="Previous match" title="Previous match · Shift+Enter"><span data-wave-icon="arrow-up" aria-hidden="true"></span></button>
+          <button type="button" id="analysisFindNext" class="icon-button" aria-label="Next match" title="Next match · Enter"><span data-wave-icon="arrow-down" aria-hidden="true"></span></button>
+          <label class="icon-toggle find-opt-btn" title="Filter matching lines only"><input id="analysisFilterMode" type="checkbox" aria-label="Filter matching lines"><span data-wave-icon="list-filter" aria-hidden="true"></span></label>
+          <button type="button" id="btnCloseFind" class="icon-button" aria-label="Close find" title="Close find · Escape"><span data-wave-icon="close" aria-hidden="true"></span></button>
+        </div>
+        <section id="analysisPanel" class="analysis-panel" aria-label="Raw Log reader">
+          <div class="analysis-status-bar">
+            <div id="analysisStatus" class="analysis-status" role="status" aria-live="polite">Select a job to inspect its log.</div>
+            <button type="button" id="analysisCancel" class="analysis-cancel-btn" hidden disabled>Cancel</button>
+          </div>
+          <div id="logReadingArea" class="analysis-reading-area">
+            <div id="analysisRows" class="analysis-scroll" role="region" aria-label="Analysis records" tabindex="0"></div>
+            <aside id="analysisContext" class="analysis-context" hidden aria-label="Unfiltered log context">
+              <div id="analysisContextDivider" class="context-divider" role="separator" tabindex="0" aria-label="Resize original Log context" aria-orientation="vertical" aria-valuemin="15" aria-valuemax="85" aria-valuenow="44"></div>
+              <div class="analysis-context-header"><span id="analysisContextTitle" class="analysis-context-title">Original log context</span><button id="btnContextPosition" class="icon-button" type="button" onclick="toggleOriginalContextPosition()" aria-label="Move original Log below" title="Move original Log below"><span data-wave-icon="pane-below" aria-hidden="true"></span></button><button type="button" onclick="hideOriginalContext()" aria-label="Close original Log context" title="Close original context">×</button></div>
+              <div id="analysisContextRows" class="analysis-scroll" tabindex="0" aria-label="Unfiltered log context records"></div>
+            </aside>
+          </div>
+        </section>
+        <div id="retainedLogView" class="retained-log-view" hidden>
+        <div class="log-toolbar">
+          <div class="toolbar-group">
+            <span id="logCountInfo" class="help-text">0 lines</span>
+          </div>
+          <div class="toolbar-group">
+            <button type="button" id="btnClearHighlight" class="ghost" onclick="clearHighlight()" hidden>Clear Highlight</button>
+            <label><input type="checkbox" id="chkAutoScroll" checked> Auto-scroll</label>
+          </div>
+        </div>
+        <div class="log-box" id="logBox"></div>
+        </div>
+        <div id="attemptConsole" class="console-footer" title="Transport only; sending does not confirm tool execution. Closing this page leaves jobs running.">
+          <div class="stdin-row">
+            <span id="stdinTarget" class="stdin-prompt" title="Current job">stdin ›</span>
+            <input type="text" class="mono" id="stdinInput" autocomplete="off" spellcheck="false" aria-label="Text to selected job" placeholder="Send to stdin… (Enter · ↑↓ history)" onkeydown="handleStdinKey(event)">
+            <button type="button" id="btnSend" class="primary" onclick="sendStdinCommand()">Send ↵</button>
+            <div class="split-btn-group stdin-signal-group" id="stdinSignalGroup">
+              <button type="button" id="btnStdinCtrlC" data-single-action="interrupt" onclick="singleJobAction('interrupt', {silentSuccess: true})" title="Send Ctrl+C interrupt (POSIX SIGINT / Windows CTRL_BREAK)">Ctrl+C</button>
+              <details class="control-menu stdin-signal-menu" id="stdinSignalMenu">
+                <summary id="btnStdinSignalMenu" aria-label="More terminal keys and signals" title="More terminal keys and signals"><span data-wave-icon="chevron-down" aria-hidden="true"></span></summary>
+                <div class="control-popup stdin-signal-popup" id="stdinSignalPopup">
+                  <strong>Terminal keys</strong>
+                  <button type="button" id="btnSendEmptyEnter" onclick="sendStdinEmptyEnter()">Send Enter (↵)</button>
+                  <button type="button" id="btnSendCtrlD" onclick="sendStdinCtrlD()" hidden title="Send EOF (Ctrl+D) to interactive PTY">Ctrl+D (EOF)</button>
+                  <div id="stdinPosixSection" hidden>
+                    <hr>
+                    <strong>POSIX signals (process group)</strong>
+                    <div id="stdinPosixSignals"></div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="status-bar" aria-label="Workspace status">
+  <span id="tableInfo" class="help-text"></span>
+  <span id="statusActivity" class="help-text" role="status">Connecting to Wave…</span>
+  <button type="button" id="connectionNotice" class="status-warning" onclick="openModal('statusWarningOverlay')" hidden></button>
+  <span id="statusAnnouncement" class="sr-only" role="status"></span>
+  <div class="action-toast" id="actionToast" hidden>
+    <span id="toastText"></span>
+    <button type="button" class="icon-button" onclick="dismissFeedback()" aria-label="Dismiss action feedback" title="Dismiss"><span data-wave-icon="close" aria-hidden="true"></span></button>
+  </div>
+  <details class="control-menu status-stdin-menu" id="stdinHistoryMenu" hidden>
+    <summary id="btnStdinHistory" aria-label="Selected job stdin and signal history" title="Show stdin and signal history for selected job">Stdin history (0)</summary>
+    <div class="control-popup status-stdin-popup" id="stdinHistoryPopup">
+      <div class="status-stdin-head"><strong id="stdinHistoryTitle">Stdin history</strong><button type="button" id="btnClearStdinHistory" class="icon-button" onclick="clearSelectedStdinHistory()" aria-label="Clear stdin history" title="Clear stdin history"><span data-wave-icon="trash" aria-hidden="true"></span></button></div>
+      <div id="stdinHistoryList" class="status-stdin-list"></div>
+    </div>
+  </details>
+  <button type="button" id="btnLastReport" onclick="openModal('reportOverlay')" hidden>Report</button>
+</footer>
+<div class="overlay" id="statusWarningOverlay" hidden>
+  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="statusWarningTitle" tabindex="-1">
+    <div class="card-title"><span id="statusWarningTitle">Workspace warnings</span><button type="button" onclick="closeModal('statusWarningOverlay')">Close</button></div>
+    <div id="statusWarningText" class="error-text"></div>
+    <button type="button" id="btnAcknowledgeWarnings" onclick="acknowledgeWarnings()" hidden>Acknowledge notifications</button>
+  </div>
+</div>
+
+<!-- Unified Settings Dialog (Retention Policy & Display Preferences) -->
+<div class="overlay" id="settingsOverlay" hidden>
+  <div class="modal settings-modal card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1">
+    <div class="card-title">
+      <span id="settingsTitle">Wave Settings</span>
+      <button type="button" onclick="closeSettings()">Close</button>
+    </div>
+    <div id="settingsFeedback" class="settings-feedback" role="status" aria-live="polite"></div>
+    <div class="settings-nav" role="tablist" aria-label="Settings sections" onkeydown="settingsTabKey(event)">
+      <button type="button" id="btnSecRetention" role="tab" aria-selected="true" aria-controls="settingsSectionRetention" onclick="focusSettingsSection('retention')">Retention</button>
+      <button type="button" id="btnSecDisplay" role="tab" aria-selected="false" aria-controls="settingsSectionDisplay" tabindex="-1" onclick="focusSettingsSection('display')">Display</button>
+    </div>
+
+    <section class="settings-section" id="settingsSectionRetention" role="tabpanel" aria-labelledby="btnSecRetention">
+      <div class="settings-section-sub">
+        <div class="settings-row">
+          <label for="logRetentionInput" class="settings-label">Log lines in memory <button type="button" class="help-tip" aria-expanded="false" aria-controls="logRetentionHelpText" title="Maximum log lines kept in memory per attempt (default 10,000). Disk archive records and Run History are unaffected." aria-label="Log retention help">?</button></label>
+          <input id="logRetentionInput" aria-describedby="logRetentionInputError logRetentionHelpText" type="number" min="1" step="1" style="width:110px" placeholder="10000">
+          <select id="logRetentionScope" aria-label="Log retention target">
+            <option value="all">All jobs</option>
+            <option value="selected">Selected job</option>
+          </select>
+        </div>
+        <p id="logRetentionHelpText" class="help-text help-tip-panel" hidden>Maximum log lines kept in memory per attempt (default 10,000). Disk archive records and Run History are unaffected.</p>
+        <div id="logRetentionInputError" class="field-error error-text" role="alert" hidden></div>
+        <div id="retSelectedJobInfo" class="help-text"></div>
+        <div id="retBatchJobInfo" class="help-text"></div>
+      </div>
+      <div class="settings-section-sub">
+        <div class="settings-row">
+          <label for="maxHistoryInput" class="settings-label">Completed attempts in memory <button type="button" class="help-tip" aria-expanded="false" aria-controls="maxHistoryHelpText" title="Completed attempts retained in memory per job (default 20). The current attempt does not count. Disk archive records are unaffected." aria-label="History retention help">?</button></label>
+          <input id="maxHistoryInput" aria-describedby="maxHistoryInputError maxHistoryHelpText" type="number" min="1" step="1" style="width:110px" placeholder="20">
+        </div>
+        <p id="maxHistoryHelpText" class="help-text help-tip-panel" hidden>Completed attempts retained in memory per job (default 20). The current attempt does not count. Disk archive records are unaffected.</p>
+        <div id="maxHistoryInputError" class="field-error error-text" role="alert" hidden></div>
+        <div id="retHistoryInfo" class="help-text"></div>
+      </div>
+      <div class="settings-footer-row">
+        <button type="button" id="btnApplyRetention" class="primary" onclick="applyRetentionSettings()">Apply</button>
+      </div>
+    </section>
+
+    <section class="settings-section" id="settingsSectionDisplay" role="tabpanel" aria-labelledby="btnSecDisplay" hidden style="margin-bottom:0">
+      <div class="settings-row">
+        <label for="prefLogFontSize" class="settings-label">Log font size</label>
+        <input id="prefLogFontSize" type="number" min="9" max="20" step="1" style="width:72px" onchange="updateDisplayPrefsFromUI()">
+        <label class="settings-check"><input type="checkbox" id="prefLogWrap" onchange="updateDisplayPrefsFromUI()"><span>Wrap long lines</span></label>
+      </div>
+      <div class="settings-row">
+        <label for="prefLayoutMode" class="settings-label">Inspect layout</label>
+        <select id="prefLayoutMode" onchange="updateDisplayPrefsFromUI()">
+          <option value="split">Split (Left / Right)</option>
+          <option value="stack">Stack (Top / Bottom)</option>
+        </select>
+        <label for="prefSplitWidth">Split left %</label>
+        <input type="number" id="prefSplitWidth" min="20" max="80" step="1" style="width:62px" onchange="updateDisplayPrefsFromUI()">
+        <label for="prefStackHeight">Stack top %</label>
+        <input type="number" id="prefStackHeight" min="20" max="75" step="1" style="width:62px" onchange="updateDisplayPrefsFromUI()">
+      </div>
+      <div class="settings-footer-row">
+        <span id="displaySavedStatus" class="settings-saved-readout" role="status" aria-live="polite"></span>
+        <button type="button" id="btnResetDisplayPrefs" onclick="resetDisplayPreferences()">Reset</button>
+      </div>
+    </section>
+  </div>
+</div>
+<div class="overlay" id="priorityOverlay" hidden>
+  <div class="modal card priority-modal" role="dialog" aria-modal="true" aria-labelledby="priorityTitle" tabindex="-1">
+    <div class="card-title"><span id="priorityTitle">Set Priority</span><button type="button" onclick="closeModal('priorityOverlay')">Close</button></div>
+    <div id="priorityTargets" class="help-text"></div>
+    <label for="priorityValue">Priority</label>
+    <input type="number" id="priorityValue" step="1" min="-9007199254740991" max="9007199254740991" onkeydown="if(event.key==='Enter')applyPriority()">
+    <p class="help-text">Higher numbers dispatch first among eligible pending jobs; equal priorities keep queue order. Running jobs continue.</p>
+    <div id="priorityAvailability" class="help-text" role="status"></div>
+    <div id="priorityError" class="error-text" role="alert"></div>
+    <button type="button" id="priorityApply" class="primary" onclick="applyPriority()">Apply</button>
+  </div>
+</div>
+<div class="overlay" id="workOverlay" hidden>
+  <div class="modal card open-modal" role="dialog" aria-modal="true" aria-labelledby="workTitle" tabindex="-1">
+    <div class="card-title"><span id="workTitle">Open Workspace or Archive</span><button type="button" onclick="closeWorkFile()" aria-label="Close Open dialog">Close</button></div>
+    <div class="detail-tabs open-tabs" role="tablist" aria-label="Source type" onkeydown="switchOpenTab(event)">
+      <button id="openWorkTab" type="button" role="tab" aria-selected="true" aria-controls="openWorkPanel" onclick="setOpenMode('work')">Work File (.py)</button>
+      <button id="openLogsTab" type="button" role="tab" aria-selected="false" aria-controls="openLogsPanel" tabindex="-1" onclick="setOpenMode('logs')">Logs / Folder</button>
+      <button id="openArchiveTab" type="button" role="tab" aria-selected="false" aria-controls="openArchivePanel" tabindex="-1" onclick="setOpenMode('archive')">Archive (.sqlite3)</button>
+    </div>
+    <section id="openWorkPanel" class="open-panel" role="tabpanel" aria-labelledby="openWorkTab">
+      <p class="help-text">Load a trusted Python file that defines your jobs. Review the preview, then start the batch.</p>
+      <div class="path-row open-path-row">
+        <input type="text" class="mono" id="workPath" aria-describedby="workPathError" aria-label="Python work file path" placeholder="Python work file path" onkeydown="if(event.key==='Enter')loadWorkFile()">
+        <button type="button" onclick="browseFiles(undefined, 'work')"><span data-wave-icon="folder" aria-hidden="true"></span> Browse…</button>
+      </div>
+      <div id="workPathError" class="field-error error-text" role="alert" hidden></div>
+      <div id="recentWorkChipsWrap" class="recent-chips-wrap" hidden>
+        <span class="recent-chips-label">Recent work files</span>
+        <div id="recentWorkChips" class="recent-chips"></div>
+      </div>
+      <label class="recent-paths" id="recentWorkPathsLabel" hidden>Recent work files <select id="recentWorkPaths" onchange="useRecentPath('work')"></select></label>
+    </section>
+    <section id="openLogsPanel" class="open-panel" role="tabpanel" aria-labelledby="openLogsTab" hidden>
+      <div class="open-targets-head">
+        <span class="open-targets-title">Selected Files &amp; Folders <span id="logTargetCount" class="open-target-count"></span></span>
+        <div class="open-targets-actions">
+          <button type="button" onclick="browseFiles(undefined, 'logs')"><span data-wave-icon="folder" aria-hidden="true"></span> Browse…</button>
+          <button type="button" id="btnClearLogTargets" onclick="clearLogTargetsUi()" disabled>Clear</button>
+        </div>
+      </div>
+      <textarea id="logTargets" aria-describedby="logTargetsError" class="mono" rows="3" hidden oninput="renderLogTargets()"></textarea>
+      <div class="open-targets-box">
+        <ul id="logTargetList" class="open-target-list" aria-label="Selected targets" hidden></ul>
+        <div id="logTargetEmpty" class="help-text open-target-empty">No files or folders added yet. Use Browse… or add a path below.</div>
+      </div>
+      <div class="path-row open-add-row">
+        <input type="text" class="mono" id="logTargetAddInput" aria-describedby="logTargetsError" aria-label="Add log file or folder path" placeholder="Add file or folder path…" onkeydown="if(event.key==='Enter'){event.preventDefault();addLogTargetFromInput();}">
+        <button type="button" id="btnAddLogTarget" onclick="addLogTargetFromInput()"><span data-wave-icon="plus" aria-hidden="true"></span> Add</button>
+      </div>
+      <div id="logTargetsError" class="field-error error-text" role="alert" hidden></div>
+      <div id="recentLogChipsWrap" class="recent-chips-wrap" hidden>
+        <span class="recent-chips-label">Recent log paths</span>
+        <div id="recentLogChips" class="recent-chips"></div>
+      </div>
+      <label class="recent-paths" id="recentLogPathsLabel" hidden>Recent log paths <select id="recentLogPaths" onchange="useRecentPath('logs')"></select></label>
+      <div class="open-log-options">
+        <div class="open-mode-group">
+          <span class="open-field-label">Mode</span>
+          <div class="open-mode-pills" role="group" aria-label="Log read mode">
+            <button type="button" id="logsModeLiveBtn" class="open-pill active" aria-pressed="true" onclick="setLogsMode('live')">Live Watch</button>
+            <button type="button" id="logsModeStaticBtn" class="open-pill" aria-pressed="false" onclick="setLogsMode('static')">Static (Read once)</button>
+          </div>
+          <select id="logsMode" onchange="updateLogOptions()" hidden><option value="live">Live Watch</option><option value="static">Static (Read once)</option></select>
+        </div>
+        <label id="logStartLabel">Start position <select id="logStart"><option value="beginning">Beginning</option><option value="end">End</option></select></label>
+        <div id="logFolderOptions" class="open-folder-options" hidden>
+          <label>Glob <input id="logGlobs" class="mono" type="text" value="*.log" aria-describedby="logGlobHint logGlobsError" oninput="renderLogTargets()"></label>
+          <label class="open-recursive"><input id="logRecursive" type="checkbox" onchange="renderLogTargets()"> Recursive</label>
+        </div>
+      </div>
+      <div id="logGlobsError" class="field-error error-text" role="alert" hidden></div>
+      <p id="logGlobHint" class="help-text" hidden>Separate folder glob patterns with commas.</p>
+      <details class="open-flow-details">
+        <summary>Optional Flow analyzer (.py)</summary>
+        <div class="path-row" style="margin-top:6px">
+          <input id="logFlowPath" aria-describedby="logFlowPathError" class="mono" type="text" placeholder="Trusted Python Flow file">
+          <button type="button" onclick="browseFiles(undefined, 'flow')">Browse Flow…</button>
+          <button type="button" onclick="el('logFlowPath').value=''; fieldError(el('logFlowPath')); el('logFlowPath').focus()">Clear Flow</button>
+        </div>
+        <div id="logFlowPathError" class="field-error error-text" role="alert" hidden></div>
+      </details>
+    </section>
+    <section id="openArchivePanel" class="open-panel" role="tabpanel" aria-labelledby="openArchiveTab" hidden>
+      <p class="help-text">Open a saved SQLite archive in read-only mode to inspect Raw Log, Parsed, Results, and Charts.</p>
+      <div id="archiveBusyHint" class="archive-busy-hint" hidden>
+        <div class="archive-busy-title"><span data-wave-icon="alert-triangle" aria-hidden="true"></span> An active batch is unfinished</div>
+        <p class="help-text">Switching archives here is blocked so the running batch is not interrupted. Inspect the archive in a separate browser tab instead:</p>
+        <div class="archive-cli-row">
+          <code id="archiveOpenCliCmd" class="mono"></code>
+          <button type="button" id="btnCopyArchiveCmd" onclick="copyArchiveOpenCmd()"><span data-wave-icon="copy" aria-hidden="true"></span> Copy</button>
+        </div>
+      </div>
+      <div class="path-row open-path-row">
+        <input type="text" class="mono" id="archivePath" aria-describedby="archivePathError" aria-label="Saved SQLite archive path" placeholder="Saved archive (.sqlite3) path" oninput="updateArchiveCliHint()" onkeydown="if(event.key==='Enter')openArchiveFile()">
+        <button type="button" onclick="browseFiles(undefined, 'archive')"><span data-wave-icon="folder" aria-hidden="true"></span> Browse…</button>
+      </div>
+      <div id="archivePathError" class="field-error error-text" role="alert" hidden></div>
+      <div id="recentArchiveChipsWrap" class="recent-chips-wrap" hidden>
+        <span class="recent-chips-label">Recent opened archives</span>
+        <div id="recentArchiveChips" class="recent-chips"></div>
+      </div>
+      <label class="recent-paths" id="recentArchivePathsLabel" hidden>Recent opened archives <select id="recentArchivePaths" onchange="useRecentPath('archive')"></select></label>
+      <div class="archive-recent-wrap" id="archiveRecentWrap">
+        <div class="open-targets-head">
+          <span class="open-targets-title">Recent Archives <span id="archiveRecentCount" class="open-target-count"></span></span>
+          <button type="button" id="btnRefreshArchiveCatalog" onclick="loadRecentArchives()"><span data-wave-icon="reload" aria-hidden="true"></span> Refresh</button>
+        </div>
+        <div id="archiveRecentList" class="archive-recent-list"></div>
+      </div>
+    </section>
+    <p class="help-text open-modal-hint">Relative paths use Wave's launch directory. Stop active jobs or watches before switching workspaces.</p>
+    <div id="loadError" class="error-text" role="alert"></div>
+    <div class="open-modal-footer">
+      <button type="button" onclick="closeWorkFile()">Cancel</button>
+      <button type="button" id="btnLoadFile" class="primary" onclick="loadWorkFile()" disabled>Load &amp; Preview</button>
+      <button type="button" id="btnLoadLogs" class="primary" onclick="loadLogsSource()" disabled hidden>Load &amp; Preview Logs</button>
+      <button type="button" id="btnOpenArchive" class="primary" onclick="openArchiveFile()" disabled hidden>Open Archive (Read-Only)</button>
+    </div>
+  </div>
+</div>
+<div class="overlay fb-overlay" id="fileBrowserOverlay" hidden onmousedown="handleFileBrowserOverlayMouseDown(event)">
+  <div id="fileBrowser" class="modal card fb-modal" role="dialog" aria-modal="true" aria-labelledby="browseTitle" tabindex="-1" hidden>
+    <div class="card-title fb-titlebar">
+      <span id="browseTitle">Browse Files</span>
+      <button type="button" onclick="hideFileBrowser()" aria-label="Close file browser">Close</button>
+    </div>
+    <div class="fb-toolbar">
+      <div class="fb-nav-btns" role="group" aria-label="Folder navigation">
+        <button type="button" id="btnBrowseBack" class="fb-icon-btn" onclick="browseBack()" title="Back" aria-label="Back" disabled><span data-wave-icon="arrow-left" aria-hidden="true"></span></button>
+        <button type="button" id="btnBrowseForward" class="fb-icon-btn" onclick="browseForward()" title="Forward" aria-label="Forward" disabled><span data-wave-icon="arrow-right" aria-hidden="true"></span></button>
+        <button type="button" id="btnBrowseParent" class="fb-icon-btn" onclick="browseParent()" title="Up one folder (Backspace)" aria-label="Up one folder" disabled><span data-wave-icon="arrow-up" aria-hidden="true"></span></button>
+        <button type="button" id="btnBrowseRefresh" class="fb-icon-btn" onclick="refreshBrowseFiles()" title="Refresh folder" aria-label="Refresh folder"><span data-wave-icon="reload" aria-hidden="true"></span></button>
+      </div>
+      <div id="browseAddressBar" class="fb-address-bar">
+        <div id="browseBreadcrumbsWrap" class="fb-breadcrumbs-wrap" onclick="if(event.target===this||event.target===el('browseBreadcrumbs'))toggleBrowsePathEdit(true)">
+          <span class="fb-addr-icon" data-wave-icon="folder" aria-hidden="true"></span>
+          <nav id="browseBreadcrumbs" class="fb-breadcrumbs" aria-label="Folder breadcrumbs"></nav>
+          <button type="button" id="btnToggleBrowseEdit" class="ghost fb-edit-path-btn" onclick="toggleBrowsePathEdit(true)" title="Edit path" aria-label="Edit path"><span data-wave-icon="edit" aria-hidden="true"></span></button>
+        </div>
+        <div id="browsePathWrap" class="fb-path-edit" hidden>
+          <span class="fb-addr-icon" data-wave-icon="folder" aria-hidden="true"></span>
+          <input type="text" class="mono" id="browsePath" autocomplete="off" spellcheck="false" aria-describedby="browsePathError" aria-label="Browse directory" onkeydown="handleBrowsePathKey(event)">
+          <button type="button" id="btnClearBrowsePath" class="ghost fb-clear-path-btn" onmousedown="event.preventDefault()" onclick="clearBrowsePathInput()" title="Clear path" aria-label="Clear path"><span data-wave-icon="close" aria-hidden="true"></span></button>
+        </div>
+      </div>
+      <input type="search" id="browseFilterInput" class="fb-filter-input" autocomplete="off" spellcheck="false" aria-label="Filter files in folder" placeholder="Search folder…" oninput="setBrowseFilter(this.value)">
+    </div>
+    <div id="browsePathError" class="field-error error-text" role="alert" hidden></div>
+    <div class="fb-body">
+      <aside id="browseShortcuts" class="fb-sidebar" aria-label="Quick places"></aside>
+      <div class="fb-main">
+        <div id="browseListScroll" class="fb-list-scroll">
+          <div id="browseSortBar" class="fb-head">
+            <span id="browseCheckColHead" class="fb-col-check" hidden></span>
+            <button type="button" class="fb-sort-btn fb-col-name" data-sort="name" onclick="setBrowseSort('name')">Name</button>
+            <button type="button" class="fb-sort-btn fb-col-mtime" data-sort="mtime" onclick="setBrowseSort('mtime')">Modified</button>
+            <button type="button" class="fb-sort-btn fb-col-size" data-sort="size" onclick="setBrowseSort('size')">Size</button>
+          </div>
+          <div id="fileList" class="file-list fb-list" tabindex="0" onkeydown="handleFileListKey(event)"></div>
+        </div>
+      </div>
+    </div>
+    <div class="fb-footer">
+      <span id="browseSelectionStatus" class="help-text fb-status"></span>
+      <div class="fb-footer-actions">
+        <button type="button" id="btnAddFolder" onclick="addBrowsedFolder()" hidden>+ Add Current Folder</button>
+        <button type="button" id="btnAddSelectedLogs" class="primary" onclick="addSelectedBrowsedEntries()" hidden>Add Selected</button>
+        <button type="button" id="btnSelectBrowseFile" class="primary" onclick="confirmBrowseSelection()" hidden>Select File</button>
+        <button type="button" onclick="hideFileBrowser()">Cancel</button>
+      </div>
+    </div>
+    <div class="fb-resize fb-resize-n" data-fb-resize="n" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-s" data-fb-resize="s" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-e" data-fb-resize="e" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-w" data-fb-resize="w" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-ne" data-fb-resize="ne" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-nw" data-fb-resize="nw" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-se" data-fb-resize="se" aria-hidden="true"></div>
+    <div class="fb-resize fb-resize-sw" data-fb-resize="sw" aria-hidden="true"></div>
+  </div>
+</div>
+<div class="overlay" id="reportOverlay" hidden>
+  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="reportTitle" tabindex="-1">
+    <div class="card-title"><span id="reportTitle">Action Report</span><button type="button" onclick="closeModal('reportOverlay')">Close</button></div>
+    <div id="actionReport"></div>
+    <button type="button" onclick="acknowledgeReports()">Acknowledge reports</button>
+  </div>
+</div>
+<div class="overlay" id="archiveOverlay" hidden>
+  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="archiveTitle" tabindex="-1">
+    <div class="card-title"><span id="archiveTitle">Run history — read only</span><button type="button" onclick="closeModal('archiveOverlay')">Close</button></div>
+    <p class="help-text">Runs for this workspace. Viewing a saved attempt never restores or controls a process.</p>
+    <div class="form-field"><label for="archiveRun">Run</label><select id="archiveRun" disabled onchange="RunHistory.listAttempts()"></select></div>
+    <button type="button" id="archiveEarlierRuns" disabled onclick="RunHistory.listRuns(true)">Earlier runs</button>
+    <div class="form-field"><label for="archiveAttempt">Attempt</label><select id="archiveAttempt" disabled></select></div>
+    <button type="button" id="archiveEarlierAttempts" disabled onclick="RunHistory.listAttempts(true)">Earlier attempts</button>
+    <button type="button" id="archiveViewAttempt" disabled class="primary" onclick="RunHistory.viewAttempt()">View attempt</button>
+    <div id="archiveError" class="error-text" role="alert"></div>
+  </div>
+</div>
+<div class="overlay" id="jobPickerOverlay" hidden>
+  <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="jobPickerTitle" tabindex="-1">
+    <div class="card-title"><span id="jobPickerTitle">Choose a job</span><button type="button" onclick="closeModal('jobPickerOverlay')">Close</button></div>
+    <input id="jobPickerSearch" type="search" aria-label="Find a job by name" placeholder="Find a job…" oninput="renderJobPicker()" onkeydown="jobPickerKey(event)">
+    <div id="jobPickerList" class="job-picker-list" role="group" aria-label="Jobs"></div>
+    <div id="jobPickerStatus" class="help-text" role="status"></div>
+  </div>
+</div>
+<script src="/icons.js"></script>
+<div class="overlay" id="flowSpecOverlay" hidden><div class="modal card" role="dialog" aria-modal="true" aria-labelledby="flowSpecTitle" tabindex="-1"><div class="card-title"><span id="flowSpecTitle">Specification</span><div class="modal-title-actions"><span id="flowSpecCopyStatus" class="flow-copy-status" role="status" aria-live="polite"></span><button type="button" id="btnCopyFlowSpec" class="ghost" onclick="copyFlowSpecCode()" aria-label="Copy content" title="Copy content to clipboard"><span data-wave-icon="copy" aria-hidden="true"></span><span>Copy</span></button><button type="button" onclick="closeModal('flowSpecOverlay')">Close</button></div></div><div id="flowSpecFacts"></div><pre id="flowSpecCode" class="flow-spec-code"></pre><div id="flowSpecMore"></div></div></div>
+<div class="overlay" id="flowReportOverlay" hidden><div class="modal card" role="dialog" aria-modal="true" aria-labelledby="flowReportTitle" tabindex="-1"><div class="card-title"><span id="flowReportTitle">Find Report</span><button type="button" onclick="closeModal('flowReportOverlay')">Close</button></div><label for="flowReportName">Report name</label><div class="flow-report-entry"><input id="flowReportName" type="search" placeholder="Find or enter exact name" aria-label="Report name"><button id="flowReportApply" type="button">Apply</button></div><div id="flowReportNames" class="flow-report-options"></div><small id="flowReportHint" class="help-text">Choose a published name or enter an exact name.</small></div></div>
+<script src="/history.js"></script>
+<script src="/analysis.js"></script>
+<script src="/reading.js"></script>
+<script src="/jobs.js"></script>
+<script src="/flow.js"></script>
+<script src="/charts.js"></script>
+<script src="/app.js"></script></body></html>

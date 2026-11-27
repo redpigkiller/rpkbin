@@ -1,131 +1,144 @@
-# Wave 快速入門：第一次完成一批工作
+# rpkbin.wave
 
-[English](../../en/wave/README.md) · [文件導覽](../README.md)
+結合 Python 工作排程、即時記錄檔解析、波形圖表檢視與 SQLite 封存資料庫的執行環境。
 
-Wave 是一個以 Python 定義外部命令、統一負責排程、即時輸出過濾與驗收判定的工具。無論是透過終端機批次執行（Headless），或是透過本機瀏覽器介面（Web GUI）監看與操作，都**使用同一份 Python 工作定義檔**。
-
-本指南將帶你走過第一次完成一批工作的完整流程。
-
----
-
-## 步驟 1：建立工作定義檔 (`work.py`)
-
-在工作目錄下建立一個名為 `work.py` 的檔案。
-
-工作定義檔的職責是宣告工作（`Job`）與監控規則，並將它們加入管理器（`JobManager`）。**不要在工作檔中呼叫 `start()` 或 `wait()`**，派發的時機由 Wave 執行入口決定。
-
-```python
-"""work.py — 定義兩個標準的模擬示範工作。"""
-import sys
-from rpkbin.wave import Job, JobManager, Expect
-
-# 1. 建立管理器：限制最多同時執行 2 個工作
-mgr = JobManager(max_workers=2)
-
-# 2. 定義第一個工作：正常通過的模擬工作
-# 這裡使用 Python 內建指令模擬外部 EDA/編譯工具輸出
-job1 = mgr.add(Job(
-    "sim_core",
-    [sys.executable, "-u", "-c", "import time; print('START', flush=True); time.sleep(0.5); print('ALL_TESTS_PASSED', flush=True)"]
-))
-# 宣告檢查條件：日誌中必須出現 ALL_TESTS_PASSED，且程序退出碼為 0 才算 PASS
-job1.check("marker", match=r"^ALL_TESTS_PASSED$", expect=Expect.PRESENT)
-
-# 3. 定義第二個工作：模擬另一個子系統
-job2 = mgr.add(Job(
-    "sim_dma",
-    [sys.executable, "-u", "-c", "import time; print('START', flush=True); time.sleep(0.3); print('ALL_TESTS_PASSED', flush=True)"]
-))
-job2.check("marker", match=r"^ALL_TESTS_PASSED$", expect=Expect.PRESENT)
-```
-
-> [!TIP]
-> 子程序建議使用無緩衝輸出（如 Python 的 `-u` 參數或 `print(..., flush=True)`），以確保 Wave 能即時接收每行日誌並進行判定。
-
----
-
-## 步驟 2 方式 A：以命令列批次執行（Headless 模式）
-
-若你想在終端機或 CI/CD 流程中自動化執行，請加上 `--headless` 參數：
-
-```bash
-rpk-wave work.py --headless
-```
-
-### 預期終端機輸出
-
-執行時終端機會即時串流各工作的日誌，所有工作完成並排空清理後，會輸出最終摘要表格：
-
-```text
-[Wave] Starting 2 job(s); workers=2
-[child sim_core #1] START
-[child sim_dma #1] START
-[child sim_dma #1] ALL_TESTS_PASSED
-[child sim_core #1] ALL_TESTS_PASSED
-
-[Wave] Final summary
-JOB                        STATE           RESULT       WARNINGS  EXIT
-sim_core                   DONE            PASS         0         0
-  checks: marker: OK
-sim_dma                    DONE            PASS         0         0
-  checks: marker: OK
-```
-
-### 結果說明與退出碼
-
-- **STATE**：表示子程序執行狀態（`DONE` 代表程序正常退出）。
-- **RESULT**：表示業務驗收結果（`PASS` 代表所有宣告的 checks 皆達成，且程序退出碼為 0）。
-- **退出碼**：當所有工作的 Result 皆為 `PASS` 或 `N/A` 時，命令退出碼為 `0`；若有任何工作為 `FAIL`、`ERROR` 或 `INCOMPLETE`，退出碼為 `1`。
-
----
-
-## 步驟 2 方式 B：以 Web GUI 介面執行
-
-若你想在圖形介面中觀察進度、檢視即時日誌或動態控制，不加 `--headless` 即可啟動本機 GUI：
+## 語法
 
 ```bash
 rpk-wave work.py
+rpk-wave work.py --headless
+rpk-wave logs sim.log --once --flow parse_flow.py
 ```
 
-終端機會顯示啟動位址，並自動在瀏覽器中開啟：
+```python
+from rpkbin.jobcore import Job
+from rpkbin.wave import WaveWorkspace, launch, run_headless
+
+ws = WaveWorkspace()
+ws.add(Job("build", ["python", "-V"]))
+run_headless(ws)   # 終端機無頭執行
+launch(ws)         # 開啟本機網頁介面
+```
+
+## 說明
+
+`rpkbin.wave` 在單一工作區中串接四項能力：
+
+1. 工作定義與排程控制（`Job`、`JobManager`、資源分配、`HELD` 暫緩排除與優先排序）。
+2. 逐行串流解析、分析與自動化回應（`Flow`、`Parser`、`Analyzer`、`Automation`、`ViewSpec`）。
+3. 本機網頁圖形介面監控與除錯（佇列操作、限定範圍的記錄搜尋、解析檢視、波形與 XY 圖表）。
+4. 寫入 SQLite 封存資料庫（`RunArchive`），支援保留模式（`persist`、`keep_on_fail`、`ephemeral`）、NFS 本機暫存分段與離線重析（`reanalyze`）。
+
+未傳入 `--headless` 時，網頁伺服器預設會以預覽模式啟動，讓您先檢查工作內容、調整設定或移除不想執行的項目，按下啟動按鈕後才會建立子程序。
+
+## 範例
+
+### 1. 最小範例
+
+在暫存封存目錄中執行單一有限工作，並印出回傳碼與封存處置結果：
+
+```python
+import sys
+import tempfile
+from pathlib import Path
+
+from rpkbin.jobcore import Job
+from rpkbin.wave import WaveWorkspace, run_headless
+
+with tempfile.TemporaryDirectory() as tmp:
+    ws = WaveWorkspace(archive_dir=Path(tmp) / "archives")
+    ws.add(Job("hello", [sys.executable, "-c", "print('wave ready')"]))
+    rc = run_headless(ws)
+    health = dict(ws.archive_health)
+    ws.close()
+    print("rc:", rc, "status:", health["status"], "disposition:", health["disposition"])
+```
+
+輸出（Wave 摘要表之後）：
 
 ```text
-[Wave] GUI: http://127.0.0.1:54321 (Ctrl+C shuts down the core; closing the page does not)
+rc: 0 status: closed disposition: saved
 ```
 
-### GUI 操作三步驟
+### 2. 進階範例
 
-1. **檢查預覽（Preview）**：
-   - 載入工作檔後，狀態列會顯示 `Preview — review, then Start.`。此時排程器**尚未開始執行任何子程序**。
-   - 左側工作表格會列出剛定義的 `sim_core` 與 `sim_dma`，狀態皆為 `PENDING`（等待派發）。
-2. **點擊 Start 開始派發**：
-   - 點擊頂部工具列綠色的 **Start (2)** 按鈕。
-   - 核心開始派發工作，狀態轉為 `RUNNING`。
-3. **監看與檢查結果**：
-   - 點擊左側表格中的工作名稱，右側 Log 區域會即時更新該工作的輸出。
-   - 工作完成後，左側表格的 **State** 欄位變為 `DONE`，**Result** 欄位變為綠色 `PASS`。
-   - 雙擊工作列或點擊右側的 **Details** 分頁，可以查看檢查項目 `marker: OK` 的達成細節與行號證據。
+替兩項工作掛上包含 `Parser` 與 `Analyzer` 的 `Flow`，無頭執行後從 `RunArchive` 讀取分析結果報表：
 
----
+```python
+import re
+import sys
+import tempfile
+from pathlib import Path
 
-## 核心認知與重要邊界
+from rpkbin.flow import AnalysisReport, Analyzer, Binding, Flow, Parser
+from rpkbin.jobcore import Job
+from rpkbin.wave import RunArchive, WaveWorkspace, run_headless
 
-1. **預覽與派發分離**：
-   - 載入 Python 工作定義檔時，Wave 會在定義作用域（`definition_scope`）內執行檔案以收集工作與驗證參數。此作用域僅攔截工作檔內誤呼叫 `start()` 或 `resume()`，以一般 Python 使用者權限執行，並非抵禦惡意程式碼的安全沙盒。載入後排程器不會自動啟動程序，必須明確點擊 GUI 的 **Start** 或由 `--headless` 命令啟動，工作才會開始派發。
-2. **關閉瀏覽器 vs. 關閉核心**：
-   - 關閉瀏覽器分頁**不會**終止背後執行的工作。核心仍在本機背景持續運行與記錄。
-   - 重新打開網址即可繼續監看。若要徹底停止核心與所有子程序，請在啟動它的終端機按下 `Ctrl+C`。
-3. **程序退出 0 不等於 PASS**：
-   - 子程序 exit code 0 僅代表程序正常結束（`State=DONE`）。
-   - 若有 check 未滿足（例如漏印了特定文字），即使程序退出碼是 0，`Result` 依然是 `FAIL`！
-   - 若未設定任何 check，且正常結束，`Result` 會是 `N/A`。
+WARN_RE = re.compile(r"WARN\s+(.+)")
 
----
+def parse_line(line, ctx):
+    m = WARN_RE.search(line)
+    if m:
+        return {"warn": m.group(1)}
 
-## 下一步
+def on_warn(rec, ctx):
+    ctx.state["count"] = ctx.state.get("count", 0) + 1
 
-現在你已掌握最基礎的工作執行流程，請繼續參閱：
+def on_finish(info, ctx):
+    count = ctx.state.get("count", 0)
+    status = "FAIL" if count > 0 else "PASS"
+    return AnalysisReport("warn_check", result=status, reason=f"{count} warnings", values={"count": count})
 
-- **[由淺入深的 Python 使用情境](scenarios.md)**：學習如何組合多個 checks、設定警告（warnings）、擷取動態資料（track）、送出文字與訊號、設定資源配額與自動重試。
-- **[Web GUI 操作指南](gui.md)**：深入學習多工作篩選、批次控制、群發文字，以及 Settings 面板的使用。
-- **[Python API 參考手冊](reference/python.md)**：查閱各函式與類別的完整簽名與規格。
+log_scan = Parser("log_scan", parse_line)
+checker = Analyzer("checker", records=(Binding(log_scan, on_warn),), on_finish=on_finish)
+flow = Flow("lint_flow", parsers=(log_scan,), analyzers=(checker,))
+
+with tempfile.TemporaryDirectory() as tmp:
+    ws = WaveWorkspace(archive_dir=Path(tmp) / "archives")
+    ws.add(Job("clean", [sys.executable, "-c", "print('OK done')"]), flow=flow)
+    ws.add(Job("noisy", [sys.executable, "-c", "print('WARN clock skew')"]), flow=flow)
+    rc = run_headless(ws)
+    db_path = Path(ws.archive_health["path"])
+    ws.close()
+
+    with RunArchive(db_path) as ar:
+        for att in sorted(ar.attempts()["rows"], key=lambda r: r["name"]):
+            latest = ar.flow_latest(att["id"], att["attempt_id"], stage="analyzer", report_name="warn_check")
+            rep = latest["rows"][0]["data"]
+            print(att["name"], rep["result"], rep["values"]["count"])
+    print("batch rc:", rc)
+```
+
+輸出（Wave 摘要表之後）：
+
+```text
+clean PASS 0
+noisy FAIL 1
+batch rc: 0
+```
+
+## 文件導覽
+
+| 文件 | 涵蓋主題 |
+| --- | --- |
+| [系統架構](architecture.md) | 資料流、執行緒分工、預覽與執行狀態、本機安全邊界 |
+| [Flow 分析管線](flow.md) | `Parser`、`Analyzer`、`Automation`、`ViewSpec` 圖表與 `FlowSession` 離線測試 |
+| [網頁圖形介面](gui.md) | 版面模式、佇列暫緩與排序、Flow/Log 檢視器與波形操作快捷鍵 |
+| [歷史與封存機制](history.md) | 封存檔名格式、保留策略、NFS 暫存分段、自動過期清理與 `RunArchive` 查詢 |
+| [情境與工作流範例](scenarios.md) | 模擬批次、互動提示處理、`logs`/`reanalyze` 流程與保留策略設定 |
+| [疑難排解](troubleshooting.md) | 常見異常現象、成因診斷與排解方式 |
+| [命令列參考](reference/cli.md) | CLI 旗標、`RPK_WAVE_*` 環境變數與結束代碼 |
+| [Python API 參考](reference/python.md) | 類別、函式簽章、預設值與本機 HTTP 端點 |
+
+## 注意事項與限制
+
+- **受信任的工作檔**：載入 `.py` 工作檔會執行其中的頂層 Python 程式碼。若只需唯讀檢視外部記錄，請改以 `--archive <file>.sqlite3` 開啟。
+- **PTY 與管線差異**：在 POSIX 系統中，`Job` 預設啟用 PTY（`pty=True`）；Windows 則預設使用管線（`pty=False`）。在管線下緩衝標準輸出的互動程式，可能需要適時 flush 或搭配 `prompts` 觸發即時輸出。
+- **僅限本機繫結**：`WaveServer` 只允許繫結 loopback 位址（`127.0.0.1`、`localhost`、`::1`）。若需遠端存取，請透過 SSH 連接埠轉送使用。
+
+## 另請參閱
+
+- [JobCore 文件](../jobcore/README.md)
+- [Flow 文件](../flow/README.md)
+- [rpk-wave 命令列參考](reference/cli.md)
+- [Python API 參考](reference/python.md)

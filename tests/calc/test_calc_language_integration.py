@@ -9,13 +9,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from rpkbin.calc.controller import CalcController
-from rpkbin.calc.core import CalcConfig, WorkspaceSession
-from rpkbin.calc.core.config import KERNEL_CONFIG_FIELDS
-from rpkbin.calc.ui.app import CalcMainWindow
-from rpkbin.calc.ui.i18n import STRINGS, t
-from rpkbin.calc.ui.settings_dialog import SettingsDialog
-from rpkbin.calc.ui.translations import app, console, inspector, matrix, settings, workspace
+from rpkbin.app.calc.controller import CalcController
+from rpkbin.app.calc.core import CalcConfig, WorkspaceSession
+from rpkbin.app.calc.core.config import KERNEL_CONFIG_FIELDS
+from rpkbin.app.calc.ui.studio_window import CalcMainWindow
+from rpkbin.app.calc.ui.i18n import STRINGS, t
+from rpkbin.app.calc.ui.settings_dialog import SettingsDialog
+from rpkbin.app.calc.ui.translations import app, console, inspector, matrix, settings, workspace
 
 
 def test_catalog_templates_preserve_every_parameter_and_shared_key():
@@ -87,7 +87,7 @@ def test_checkbox_indicator_changes_visibly_when_toggled(window, theme):
     dialog.tabs.setCurrentIndex(2)
     dialog.show()
     qt.processEvents()
-    checkbox = dialog._group_checks["basic_math"]
+    checkbox = dialog._group_checks["math"]
     checkbox.setChecked(False)
     qt.processEvents()
     unchecked = checkbox.grab().toImage()

@@ -1,6 +1,6 @@
 # Third-party notices
 
-The SVG geometry embedded in `rpkbin/calc/ui/icons.py` includes adapted Feather
+The SVG geometry embedded in `rpkbin/app/calc/ui/icons.py` includes adapted Feather
 and Lucide designs, including the copy/reset/settings and pin icons. The rendering
 code and other project code remain under this project's MIT license. The original
 icon copyright and permission notices follow.
@@ -51,3 +51,5 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The standalone Wave toolbar in `rpkbin/wave/icons.js` also reuses adapted Feather and Lucide SVG geometry; the notices above apply.

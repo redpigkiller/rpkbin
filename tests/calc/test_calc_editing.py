@@ -1,13 +1,13 @@
 """Headless user contracts for bounded edits and explicit array operations."""
 
 from fractions import Fraction
-from rpkbin.calc.core.config import CalcConfig
+from rpkbin.app.calc.core.config import CalcConfig
 
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import WorkspaceSession
-from rpkbin.calc.core.editing import (
+from rpkbin.app.calc.core import WorkspaceSession
+from rpkbin.app.calc.core.editing import (
     EditJournal,
     conversion_preview,
     native_integer_bits,
@@ -15,7 +15,7 @@ from rpkbin.calc.core.editing import (
     selection_grid,
     selection_statistics,
 )
-from rpkbin.calc.core.fxp_model import make_fxp
+from rpkbin.app.calc.core.fxp_model import make_fxp
 
 
 @pytest.fixture

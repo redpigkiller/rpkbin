@@ -49,6 +49,14 @@ def infer(data, *, report: bool = False, compress: str | None = "auto",
 def _infer_columns(names, cols, with_report: bool = False, *, compress: str | None = "auto",
                    embed_schema: bool = True, optimize: bool = True):
     """Infer from already normalized columns; keep the historical positional arg."""
+    chosen_schema, rep, _ = _infer_columns_with_blob(
+        names, cols, compress=compress, embed_schema=embed_schema, optimize=optimize,
+    )
+    return (chosen_schema, rep) if with_report else chosen_schema
+
+
+def _infer_columns_with_blob(names, cols, *, compress: str | None = "auto",
+                             embed_schema: bool = True, optimize: bool = True):
     codec = _compress.resolve(compress)
     chosen, rep = [], {}
     for name in names:
@@ -65,16 +73,16 @@ def _infer_columns(names, cols, with_report: bool = False, *, compress: str | No
 
     baseline = Schema(*chosen)
     if optimize:
-        chosen_schema = _optimize_schema(names, cols, rep, baseline, codec, embed_schema)
+        chosen_schema, packed = _optimize_schema(names, cols, rep, baseline, codec, embed_schema)
     else:
-        chosen_schema = baseline
-    return (chosen_schema, rep) if with_report else chosen_schema
+        chosen_schema, packed = baseline, None
+    return chosen_schema, rep, packed
 
 
 def _measure(col: Column, values: list) -> int | None:
     """Fast per-column baseline score: zlib level 9, with no embedded schema."""
     try:
-        payload = _encode_payload([col.name], {col.name: values}, len(values),
+        payload = _encode_payload({col.name: values}, len(values),
                                   Schema(col), embed=False, warn=False)
     except (ValueError, TypeError):
         return None  # candidate doesn't fit this data
@@ -132,19 +140,23 @@ def _optimize_schema(names, cols, report, baseline, codec, embed_schema):
     ]
     add(no_category)
 
-    # Baseline is intentionally first, so stable min preserves it on ties.
-    measured = []
+    # Baseline is intentionally first, so strictly-< preserves it on ties.
+    best: tuple[int, Schema, int, bytes] | None = None
+    n_rows = len(next(iter(cols.values())))
     for schema in candidates:
         try:
-            payload = _encode_payload(names, cols, len(next(iter(cols.values()))), schema,
-                                      embed=embed_schema, warn=False)
-            size = 5 + len(_compress.compress(payload, codec))
+            payload = _encode_payload(cols, n_rows, schema, embed=embed_schema, warn=False)
+            compressed = _compress.compress(payload, codec)
         except (ValueError, TypeError):
             # Invalid float widths and other non-fitting proposals are not
             # choices; the baseline remains measured and valid.
             continue
-        measured.append((schema, size))
-    return min(measured, key=lambda item: item[1])[0] if measured else baseline
+        size = 5 + len(compressed)
+        if best is None or size < best[0]:
+            best = (size, schema, len(payload), compressed)
+    if best is None:
+        return baseline, None
+    return best[1], (best[2], best[3])
 
 
 def _best(results, predicate):
@@ -218,9 +230,17 @@ def explain(data, schema: Schema | None = None, *, compress: str | None = "auto"
     """Return a table showing each column's isolated size and table total."""
     names, cols, n = _to_columns(data, schema.names if schema is not None else None)
     codec = _compress.resolve(compress)
+    packed = None
     if schema is None:
-        schema = _infer_columns(names, cols, compress=compress, embed_schema=False)
-    total = len(pack(cols, schema, embed_schema=False, compress=compress))
+        if n == 0 or not names:
+            raise ValueError("Can't infer a schema from an empty table")
+        schema, _, packed = _infer_columns_with_blob(
+            names, cols, compress=compress, embed_schema=False,
+        )
+    if packed is not None:
+        total = 5 + len(packed[1])
+    else:
+        total = len(pack(cols, schema, embed_schema=False, compress=compress))
 
     sizes = [
         len(pack({c.name: cols[c.name]}, Schema(c), embed_schema=False, compress=compress))

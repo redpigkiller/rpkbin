@@ -1,34 +1,46 @@
-# TablePack 快速入門：把表格變成緊湊的位元組並還原
+# `rpkbin.tablepack`
 
-[English](../../en/tablepack/README.md) · [文件導覽](../README.md) · [情境教學](scenarios.md) · [API 參考](reference.md)
+[English](../../en/tablepack/README.md) · [文件導覽](../README.md) · [實戰使用情境](scenarios.md) · [API 參考手冊](reference.md)
 
-TablePack (`rpkbin.tablepack`) 能把一張表格（由 dict 組成的 list）打包成很小的 `bytes`，並且完整還原。
+`rpkbin.tablepack` 依據有型別的欄位 schema，將資料列（`list[dict]`）或欄式序列（`dict[str, sequence]`）編碼為緊湊的 `bytes` blob，並完整還原原始數值。
 
-它解決的問題是：**你有規律、重複性高的表格資料（暫存器表、測試向量、查找表、日誌），想緊湊地儲存或傳遞，卻不想每換一種欄位格式就手寫一份二進位編解碼器。** 你只需描述一次每個欄位（或讓 TablePack 自動推斷），其餘的位元層級打包由函式庫決定。
-
-和 MapBV 一樣，它是純函式庫，不會開啟任何檔案。你把資料列（來自 Excel、CSV、資料庫或程式）交給它，拿回 `bytes`；這些位元組要放去哪裡由你決定。
-
-> **相容性。** 需要 Python 3.11 或更新版本（來自 `pyproject.toml`）。本文範例在 Windows、Python 3.13 上實際執行過；程式碼是純 Python，但其他平台並未實測。
-
----
+TablePack 是純函式庫，不進行任何檔案 I/O：你傳入資料列或欄式序列，函式庫回傳 `bytes`。
 
 ## 安裝方式
 
 ```bash
-# 核心安裝：TablePack 可用，以標準庫的 zlib 壓縮
+# 核心安裝：使用 Python 標準函式庫的 zlib 壓縮
 pip install -e .
 
-# 建議：加入 brotli >= 1.2，TablePack 會使用它的有界輸出 API
+# 建議：加入 brotli >= 1.2，啟用 TablePack 的有界輸出解碼器
 pip install -e ".[table]"
 ```
 
-沒有可用的 brotli 時，預設的 `compress="auto"` 會自動改用 zlib。明確指定 `compress="brotli"` 需要 brotli >= 1.2。壓縮方式會記錄在 blob 標頭，因此 brotli blob 只能在有相容 brotli 的環境解開。
+沒有 `brotli >= 1.2` 時，預設的 `compress="auto"` 會自動改用 `zlib`。明確指定 `compress="brotli"` 需要 `brotli >= 1.2`。選擇的壓縮器會記錄在 blob 標頭中，因此解碼 brotli blob 的環境也必須安裝 `brotli >= 1.2`。
 
----
+## 語法
 
-## 5 分鐘快速上手
+```python
+blob = pack(data, schema=None, *, embed_schema=True, compress="auto", verify=False)
+rows = unpack(blob, schema=None, *, as_columns=False, limits=DecodeLimits())
+row_iter = iter_unpack(blob, schema=None, *, limits=DecodeLimits())
+schema = infer(data, *, report=False, compress="auto", embed_schema=True, optimize=True)
+summary = explain(data, schema=None, *, compress="auto")
+```
 
-### 1. 零設定：不給 schema 直接打包
+## 說明
+
+- `blob = pack(data, schema=None, ...)` 將資料列或等長欄式序列編碼為確定性位元組；省略 `schema` 時會透過 `infer` 自動推斷並嵌入 schema。
+- `rows = unpack(blob, schema=None, ...)` 將 `bytes`、`bytearray` 或 `memoryview` blob 還原為 `list[dict]`（或於 `as_columns=True` 時回傳 `dict[str, list]`）。
+- `row_iter = iter_unpack(blob, schema=None, ...)` 回傳一個生成器，在開始疊代時才驗證引數與 blob 並逐欄解碼，之後一次產生一列 dict。
+- `schema = infer(data, ...)` 先排序逐欄 zlib 大小，再以目標壓縮器量測最多八個整表候選方案並提出 `Schema`。
+- `summary = explain(data, schema=None, ...)` 回傳包含各欄編碼名稱、單獨打包位元組數與整表總大小的文字表格。
+
+## 範例
+
+### 1. 基本範例：不給 schema 直接打包與解包
+
+不指定 schema 直接打包 200 列類似暫存器表的資料；TablePack 會自動推斷並把 schema 嵌入 blob。
 
 ```python
 import json
@@ -40,91 +52,74 @@ rows = [
     for i in range(200)
 ]
 
-blob = pack(rows)                         # 沒給 schema：自動推斷，並嵌入 blob 中
-assert unpack(blob) == rows               # blob 自帶說明，不需要其他資訊
+blob = pack(rows)
+assert unpack(blob) == rows
 
 as_json = json.dumps(rows).encode()
 print(f"JSON {len(as_json)} bytes -> blob {len(blob)} bytes")
 print(unpack(blob)[1])
 ```
 
-輸出（有安裝 brotli；改用 zlib 時 blob 大小會略有不同）：
-
+輸出（已安裝 `brotli >= 1.2`；使用 `zlib` 時 blob 大小略有不同）：
 ```text
 JSON 12596 bytes -> blob 183 bytes
 {'module': 'uart', 'addr': 4100, 'access': 'RO', 'reset': 1}
 ```
 
-`unpack()` 會依原本的列順序回傳 dict 的 list。`None`、整數、字串與布林值都會以相同型別還原。
+### 2. 進階範例：明確指定 Schema、`infer` 與 `explain`
 
-### 2. 自己描述欄位
-
-當你了解資料時，schema 能讓你掌控細節並得到更小的輸出。每個欄位都是有型別的物件；不合理的設定（例如 `Enum(..., repeat=True)`）會在建立 schema 時立刻報錯，訊息會指出是哪個欄位。
+使用 `Schema` 明確指定欄位編碼，並透過 `explain()` 與 `infer()` 檢視空間佔比與建議編碼。
 
 ```python
-from rpkbin.tablepack import Schema, Uint, Enum, Str, pack, unpack
+from rpkbin.tablepack import Schema, Uint, Enum, Str, pack, unpack, infer, explain
 
-schema = Schema(
-    Str("module", repeat=True),             # 常與上一列相同：重複時只花 1 bit
-    Uint("addr", bits=16, delta=True),      # 儲存與上一列的差值，而不是位址本身
-    Enum("kind", ["RW", "RO", "W1C"]),      # 已知的固定值集合：每列 2 bits
-    Str("note", nullable=True),             # 可以是 None：缺值時花 1 bit
-)
 rows = [
     {"module": "uart", "addr": 0x10, "kind": "RW", "note": None},
     {"module": "uart", "addr": 0x14, "kind": "RO", "note": "status"},
     {"module": "spi", "addr": 0x40, "kind": "W1C", "note": None},
 ]
 
+schema = Schema(
+    Str("module", repeat=True),
+    Uint("addr", bits=16, delta=True),
+    Enum("kind", ["RW", "RO", "W1C"]),
+    Str("note", nullable=True),
+)
+
 blob = pack(rows, schema)
-assert unpack(blob) == rows               # schema 預設會嵌入 blob
-print(unpack(blob)[1])
+assert unpack(blob) == rows
+print("Row 1:", unpack(blob)[1])
+print("Inferred:", repr(infer(rows)))
+print(explain(rows, schema, compress="zlib"))
 ```
 
 輸出：
-
 ```text
-{'module': 'uart', 'addr': 20, 'kind': 'RO', 'note': 'status'}
+Row 1: {'module': 'uart', 'addr': 20, 'kind': 'RO', 'note': 'status'}
+Inferred: Schema(
+    Str('module'),
+    Uint('addr'),
+    Str('kind'),
+    Str('note', nullable=True),
+)
+column  encoding        bytes  share
+module  str+repeat         27    30%
+addr    uint+delta         18    20%
+kind    enum(3)            18    20%
+note    str+nullable       25    28%
+total: 3 rows -> 37 bytes (compress=zlib, schema not embedded)
 ```
 
-### 3. 不確定該用哪些選項？
+## 注意事項與限制
 
-此步驟沿用步驟 2 的 `rows`。
+- **輸入形式**：`pack()` 接受 `list[dict]`（任意 mapping 的 iterable）或 `dict[str, sequence]`（等長欄式序列）。`str`、`bytes`、`bytearray` 與 `memoryview` 不可作為欄容器（會引發 `TypeError`），但 `bytes`、`bytearray` 與 `memoryview` 可作為 `Bytes` 欄位的儲存格值。每一列必須剛好包含 schema 的所有欄位。
+- **嵌入 schema 與最小輸出**：預設 `embed_schema=True` 會將 schema JSON 存進 blob，讓 `unpack(blob)` 不需額外資訊。若需最小輸出，請設為 `embed_schema=False` 並在 `unpack(blob, schema)` 傳入相符 schema。見[情境 4](scenarios.md#情境-4共用同一份-schema不嵌入-blob)。
+- **嚴格型別檢查**：數值會檢查而不自動轉型（`Uint` 與 `Int` 拒絕 `True`、`Int` 拒絕 `"7"`、`Uint` 拒絕負數）。錯誤訊息會標明列號與欄名。見[情境 8](scenarios.md#情境-8看懂並修正錯誤)。
+- **解碼限制**：讀取端會依 `DecodeLimits` 限制列數、儲存格數、payload 位元組數、schema 位元組數、欄數及整數 varint 長度，用來約束解析放大效應（不是作業系統層級的記憶體上限）。見 [`DecodeLimits`](reference.md#decodelimits)。
+- **相容性**：需要 Python `>= 3.11`（`pyproject.toml`）。純 Python 且無網路呼叫；範例已在 Windows、Python 3.13 實測驗證。
 
-```python
-from rpkbin.tablepack import infer, explain
+## 延伸閱讀
 
-schema = infer(rows)       # 以目標壓縮器與嵌入 schema 的設定量測整張表
-print(schema)              # 印出可直接貼上修改的 Schema(...) 程式碼
-print(explain(rows))       # 每個欄位花了多少 bytes
-```
-
-`infer` 先快速建立逐欄 zlib 基準，再以指定的壓縮器和 schema 嵌入設定，量測最多八個整表候選方案。這是有限搜尋，不保證找到全域最小值；基準一定會納入，大小相同時優先保留基準。`report=True` 仍回報逐欄 zlib 排名，最後選出的 schema 不一定是第一項。
-
-如何解讀輸出請見[情境 3](scenarios.md)。
-
----
-
-## 關鍵注意事項與常見誤區
-
-> [!NOTE]
-> ### 1. 輸入形式
-> `pack()` 接受 `list[dict]`（每列一個 dict）或 `dict[str, sequence]`（每欄一個等長序列，適合資料已經放在陣列裡的情況；TablePack 本身不依賴 NumPy 或 pandas）。每一列必須剛好包含 schema 的所有欄位：缺少或多出的鍵會引發 `ValueError` 並指出是第幾列。
-
-> [!IMPORTANT]
-> ### 2. 嵌入 schema 與最小輸出
-> 預設會把 schema 存進 blob（約數十 bytes），讓 `unpack(blob)` 不需要其他資訊。若要最小輸出，請傳入 `embed_schema=False`，解包時再把同一份 schema 交給 `unpack(blob, schema)`。見[情境 4](scenarios.md)。
-
-> [!WARNING]
-> ### 3. 型別是檢查，不是轉換
-> 值必須符合欄位型別：`Uint` 不接受 `True`，`Int` 不接受 `"7"`，`Uint` 也不接受負數。錯誤訊息會指出列與欄。見[情境 8](scenarios.md)。
-
-> ### 4. 解碼限制
-> Reader 會限制列數、儲存格數、payload 與 schema 位元組數、欄數及整數 varint 長度。這些限制用來約束解碼工作與 payload 膨脹，不是作業系統層級的記憶體上限。請見[API 參考手冊](reference.md#decodelimits)。
-
----
-
-## 下一步
-
-- **[情境教學](scenarios.md)**：欄位調校、比較不同方案、欄式資料、共用 schema、壓縮方式選擇、建置時驗證，以及錯誤處理。
-- **[API 參考手冊](reference.md)**：所有函式、欄位型別、選項、預設值、例外，以及二進位格式。
+- [實戰使用情境](scenarios.md)
+- [API 參考手冊](reference.md)
+- [文件導覽](../README.md)

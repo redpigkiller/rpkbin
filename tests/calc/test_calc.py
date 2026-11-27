@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from rpkbin.calc.core import (
+from rpkbin.app.calc.core import (
     CalcConfig,
     FormatEngine,
     FxpSpec,
@@ -17,12 +17,12 @@ from rpkbin.calc.core import (
 
 
 def test_core_has_zero_gui_dependencies() -> None:
-    """Ensure rpkbin.calc.core modules do not import PySide6."""
-    import rpkbin.calc.core.config as m_cfg
-    import rpkbin.calc.core.format_engine as m_fmt
-    import rpkbin.calc.core.fxp_model as m_fxp
-    import rpkbin.calc.core.math_helpers as m_math
-    import rpkbin.calc.core.session as m_sess
+    """Ensure rpkbin.app.calc.core modules do not import PySide6."""
+    import rpkbin.app.calc.core.config as m_cfg
+    import rpkbin.app.calc.core.format_engine as m_fmt
+    import rpkbin.app.calc.core.fxp_model as m_fxp
+    import rpkbin.app.calc.core.math_helpers as m_math
+    import rpkbin.app.calc.core.session as m_sess
 
     for mod in (m_cfg, m_fmt, m_fxp, m_math, m_sess):
         src = Path(mod.__file__).read_text(encoding="utf-8")

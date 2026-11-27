@@ -12,8 +12,9 @@ from rpkbin.tablepack import (
 
 COMPRESS = ["zlib", "lzma", None]
 try:
-    import brotli  # noqa: F401
-    COMPRESS.append("brotli")
+    import brotli
+    if hasattr(getattr(brotli, "Decompressor", None), "can_accept_more_data"):
+        COMPRESS.append("brotli")
 except ImportError:
     pass
 
