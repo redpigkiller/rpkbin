@@ -1094,6 +1094,10 @@ HLT
     assert word_after["value"] == 0x1234
 
 
+@pytest.mark.skipif(
+    not (ROOT / "playground" / "isasim_demo" / "demo_mcu.py").is_file(),
+    reason="playground/isasim_demo is only present in the internal development repository",
+)
 def test_playground_demo_mem_aliases_smoke():
     demo_dir = ROOT / "playground" / "isasim_demo"
     static_mem_names = {
